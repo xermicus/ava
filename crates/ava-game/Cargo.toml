@@ -1,0 +1,9 @@
+[package]
+name = "ava-game"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+log.workspace = true
+serde.workspace = true

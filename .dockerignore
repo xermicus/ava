@@ -1,0 +1,6 @@
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+!scorer/entry.sh
+!scorer/hooks

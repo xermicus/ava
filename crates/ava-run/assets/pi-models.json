@@ -1,0 +1,18 @@
+{
+  "providers": {
+    "__AVA_PROVIDER__": {
+      "baseUrl": "__AVA_BASE_URL__",
+      "api": "__AVA_PROTOCOL__",
+      "apiKey": "$__AVA_TOKEN__",
+      "models": [
+        {
+          "id": "__AVA_MODEL_ID__",
+          "name": "__AVA_MODEL_ID__",
+          "contextWindow": "__AVA_CONTEXT__",
+          "maxTokens": "__AVA_OUTPUT__",
+          "reasoning": true
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+#!/bin/bash
+
+set -uo pipefail
+
+# Codex cannot re-prompt itself from a hook, so the loop lives here: one
+# headless turn per iteration, resuming the recorded session in between.
+
+if [ "${1:-}" = "--version" ]; then
+	exec codex --version
+fi
+
+PROMPT="$1"
+LAST_CALL_MARKER=/home/agent/last-call
+LAST_CALL="Time is up. Commit and push what you have right now."
+
+codex exec --json "$PROMPT" || sleep 5
+
+iteration=1
+while true; do
+	if [ -f "$LAST_CALL_MARKER" ]; then
+		codex exec resume --last --json "$LAST_CALL" || true
+		break
+	fi
+
+	iteration=$((iteration + 1))
+	if ! codex exec resume --last --json "Loop iteration $iteration."$'\n\n'"$PROMPT"; then
+		sleep 5
+	fi
+done
+
+# The kill ends the run; exiting here would end it early.
+exec sleep infinity

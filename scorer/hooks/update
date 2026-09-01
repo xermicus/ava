@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Arguments: refname, old sha, new sha. Master was seeded before the hooks
+# existed and takes nothing else.
+
+if [ "$1" = "refs/heads/master" ]; then
+	echo "master is protected, push the task branch" >&2
+	exit 1
+fi
+
+exit 0

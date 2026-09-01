@@ -1,0 +1,11 @@
+[package]
+name = "ava-web"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+ava-run = { path = "../ava-run" }
+log.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true

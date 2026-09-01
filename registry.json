@@ -1,0 +1,153 @@
+{
+ "models": [
+  {
+   "name": "claude-opus-5",
+   "routes": [
+    {
+     "backend": "anthropic",
+     "id": "claude-opus-5",
+     "context_window": 1000000,
+     "max_output": 128000
+    },
+    {
+     "backend": "openapi",
+     "id": "openrouter/anthropic/claude-opus-5",
+     "context_window": 1000000,
+     "max_output": 128000
+    }
+   ]
+  },
+  {
+   "name": "claude-sonnet-5",
+   "routes": [
+    {
+     "backend": "anthropic",
+     "id": "claude-sonnet-5",
+     "context_window": 1000000,
+     "max_output": 128000
+    },
+    {
+     "backend": "openapi",
+     "id": "openrouter/anthropic/claude-sonnet-5",
+     "context_window": 1000000,
+     "max_output": 128000
+    }
+   ]
+  },
+  {
+   "name": "kimi-k3",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "kimi-k3",
+     "context_window": 1048576,
+     "max_output": 943718
+    }
+   ]
+  },
+  {
+   "name": "qwen3.8-max",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "openrouter/qwen/qwen3.8-max",
+     "context_window": 1000000,
+     "max_output": 131072
+    }
+   ]
+  },
+  {
+   "name": "qwen3.8-flash-next",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "Qwen/Qwen3.8-Flash-Next",
+     "context_window": 1000000,
+     "max_output": 131072
+    }
+   ]
+  },
+  {
+   "name": "glm-5.3",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "openrouter/z-ai/glm-5.3",
+     "context_window": 1310720,
+     "max_output": 131072
+    }
+   ]
+  },
+  {
+   "name": "glm-5.3-flash",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "openrouter/z-ai/glm-5.3-flash",
+     "context_window": 1048576,
+     "max_output": 131072
+    }
+   ]
+  },
+  {
+   "name": "deepseek-v4-pro",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "deepseek-v4-pro",
+     "context_window": 1048576,
+     "max_output": 384000
+    }
+   ]
+  },
+  {
+   "name": "deepseek-v4-flash",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "openrouter/deepseek/deepseek-v4-flash",
+     "context_window": 1048576,
+     "max_output": 384000
+    }
+   ]
+  },
+  {
+   "name": "deepseek-v4-flash-hosted",
+   "routes": [
+    {
+     "backend": "openapi",
+     "id": "deepseek-flash-parity",
+     "context_window": 1048576,
+     "max_output": 384000
+    }
+   ]
+  }
+ ],
+ "harnesses": [
+  {
+   "name": "claude",
+   "backends": [
+    "anthropic",
+    "openapi"
+   ]
+  },
+  {
+   "name": "pi",
+   "backends": [
+    "openapi"
+   ]
+  },
+  {
+   "name": "opencode",
+   "backends": [
+    "openapi"
+   ]
+  },
+  {
+   "name": "codex",
+   "backends": [
+    "openapi"
+   ]
+  }
+ ]
+}

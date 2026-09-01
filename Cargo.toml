@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["xermicus"]
+
+[workspace.dependencies]
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+log = { version = "0.4", default-features = false, features = ["std"] }
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+tiny_http = { version = "0.12", default-features = false }
+

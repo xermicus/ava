@@ -1,0 +1,11 @@
+[package]
+name = "ava"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+ava-run = { path = "../ava-run" }
+ava-scorer = { path = "../ava-scorer" }
+ava-web = { path = "../ava-web" }
+env_logger.workspace = true

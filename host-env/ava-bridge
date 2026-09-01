@@ -1,0 +1,31 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Resets on aborted connections are expect.
+socat TCP-LISTEN:8080,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/ava/proxy.sock \
+	2> >(grep --line-buffered -vE ' E (read|write)\([0-9]+' >&2) &
+
+# The workspace is a clone of the run's remote, worked on the task branch.
+# Without the socket volume this is not a run and there is nothing to set up.
+if [ -S /run/ava/proxy.sock ]; then
+	git config --global user.name agent
+	git config --global user.email agent@ava
+	git config --global http.postBuffer 67108864
+
+	for _ in $(seq 100); do
+		if git clone --quiet http://git:8080/task.git /home/agent/workspace 2>/dev/null; then
+			break
+		fi
+		sleep 0.2
+	done
+	git -C /home/agent/workspace checkout --quiet -b task
+fi
+
+# Common agent instruction paths are just symlinked to the puzzle instructions.
+if [ -f /home/agent/workspace/README.md ]; then
+	ln -sf README.md /home/agent/workspace/AGENTS.md
+	ln -sf README.md /home/agent/workspace/CLAUDE.md
+fi
+
+exec "$@"

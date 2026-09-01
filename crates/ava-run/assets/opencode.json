@@ -1,0 +1,21 @@
+{
+  "model": "__AVA_MODEL__",
+  "small_model": "__AVA_MODEL__",
+  "permission": "allow",
+  "provider": {
+    "__AVA_PROVIDER__": {
+      "options": {
+        "baseURL": "__AVA_BASE_URL__",
+        "apiKey": "{env:__AVA_TOKEN__}"
+      },
+      "models": {
+        "__AVA_MODEL_ID__": {
+          "name": "__AVA_MODEL_ID__",
+          "reasoning": true,
+          "tool_call": true,
+          "limit": { "context": "__AVA_CONTEXT__", "output": "__AVA_OUTPUT__" }
+        }
+      }
+    }
+  }
+}

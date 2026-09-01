@@ -1,0 +1,13 @@
+model = "__AVA_MODEL_ID__"
+model_provider = "ava"
+model_context_window = "__AVA_CONTEXT__"
+model_reasoning_effort = "__AVA_EFFORT__"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+check_for_update_on_startup = false
+
+[model_providers.ava]
+name = "ava"
+base_url = "__AVA_BASE_URL__"
+env_key = "ANTHROPIC_AUTH_TOKEN"
+wire_api = "responses"

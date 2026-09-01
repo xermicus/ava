@@ -1,0 +1,12 @@
+[package]
+name = "ava-scorer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+ava-game = { path = "../ava-game" }
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
