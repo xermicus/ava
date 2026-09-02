@@ -163,7 +163,40 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
 
     match outcome {
         Ok(page) => html_response(200, &page),
-        Err(error) => html_response(500, &views::message_page("error", &error.to_string())),
+        Err(error) => {
+            log::error!("/{}: {error}", segments.join("/"));
+            html_response(500, &views::error_page(&error.to_string()))
+        }
+    }
+}
+
+/// Why an action did not go ahead.
+///
+/// A submission the browser could correct is not the same as an action the
+/// server could not carry out, and the console must not report the two alike:
+/// the first says the form was wrong, the second says this deployment needs
+/// attention before any submission works.
+enum Refusal {
+    /// The submission asked for something that does not exist.
+    Rejected(String),
+    /// The submission was sound and the server could not act on it.
+    Failed(String),
+}
+
+impl Refusal {
+    /// What the browser is told.
+    fn reason(&self) -> &str {
+        match self {
+            Self::Rejected(reason) | Self::Failed(reason) => reason,
+        }
+    }
+
+    /// Report the refusal on the console at the severity it deserves.
+    fn report(&self) {
+        match self {
+            Self::Rejected(reason) => log::warn!("refused: {reason}"),
+            Self::Failed(reason) => log::error!("the action failed: {reason}"),
+        }
     }
 }
 
@@ -178,9 +211,12 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
 
     match outcome {
         Ok(note) => redirect(&format!("{origin}?started={}{carried}", urlencode(&note))),
-        Err(reason) => {
-            log::warn!("refused: {reason}");
-            redirect(&format!("{origin}?refused={}{carried}", urlencode(&reason)))
+        Err(refusal) => {
+            refusal.report();
+            redirect(&format!(
+                "{origin}?refused={}{carried}",
+                urlencode(refusal.reason())
+            ))
         }
     }
 }
@@ -201,8 +237,8 @@ fn preserved(form: &[(String, String)]) -> String {
 /// Everything that can be checked without running is checked here, so a
 /// refusal reaches the browser instead of a log line: the thread only fails
 /// on what docker does at runtime.
-fn start_run(form: &[(String, String)]) -> Result<String, String> {
-    let registry = registry::load().map_err(|error| error.to_string())?;
+fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
+    let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
 
     let name = value(form, "agent");
     if !registry
@@ -210,39 +246,54 @@ fn start_run(form: &[(String, String)]) -> Result<String, String> {
         .iter()
         .any(|harness| harness.name == name)
     {
-        return Err(format!("unknown harness `{name}`"));
+        return Err(Refusal::Rejected(format!("unknown harness `{name}`")));
     }
 
     let model = value(form, "model");
     if !registry.models.iter().any(|known| known.name == model) {
-        return Err(format!("unknown model `{model}`"));
+        return Err(Refusal::Rejected(format!("unknown model `{model}`")));
     }
 
     let game = value(form, "game");
-    let games = views::games().map_err(|error| error.to_string())?;
+    let games = views::games().map_err(|error| Refusal::Failed(error.to_string()))?;
     if !games.iter().any(|known| known == game) {
-        return Err(format!("unknown game `{game}`"));
+        return Err(Refusal::Rejected(format!("unknown game `{game}`")));
     }
 
     let thinking = match value(form, "thinking") {
         "" => None,
         level if registry::THINKING_LEVELS.contains(&level) => Some(level.to_string()),
-        level => return Err(format!("unknown thinking level `{level}`")),
+        level => {
+            return Err(Refusal::Rejected(format!(
+                "unknown thinking level `{level}`"
+            )));
+        }
     };
 
     let limit: u64 = value(form, "limit")
         .parse()
-        .map_err(|_| "the seconds are a number".to_string())?;
+        .map_err(|_| Refusal::Rejected("the seconds are a number".to_string()))?;
     let parallel: u64 = value(form, "parallel")
         .parse()
-        .map_err(|_| "the parallel count is a number".to_string())?;
+        .map_err(|_| Refusal::Rejected("the parallel count is a number".to_string()))?;
     if limit == 0 || parallel == 0 {
-        return Err("the seconds and the parallel count are at least 1".to_string());
+        return Err(Refusal::Rejected(
+            "the seconds and the parallel count are at least 1".to_string(),
+        ));
     }
 
+    // A credential the host never set is the operator's to fix, unlike a
+    // pairing this harness cannot serve, which is the form's to correct.
     registry
         .invocation(name, model, "", thinking.as_deref())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let reason = error.to_string();
+            if registry::is_missing_credential(&error) {
+                Refusal::Failed(reason)
+            } else {
+                Refusal::Rejected(reason)
+            }
+        })?;
 
     let command = docker::Agent {
         name: name.to_string(),
@@ -308,8 +359,8 @@ fn start_run(form: &[(String, String)]) -> Result<String, String> {
 }
 
 /// End a live run early by leaving its done marker, as a release tag would.
-fn stop_run(name: &str) -> Result<String, String> {
-    views::run_directory(name).map_err(|error| error.to_string())?;
+fn stop_run(name: &str) -> Result<String, Refusal> {
+    views::run_directory(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
 
     log::info!("stopping {name} through its done marker");
 
@@ -323,7 +374,7 @@ fn stop_run(name: &str) -> Result<String, String> {
         ],
     )
     .map(|_| format!("stopping {name}"))
-    .map_err(|error| format!("stopping {name} failed: {error}"))
+    .map_err(|error| Refusal::Failed(format!("stopping {name} failed: {error}")))
 }
 
 /// The submitted form fields, urldecoded.

@@ -840,19 +840,20 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     Ok(page("AvA setup", &body))
 }
 
-/// A page carrying one message, for the errors of the reading views.
-pub(crate) fn message_page(title: &str, message: &str) -> String {
+/// A page carrying one failure, for the errors of the reading views.
+pub(crate) fn error_page(message: &str) -> String {
     let body = format!(
         "<p class=\"mt-10 max-w-prose\">{}</p><p class=\"mt-4\"><a class=\"{LINK_CLASSES}\" href=\"/\">back to the runs</a></p>",
         escape(message)
     );
 
-    page(title, &body)
+    page("AvA error", &body)
 }
 
 /// The known game folders, sorted.
 pub(crate) fn games() -> std::io::Result<Vec<String>> {
-    let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)?
+    let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)
+        .map_err(|error| at_path(GAMES_DIRECTORY, error))?
         .filter_map(Result::ok)
         .filter(|entry| entry.path().is_dir())
         .filter_map(|entry| entry.file_name().into_string().ok())
@@ -896,11 +897,20 @@ fn live_runs() -> Vec<String> {
 }
 
 /// Every run on disk, newest first, marked live while its sandbox is up.
+///
+/// A run directory that is not there holds no runs, which is what a fresh
+/// checkout looks like until the first run creates it.
 fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
     let running = live_runs();
 
+    let played = match std::fs::read_dir(docker::RUN_DIRECTORY) {
+        Ok(played) => played,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(at_path(docker::RUN_DIRECTORY, error)),
+    };
+
     let mut runs = Vec::new();
-    for entry in std::fs::read_dir(docker::RUN_DIRECTORY)?.filter_map(Result::ok) {
+    for entry in played.filter_map(Result::ok) {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
@@ -982,6 +992,14 @@ fn plain(value: &serde_json::Value) -> String {
         },
         other => other.to_string(),
     }
+}
+
+/// The error of a failed path operation, with the path it was given.
+///
+/// The bare error of a syscall names the reason and never the path, which
+/// leaves a reader of the message guessing which file was meant.
+fn at_path(path: &str, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{path}: {error}"))
 }
 
 fn read_json(path: &std::path::Path) -> Option<serde_json::Value> {

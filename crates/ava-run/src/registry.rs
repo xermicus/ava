@@ -565,9 +565,22 @@ fn claude_invocation(
     })
 }
 
+/// The kind marking a credential the environment does not carry, telling a
+/// deployment nobody finished apart from a pairing that cannot work.
+const MISSING_CREDENTIAL: std::io::ErrorKind = std::io::ErrorKind::NotFound;
+
+/// Whether `error` reports a credential the environment does not carry.
+pub fn is_missing_credential(error: &std::io::Error) -> bool {
+    error.kind() == MISSING_CREDENTIAL
+}
+
 fn credential(variable: &str) -> std::io::Result<String> {
-    std::env::var(variable)
-        .map_err(|_| std::io::Error::other(format!("{variable} is not set in the environment")))
+    std::env::var(variable).map_err(|_| {
+        std::io::Error::new(
+            MISSING_CREDENTIAL,
+            format!("{variable} is not set in the environment"),
+        )
+    })
 }
 
 /// The error naming what is known instead of the `given` unknown `kind`.
