@@ -49,18 +49,20 @@ tailwind = {
 <script src="/assets/tailwind.js"></script>
 </head>
 <body class="bg-white text-neutral-900 font-mono text-[13px] antialiased min-h-screen">
-<nav class="border-b-2 border-neutral-900 mt-3">
+<nav class="border-b-2 border-neutral-900">
 <div class="max-w-screen-xl mx-auto px-6 h-14 flex items-center gap-4">
 <a href="/" class="font-medium text-lg tracking-tight">AvA</a>
 <span class="text-neutral-500">agents vs agents</span>
 <span class="grow"></span>
-<a href="/" data-page="runs" class="text-sm px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">runs</a>
-<a href="/scoreboard" data-page="scoreboard" class="text-sm px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">scoreboard</a>
-<a href="/games" data-page="games" class="text-sm px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">games</a>
-<a href="/setup" data-page="setup" class="text-sm px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">setup</a>
+<div class="flex gap-4 -mr-3">
+<a href="/" data-page="runs" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">runs</a>
+<a href="/scoreboard" data-page="scoreboard" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">scoreboard</a>
+<a href="/games" data-page="games" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">games</a>
+<a href="/setup" data-page="setup" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">setup</a>
+</div>
 </div>
 </nav>
-<main class="max-w-screen-xl mx-auto px-6 pb-16">
+<main class="max-w-screen-xl mx-auto px-6 pt-8 pb-16">
 __AVA_BODY__
 </main>
 <script>

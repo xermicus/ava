@@ -8,8 +8,7 @@ const HEADER_CLASSES: [&str; 3] = [
 ];
 const PARAGRAPH_CLASSES: &str = "my-2 max-w-prose leading-relaxed";
 const LIST_CLASSES: &str = "my-2 ml-5 max-w-prose leading-relaxed space-y-1";
-const FENCE_CLASSES: &str =
-    "font-mono text-[13px] bg-neutral-50 border border-neutral-200 p-3 my-3 overflow-x-auto";
+const FENCE_CLASSES: &str = "font-mono text-[13px] bg-neutral-50 -mx-3 p-3 my-3 overflow-x-auto";
 const CODE_CLASSES: &str = "font-mono text-[13px] bg-neutral-100 px-1";
 
 const FENCE: &str = "```";

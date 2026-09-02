@@ -46,19 +46,37 @@ const BODY_PLACEHOLDER: &str = "__AVA_BODY__";
 /// A `#` prefix on a header right-aligns that column for numbers.
 const NUMERIC_MARKER: char = '#';
 
-const TABLE_CLASSES: &str = "border-collapse";
-const HEADER_CLASSES: &str = "text-left text-neutral-500 font-normal py-1.5 pr-6";
-const CELL_CLASSES: &str = "py-1 pr-6 border-t border-neutral-200 align-top";
+/// Every table spans the content column. The columns pack on one gutter,
+/// shrunk to their content, and the last one takes the slack, so the rules
+/// reach the column edge while every gap stays the same width.
+const TABLE_CLASSES: &str = "w-full border-collapse";
+const COLUMN_CLASSES: &str =
+    "w-px whitespace-nowrap pr-4 last:w-full last:whitespace-normal last:pr-0";
+const HEADER_CLASSES: &str = "text-neutral-500 font-normal py-1.5";
+const CELL_CLASSES: &str = "py-1 border-t border-neutral-200 align-top";
 const ROW_CLASSES: &str = "hover:bg-neutral-50";
 const TITLE_CLASSES: &str = "font-medium mt-10 mb-2";
+
+/// The first title of a page rests on the top padding of the layout.
+const FIRST_TITLE_CLASSES: &str = "font-medium mb-2";
 const NOTE_CLASSES: &str = "text-neutral-500";
-const CONSOLE_CLASSES: &str = "text-xs whitespace-pre-wrap break-all \
-     bg-neutral-50 border border-neutral-200 p-3 overflow-x-auto";
+
+/// A background bleeds into the margins by its own padding, keeping the text
+/// on the column edge.
+const CONSOLE_CLASSES: &str =
+    "text-xs whitespace-pre-wrap break-all bg-neutral-50 -mx-3 p-3 overflow-x-auto";
 const LINK_CLASSES: &str =
     "underline decoration-neutral-300 underline-offset-2 hover:decoration-neutral-900";
-const BUTTON_CLASSES: &str = "bg-green-700 text-white px-4 py-1 hover:bg-green-800";
+/// A folded section is told apart by its dotted underline, not by a marker
+/// that would push its label off the column edge.
+const SUMMARY_CLASSES: &str = "cursor-pointer list-none [&::-webkit-details-marker]:hidden \
+     underline decoration-dotted decoration-neutral-400 underline-offset-4";
+
+/// One height for every form control, so a row of them shares a baseline.
+const CONTROL_HEIGHT: &str = "h-8";
+const BUTTON_CLASSES: &str = "bg-green-700 text-white px-4 hover:bg-green-800";
 const STOP_CLASSES: &str = "border border-red-700 text-red-700 px-2 hover:bg-red-50";
-const FIELD_CLASSES: &str = "border border-neutral-400 bg-white px-2 py-1 w-full";
+const FIELD_CLASSES: &str = "border border-neutral-400 bg-white px-2 w-full";
 const LABEL_CLASSES: &str = "block text-neutral-500 mb-1";
 
 /// What the last action left for the page to show.
@@ -237,7 +255,11 @@ impl RunEntry {
         }
         .min(self.limit());
 
-        format!("{} {elapsed}/{}s", bar(elapsed, self.limit()), self.limit())
+        format!(
+            "<span class=\"whitespace-nowrap\">{} {elapsed}/{}s</span>",
+            bar(elapsed, self.limit()),
+            self.limit()
+        )
     }
 
     /// What the agent printed so far, for a live run.
@@ -348,7 +370,7 @@ pub(crate) fn runs_page(
     body.push_str("</div>");
 
     body.push_str(&format!(
-        "<details class=\"mt-10\"><summary class=\"cursor-pointer font-medium\">history</summary>\
+        "<details class=\"mt-10\"><summary class=\"{SUMMARY_CLASSES} font-medium\">history</summary>\
          <div data-refresh=\"history\"><p class=\"{NOTE_CLASSES} mt-2 mb-2\">{} runs</p>{}</div></details>",
         history_rows.len(),
         table(
@@ -396,19 +418,18 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
         .unwrap_or(docker::Agent::DEFAULT_PARALLEL_RUNS);
 
     Ok(format!(
-        "<div class=\"border border-neutral-300 mt-8 p-4 max-w-fit\">\
-         <p class=\"font-medium mb-3\">new run</p>\
-         <form method=\"post\" action=\"/start\" class=\"flex flex-wrap items-end gap-3\">\
+        "<p class=\"{FIRST_TITLE_CLASSES}\">new run</p>\
+         <form method=\"post\" action=\"/start\" class=\"flex flex-wrap items-end gap-4\">\
          {}{}{}{}\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">seconds</span>\
-         <input class=\"{FIELD_CLASSES}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"1\"></label>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"1\"></label>\
          <label class=\"w-20\"><span class=\"{LABEL_CLASSES}\">parallel</span>\
-         <input class=\"{FIELD_CLASSES}\" type=\"number\" name=\"parallel\" value=\"{parallel}\" min=\"1\"></label>\
-         <label class=\"flex items-center gap-2 py-1\">\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" value=\"{parallel}\" min=\"1\"></label>\
+         <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
          <input type=\"checkbox\" name=\"force\" class=\"accent-green-700\">\
          <span class=\"{NOTE_CLASSES}\">rebuild images</span></label>\
-         <button class=\"{BUTTON_CLASSES}\">start</button>\
-         </form></div>",
+         <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">start</button>\
+         </form>",
         select(
             "agent",
             &harnesses,
@@ -429,10 +450,13 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
 }
 
 /// A labeled dropdown named `name` offering `options`, with `selected` marked.
+///
+/// The dropdowns grow to fill the form row, which puts the right edge of the
+/// form on the column edge the nav and the tables end on.
 fn select(name: &str, options: &[&str], selected: &str) -> String {
     let mut rendered = format!(
-        "<label class=\"w-44\"><span class=\"{LABEL_CLASSES}\">{name}</span>\
-         <select class=\"{FIELD_CLASSES}\" name=\"{name}\">"
+        "<label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{name}</span>\
+         <select class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" name=\"{name}\">"
     );
     for option in options {
         let marked = if *option == selected { " selected" } else { "" };
@@ -460,7 +484,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     };
 
     let mut body = format!(
-        "<div data-refresh=\"run\"><div class=\"flex items-baseline gap-4 mt-8\">\
+        "<div data-refresh=\"run\"><div class=\"flex items-baseline gap-4\">\
          <h1 class=\"font-medium text-lg\">{}</h1>{}{}</div>",
         escape(name),
         entry.state(),
@@ -537,7 +561,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     ));
 
     body.push_str(&format!(
-        "<details class=\"mt-10\"><summary class=\"cursor-pointer {NOTE_CLASSES}\">parameters</summary>{}</details>",
+        "<details class=\"mt-10\"><summary class=\"{SUMMARY_CLASSES} {NOTE_CLASSES}\">parameters</summary>{}</details>",
         object_table(&entry.metadata)
     ));
     body.push_str("</div>");
@@ -611,7 +635,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         .collect();
 
     let body = format!(
-        "<p class=\"{TITLE_CLASSES}\">scoreboard <span class=\"{NOTE_CLASSES} font-normal\">the best run of every pairing</span></p>{}",
+        "<p class=\"{FIRST_TITLE_CLASSES}\">scoreboard <span class=\"{NOTE_CLASSES} font-normal\">the best run of every pairing</span></p>{}",
         table(
             &[
                 "GAME", "MODEL", "HARNESS", "#RUNS", "#SOLVED", "BEST", "#SECONDS",
@@ -628,7 +652,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
     let runs = collect_runs()?;
     let mut body = String::new();
 
-    for game in games()? {
+    for (index, game) in games()?.into_iter().enumerate() {
         let played: Vec<&RunEntry> = runs.iter().filter(|run| run.game() == game).collect();
         let solved = played.iter().filter(|run| run.solved()).count();
         let mut standing: Vec<&&RunEntry> = played
@@ -637,8 +661,13 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             .collect();
         standing.sort_by_key(|run| std::cmp::Reverse(run.points()));
 
+        let title_classes = if index == 0 {
+            FIRST_TITLE_CLASSES
+        } else {
+            TITLE_CLASSES
+        };
         body.push_str(&format!(
-            "<p class=\"font-medium mt-12\">{}</p>",
+            "<p class=\"{title_classes}\">{}</p>",
             escape(&game)
         ));
 
@@ -653,7 +682,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             None if played.is_empty() => "not played yet".to_string(),
             None => format!("{} runs, none solving under the ceiling", played.len()),
         };
-        body.push_str(&format!("<p class=\"{NOTE_CLASSES} mt-1\">{record}</p>"));
+        body.push_str(&format!("<p class=\"{NOTE_CLASSES}\">{record}</p>"));
 
         let task = std::fs::read_to_string(
             std::path::Path::new(GAMES_DIRECTORY)
@@ -691,7 +720,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         std::fs::read_to_string(std::path::Path::new(GAMES_DIRECTORY).join(INSTRUCTIONS_FILE))
     {
         body.push_str(&format!(
-            "<details class=\"mt-12\"><summary class=\"cursor-pointer {NOTE_CLASSES}\">the instructions shared by every game</summary>{}</details>",
+            "<details class=\"mt-10\"><summary class=\"{SUMMARY_CLASSES} {NOTE_CLASSES}\">the instructions shared by every game</summary>{}</details>",
             crate::markdown::render(&instructions)
         ));
     }
@@ -794,7 +823,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         .collect();
 
     let mut body = format!(
-        "<p class=\"{TITLE_CLASSES}\">keys <span class=\"{NOTE_CLASSES} font-normal\">with the usage recorded over every run on disk</span></p>"
+        "<p class=\"{FIRST_TITLE_CLASSES}\">keys <span class=\"{NOTE_CLASSES} font-normal\">with the usage recorded over every run on disk</span></p>"
     );
     body.push_str(&table(
         &[
@@ -843,7 +872,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
 /// A page carrying one failure, for the errors of the reading views.
 pub(crate) fn error_page(message: &str) -> String {
     let body = format!(
-        "<p class=\"mt-10 max-w-prose\">{}</p><p class=\"mt-4\"><a class=\"{LINK_CLASSES}\" href=\"/\">back to the runs</a></p>",
+        "<p class=\"max-w-prose\">{}</p><p class=\"mt-4\"><a class=\"{LINK_CLASSES}\" href=\"/\">back to the runs</a></p>",
         escape(message)
     );
 
@@ -972,7 +1001,7 @@ fn object_table(value: &serde_json::Value) -> String {
     let mut html = format!("<table class=\"{TABLE_CLASSES}\"><tbody>");
     for (key, value) in object {
         html.push_str(&format!(
-            "<tr><td class=\"{CELL_CLASSES} text-neutral-500 w-56\">{}</td><td class=\"{CELL_CLASSES}\">{}</td></tr>",
+            "<tr><td class=\"{COLUMN_CLASSES} {CELL_CLASSES} text-neutral-500\">{}</td><td class=\"{COLUMN_CLASSES} {CELL_CLASSES}\">{}</td></tr>",
             escape(key),
             escape(&plain(value))
         ));
@@ -1066,9 +1095,13 @@ fn age(started: u64) -> String {
     }
 }
 
-/// A points value behind its bar on the shared 0 to 10000 scale.
+/// A points value behind its bar on the shared 0 to 10000 scale, kept on
+/// one line even in a column that wraps.
 fn points_bar(points: u64) -> String {
-    format!("{} {points}", bar(points.min(POINT_CEILING), POINT_CEILING))
+    format!(
+        "<span class=\"whitespace-nowrap\">{} {points}</span>",
+        bar(points.min(POINT_CEILING), POINT_CEILING)
+    )
 }
 
 /// `value` out of `ceiling` as a fixed width bar of block characters.
@@ -1084,8 +1117,13 @@ fn bar(value: u64, ceiling: u64) -> String {
     )
 }
 
-/// A table whose `#` marked headers hold right-aligned numbers.
+/// A table whose `#` marked headers hold right-aligned numbers, or nothing
+/// when there are no rows to head.
 fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
+    if rows.is_empty() {
+        return String::new();
+    }
+
     let numeric: Vec<bool> = headers
         .iter()
         .map(|header| header.starts_with(NUMERIC_MARKER))
@@ -1093,9 +1131,9 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
 
     let mut html = format!("<table class=\"{TABLE_CLASSES}\"><thead><tr>");
     for (header, numeric) in headers.iter().zip(&numeric) {
-        let align = if *numeric { " text-right" } else { "" };
+        let align = if *numeric { "text-right" } else { "text-left" };
         html.push_str(&format!(
-            "<th class=\"{HEADER_CLASSES}{align}\">{}</th>",
+            "<th class=\"{COLUMN_CLASSES} {HEADER_CLASSES} {align}\">{}</th>",
             header.trim_start_matches(NUMERIC_MARKER)
         ));
     }
@@ -1105,7 +1143,9 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
         for (cell, numeric) in row.iter().zip(&numeric) {
             let align = if *numeric { " text-right" } else { "" };
-            html.push_str(&format!("<td class=\"{CELL_CLASSES}{align}\">{cell}</td>"));
+            html.push_str(&format!(
+                "<td class=\"{COLUMN_CLASSES} {CELL_CLASSES}{align}\">{cell}</td>"
+            ));
         }
         html.push_str("</tr>");
     }
