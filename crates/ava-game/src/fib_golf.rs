@@ -4,12 +4,17 @@ const GAME_NAME: &str = "fib-golf";
 const SUBMISSION_BINARY: &str = "fibonacci";
 const SEPARATOR: char = ' ';
 
-/// The first 50 Fibonacci numbers.
-const FIBONACCI: [u64; 50] = [
+/// The first 47 Fibonacci numbers, the largest N the task asks for.
+///
+/// The length is the bound the scorer tests up to, so it is the bound the task
+/// states. Every value here fits in a signed 32 bit integer, which leaves the
+/// width of the arithmetic a choice the submission makes rather than one the
+/// scorer forces.
+const FIBONACCI: [u64; 47] = [
     0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765,
     10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229, 832040, 1346269, 2178309,
     3524578, 5702887, 9227465, 14930352, 24157817, 39088169, 63245986, 102334155, 165580141,
-    267914296, 433494437, 701408733, 1134903170, 1836311903, 2971215073, 4807526976, 7778742049,
+    267914296, 433494437, 701408733, 1134903170, 1836311903,
 ];
 
 /// The size the ELF of a solving submission is scored against: every halving
@@ -44,7 +49,11 @@ impl crate::Game for FibGolf {
                     listing(submission)
                 )));
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                return Ok(unsolved(&format!(
+                    "{SUBMISSION_BINARY} cannot be read: {error}"
+                )));
+            }
         };
 
         let bytes = contents.len() as u64;

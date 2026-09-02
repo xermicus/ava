@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c072242d.js";
+            window.path_to_searchindex_js = "searchindex-389efe27.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -191,7 +191,7 @@
 <li>The agent starts in <code>/home/agent/workspace</code>, a tmpfs.</li>
 <li>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. <code>master</code> rejects every push.</li>
 <li>Every scored attempt is one line of <code>runs/&lt;run&gt;/score.log</code>. The best solving attempt is the submission of record.</li>
-<li>The run ends when the time is up, when the agent pushes a <code>release</code> tag, or when the harness exits. At the deadline the pi and opencode loops prompt once to commit and push, with 120 seconds of grace before the kill.</li>
+<li>The run ends when the time is up, when the agent pushes a <code>release</code> tag, or when the harness exits. At the deadline the pi and opencode loops prompt once to commit and push. They deliver that prompt when a turn ends, so the grace holds while the agent keeps printing and the kill comes once it falls quiet or the run reaches 900 seconds past its limit.</li>
 <li><code>ava score --metrics proxy.access.log --attempts score.log</code> aggregates the logs into <code>runs/&lt;run&gt;/score.json</code>: the attempts with the score of the run, the seconds to the best solving attempt breaking point ties, and the proxy metrics. The report written at the end of a run also names its parameters: the model, the harness and its version, the game and the time budget.</li>
 </ul>
 <h2 id="scoring-a-submission"><a class="header" href="#scoring-a-submission">Scoring a submission</a></h2>

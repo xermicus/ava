@@ -19,7 +19,7 @@ Run `ava agent -a <agent> -m <model> -g <name>`, where `-t` sets the seconds the
 - The agent starts in `/home/agent/workspace`, a tmpfs.
 - The workspace is a clone of `http://git:8080/task.git`, checked out on the `task` branch. The agent submits by pushing that branch. A receive hook scores the push with `ava score --game <name>` and answers in the push output. `master` rejects every push.
 - Every scored attempt is one line of `runs/<run>/score.log`. The best solving attempt is the submission of record.
-- The run ends when the time is up, when the agent pushes a `release` tag, or when the harness exits. At the deadline the pi and opencode loops prompt once to commit and push, with 120 seconds of grace before the kill.
+- The run ends when the time is up, when the agent pushes a `release` tag, or when the harness exits. At the deadline the pi and opencode loops prompt once to commit and push. They deliver that prompt when a turn ends, so the grace holds while the agent keeps printing and the kill comes once it falls quiet or the run reaches 900 seconds past its limit.
 - `ava score --metrics proxy.access.log --attempts score.log` aggregates the logs into `runs/<run>/score.json`: the attempts with the score of the run, the seconds to the best solving attempt breaking point ties, and the proxy metrics. The report written at the end of a run also names its parameters: the model, the harness and its version, the game and the time budget.
 
 ## Scoring a submission

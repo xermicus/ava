@@ -33,16 +33,22 @@ const TOKEN_FIELDS = [
     ['ava_cache_write_tokens', ['cache_creation_input_tokens']],
 ];
 
-/* An event carrying generated content, in the Anthropic shape, the OpenAI
- * chat shapes and the OpenAI responses shape, reasoning deltas included. The
- * first one is the time to the first token, and counting them approximates
- * the volume of a stream that is cut before its usage report. */
-const DELTA_MARKER =
-    '"type"\\s*:\\s*"content_block_delta"' +
-    '|"delta"\\s*:\\s*\\{\\s*"(?:content|reasoning_content|text)"' +
-    '|"type"\\s*:\\s*"response\\.(?:output_text|reasoning_text|reasoning_summary_text)\\.delta"';
+/* An event carrying generated content, one pattern per streaming shape: the
+ * Anthropic shape, the OpenAI chat shapes and the OpenAI responses shape,
+ * reasoning deltas included. The first one is the time to the first token, and
+ * counting them approximates the volume of a stream that is cut before its
+ * usage report.
+ *
+ * One event can match more than one pattern. An Anthropic event whose delta
+ * carries the text key directly matches the first two, so the counts are taken
+ * one pattern at a time and the largest of them is the number of events. */
+const DELTA_PATTERNS = [
+    '"type"\\s*:\\s*"content_block_delta"',
+    '"delta"\\s*:\\s*\\{\\s*"(?:content|reasoning_content|text)"',
+    '"type"\\s*:\\s*"response\\.(?:output_text|reasoning_text|reasoning_summary_text)\\.delta"',
+];
 
-const FIRST_TOKEN_MARKER = new RegExp(DELTA_MARKER);
+const FIRST_TOKEN_MARKER = new RegExp(DELTA_PATTERNS.join('|'));
 
 function matchAll(text, pattern) {
     const values = [];
@@ -140,13 +146,21 @@ function recordModels(request, name, window) {
  * event is counted exactly once, split across two chunks or not.
  */
 function countDeltas(window, tail) {
-    const pattern = new RegExp(DELTA_MARKER, 'g');
     let count = 0;
-    let match;
 
-    while ((match = pattern.exec(window)) !== null) {
-        if (match.index + match[0].length > tail) {
-            count++;
+    for (let shape = 0; shape < DELTA_PATTERNS.length; shape++) {
+        const pattern = new RegExp(DELTA_PATTERNS[shape], 'g');
+        let counted = 0;
+        let match;
+
+        while ((match = pattern.exec(window)) !== null) {
+            if (match.index + match[0].length > tail) {
+                counted++;
+            }
+        }
+
+        if (counted > count) {
+            count = counted;
         }
     }
 
