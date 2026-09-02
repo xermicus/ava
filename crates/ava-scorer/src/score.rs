@@ -36,6 +36,9 @@ struct Record {
     /// The account limits the backend reported, absent from older logs.
     #[serde(default)]
     ratelimits: String,
+    /// The cost the gateway reported for the answer, empty off the gateway.
+    #[serde(default)]
+    gateway_cost: String,
 }
 
 /// The aggregate over every request in one proxy access log.
@@ -63,6 +66,8 @@ struct Metrics {
     /// The account limits of the newest answer that reported them.
     #[serde(skip_serializing_if = "String::is_empty")]
     ratelimits: String,
+    /// The cost the gateway reported, summed over the answers that carried one.
+    gateway_cost: f64,
     request_bytes: u64,
     response_bytes: u64,
     request_seconds: f64,
@@ -204,6 +209,9 @@ fn aggregate(log: &str) -> std::io::Result<Metrics> {
         metrics.streamed_deltas += record.streamed_deltas;
         if !record.ratelimits.is_empty() {
             metrics.ratelimits = record.ratelimits;
+        }
+        if let Ok(cost) = record.gateway_cost.parse::<f64>() {
+            metrics.gateway_cost += cost;
         }
         metrics.request_bytes += record.request_bytes;
         metrics.response_bytes += record.response_bytes;

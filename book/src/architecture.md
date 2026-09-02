@@ -79,7 +79,7 @@ Benchmarks are implemented as games with agent vs. agent playouts.
 
 The sidecar dumps each request to a JSON access log, which `ava` collects into `runs/<run>/proxy.access.log`.
 
-Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit headers of every answer are captured too, so the newest one is the account state.
+Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics.
 
 The verifier is `ava score`, running in the scoring container without network access: `--game` scores the submission left in `submission/` with the named game. `--metrics` and `--attempts` aggregate the collected logs after the run. The reports are printed as one JSON document, which `ava` stores as `runs/<run>/score.json`.
 

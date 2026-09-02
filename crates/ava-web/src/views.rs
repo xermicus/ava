@@ -46,9 +46,28 @@ const SLACK_MARKER: char = '*';
 
 /// The unified runs table, holding pending, live and finished runs alike.
 const RUN_HEADERS: [&str; 9] = [
-    "RUN", "STATE", "GAME", "MODEL", "*HARNESS", "TIME", "#PUSHES", "POINTS", "",
+    "RUN", "STATE", "GAME", "MODEL", "HARNESS", "*TIME", "#PUSHES", "*POINTS", "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
+const NO_LIMITS_NOTE: &str = "no limits reported yet, the first run of a key brings them";
+
+/// The rolling windows the Anthropic subscription reports, by the header
+/// infix naming them.
+const ANTHROPIC_WINDOWS: [(&str, &str); 2] = [("5h", "session, 5 hours"), ("7d", "week, 7 days")];
+const ANTHROPIC_LIMIT_PREFIX: &str = "anthropic-ratelimit-unified-";
+
+/// The budget of a gateway key, as the gateway names it in its headers.
+const GATEWAY_SPEND_HEADER: &str = "x-litellm-key-spend";
+const GATEWAY_BUDGET_HEADER: &str = "x-litellm-key-max-budget";
+
+/// The request and token windows a gateway reports, by the header suffix
+/// naming them.
+const GATEWAY_WINDOWS: [&str; 2] = ["requests", "tokens"];
+const GATEWAY_LIMIT_PREFIX: &str = "x-ratelimit-";
+
+const SECONDS_PER_DAY: u64 = 86_400;
+const SECONDS_PER_HOUR: u64 = 3_600;
+const SECONDS_PER_MINUTE: u64 = 60;
 
 /// A card holds one table or one form, so every block on a page shares the
 /// same edges and corners.
@@ -103,9 +122,18 @@ const FAILED_PILL: &str = "bg-red-500/10 text-red-400";
 const STARTING_PILL: &str = "bg-amber-500/10 text-amber-400";
 
 /// The meters: a track, a fill and a mono label.
-const METER_TRACK_CLASSES: &str = "h-1.5 w-16 rounded-full bg-neutral-800 overflow-hidden";
+const METER_TRACK_CLASSES: &str =
+    "h-1.5 flex-1 min-w-16 rounded-full bg-neutral-800 overflow-hidden";
+
+/// The labels beside the meters have one width per kind, so the tracks of
+/// one column start and end on the same lines.
+const POINTS_LABEL_WIDTH: &str = "w-12";
+const ELAPSED_LABEL_WIDTH: &str = "w-24";
+const USAGE_LABEL_WIDTH: &str = "w-16";
+const USAGE_FILL: &str = "bg-amber-500";
 const POINTS_FILL: &str = "bg-emerald-500";
 const ELAPSED_FILL: &str = "bg-indigo-500";
+const FINISHED_FILL: &str = "bg-neutral-600";
 
 /// The tiles summarizing a run, one figure each.
 const TILE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3";
@@ -174,6 +202,9 @@ struct RunEntry {
     wall: Option<u64>,
     /// The newest heartbeat of the run loop, for a live run.
     monitor: Option<serde_json::Value>,
+    /// The scored pushes so far: the attempts log once collected, the output
+    /// of the scoring container while the run is live.
+    attempts: Vec<serde_json::Value>,
 }
 
 impl RunEntry {
@@ -231,6 +262,15 @@ impl RunEntry {
     /// One aggregated number out of the proxy metrics of the run.
     fn metric(&self, key: &str) -> u64 {
         pointer(self.score.as_ref(), &format!("/metrics/{key}"))
+    }
+
+    /// One aggregated fraction out of the proxy metrics of the run.
+    fn metric_float(&self, key: &str) -> f64 {
+        self.score
+            .as_ref()
+            .and_then(|score| score.pointer(&format!("/metrics/{key}")))
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
     }
 
     /// One aggregated text out of the proxy metrics of the run.
@@ -306,35 +346,49 @@ impl RunEntry {
             self.limit(),
             ELAPSED_FILL,
             &format!("{elapsed}/{}s", self.limit()),
+            ELAPSED_LABEL_WIDTH,
         )
     }
 
-    /// The time cell of the runs table: the budget used by a live run, the
-    /// time a finished run took against its budget.
+    /// The time cell of the runs table: the same meter against the budget
+    /// for every run, filling while live and grey once the run took its time.
     fn time_cell(&self) -> String {
         if self.live {
             return self.elapsed_meter();
         }
 
-        match self.wall {
-            Some(wall) => format!(
-                "<span class=\"{MONO_CLASSES}\">{wall}s</span> <span class=\"{MUTED_CLASSES}\">/ {}s</span>",
-                self.limit()
-            ),
-            None => format!("<span class=\"{MUTED_CLASSES}\">{}s</span>", self.limit()),
-        }
+        let wall = self.wall.unwrap_or(0);
+        meter(
+            wall,
+            self.limit(),
+            FINISHED_FILL,
+            &format!("{wall}/{}s", self.limit()),
+            ELAPSED_LABEL_WIDTH,
+        )
     }
 
-    /// The pushes cell of the runs table, empty until the run is scored.
+    /// The pushes cell of the runs table: what was scored so far while live,
+    /// the count of record once scored, nothing for a run that left neither.
     fn pushes_cell(&self) -> String {
+        if self.live || !self.attempts.is_empty() {
+            return self.attempts.len().to_string();
+        }
+
         match self.score {
             Some(_) => self.attempts().to_string(),
             None => String::new(),
         }
     }
 
-    /// The points cell of the runs table, empty until the run is scored.
+    /// The points cell of the runs table: the best solving push so far while
+    /// live, the points of record once scored.
     fn points_cell(&self) -> String {
+        if self.live {
+            return points_meter(
+                best_push(&self.attempts).map_or(0, |push| number(push, "points")),
+            );
+        }
+
         match self.score {
             Some(_) => points_meter(self.points()),
             None => String::new(),
@@ -513,13 +567,15 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
 
     let metadata = read_json(&directory.join(docker::METADATA_FILE)).unwrap_or_default();
     let score = read_json(&directory.join(docker::SCORE_FILE));
+    let live = live_runs()
+        .iter()
+        .any(|running| running == &docker::sandbox_container(name));
     let entry = RunEntry {
         name: name.to_string(),
-        live: live_runs()
-            .iter()
-            .any(|running| running == &docker::sandbox_container(name)),
+        live,
         wall: wall_seconds(&directory, number(&metadata, "started_seconds")),
         monitor: read_json(&directory.join(docker::MONITOR_FILE)),
+        attempts: attempts_of(&directory, name, live),
         metadata,
         score,
     };
@@ -541,21 +597,16 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         age(entry.started()),
     ));
 
-    let time = if entry.live {
-        entry.elapsed_meter()
-    } else {
-        entry.time_cell()
-    };
-    let solved_at = if entry.solved() {
-        format!("{}s", entry.seconds())
-    } else {
-        "not solved".to_string()
+    let solved_at = match (entry.live, best_push(&entry.attempts)) {
+        (true, Some(push)) => format!("{}s", number(push, "seconds")),
+        (false, _) if entry.solved() => format!("{}s", entry.seconds()),
+        _ => "not solved".to_string(),
     };
     let tiles = [
-        ("points", points_meter(entry.points())),
-        ("pushes", entry.attempts().to_string()),
+        ("points", entry.points_cell()),
+        ("pushes", entry.pushes_cell()),
         ("solved at", solved_at),
-        ("time", time),
+        ("time", entry.time_cell()),
         ("requests", entry.metric("requests").to_string()),
         ("output tokens", entry.metric("output_tokens").to_string()),
     ];
@@ -567,7 +618,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     }
     body.push_str("</div>");
 
-    let pushes = push_rows(&directory.join(docker::SCORE_LOG));
+    let pushes = attempt_rows(&entry.attempts);
     if !pushes.is_empty() {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">pushes</p>"));
         body.push_str(&table(
@@ -687,7 +738,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         "<p class=\"{FIRST_TITLE_CLASSES}\">scoreboard <span class=\"{NOTE_CLASSES} font-normal\">the best run of every pairing</span></p>{}",
         table(
             &[
-                "GAME", "MODEL", "*HARNESS", "#RUNS", "#SOLVED", "BEST", "#SECONDS",
+                "GAME", "MODEL", "HARNESS", "#RUNS", "#SOLVED", "*BEST", "#SECONDS",
             ],
             rows,
             Some("nothing scored yet"),
@@ -758,7 +809,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             "<div class=\"{CARD_CLASSES} overflow-hidden\"><div class=\"px-4 pb-4\">{}</div>{}</div>",
             crate::markdown::render(&task),
             table(
-                &["MODEL", "*HARNESS", "POINTS", "#SECONDS", "RUN"],
+                &["MODEL", "HARNESS", "*POINTS", "#SECONDS", "RUN"],
                 standings,
                 None,
             )
@@ -783,7 +834,9 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     let runs = collect_runs()?;
 
     let mut key_rows = Vec::new();
-    let mut limit_lines = String::new();
+    let mut limit_rows = Vec::new();
+    let mut raw_limits = String::new();
+    let mut reported: Vec<String> = Vec::new();
     for (backend, variable, sandbox_variable) in [
         (
             "anthropic",
@@ -830,6 +883,9 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
                     .to_string(),
             );
         }
+        row.push(money(
+            fed.iter().map(|run| run.metric_float("gateway_cost")).sum(),
+        ));
         key_rows.push(row);
 
         // The runs are newest first, so the first captured set is the
@@ -838,10 +894,13 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             .iter()
             .find(|run| !run.metric_text("ratelimits").is_empty())
         {
-            limit_lines.push_str(&format!(
-                "<p class=\"{NOTE_CLASSES} mt-3\">{backend} limits, reported {} ago: <span class=\"{MONO_CLASSES} text-neutral-200\">{}</span></p>",
+            let captured = run.metric_text("ratelimits");
+            limit_rows.extend(limit_rows_of(variable, captured));
+            reported.push(format!("{backend} {} ago", age(run.started())));
+            raw_limits.push_str(&format!(
+                "<p class=\"mt-2\"><span class=\"{NOTE_CLASSES}\">{variable}, {} ago:</span> <span class=\"{MONO_CLASSES} text-xs text-neutral-300 break-all\">{}</span></p>",
                 age(run.started()),
-                escape(run.metric_text("ratelimits"))
+                escape(captured)
             ));
         }
     }
@@ -892,11 +951,29 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             "#OUTPUT",
             "#CACHE READ",
             "#CACHE WRITE",
+            "#COST",
         ],
         key_rows,
         None,
     ));
-    body.push_str(&limit_lines);
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as the newest answer of each key reported them{}</span></p>",
+        if reported.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", reported.join(", "))
+        }
+    ));
+    body.push_str(&table(
+        &["KEY", "WINDOW", "*USED", "LEFT", "STATUS", "RESETS"],
+        limit_rows,
+        Some(NO_LIMITS_NOTE),
+    ));
+    if !raw_limits.is_empty() {
+        body.push_str(&format!(
+            "<details class=\"mt-3\"><summary class=\"{SUMMARY_CLASSES}\">the raw limit headers</summary>{raw_limits}</details>"
+        ));
+    }
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">models</p>"));
     body.push_str(&table(
         &["MODEL", "BACKEND", "*ID", "#CONTEXT", "#MAX OUTPUT"],
@@ -1006,11 +1083,13 @@ fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
         };
 
         let sandbox = docker::sandbox_container(&name);
+        let live = running.iter().any(|container| container == &sandbox);
         runs.push(RunEntry {
-            live: running.iter().any(|container| container == &sandbox),
+            live,
             score: read_json(&entry.path().join(docker::SCORE_FILE)),
             wall: wall_seconds(&entry.path(), number(&metadata, "started_seconds")),
             monitor: read_json(&entry.path().join(docker::MONITOR_FILE)),
+            attempts: attempts_of(&entry.path(), &name, live),
             metadata,
             name,
         });
@@ -1021,30 +1100,62 @@ fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
     Ok(runs)
 }
 
-/// The pushes of `score.log` as table rows.
-fn push_rows(log: &std::path::Path) -> Vec<Vec<String>> {
-    let Ok(contents) = std::fs::read_to_string(log) else {
-        return Vec::new();
+/// The scored pushes of a run: the collected attempts log once the run is
+/// over, the output of the scoring container while it is live, since that
+/// output is the very log collected at the end.
+fn attempts_of(directory: &std::path::Path, name: &str, live: bool) -> Vec<serde_json::Value> {
+    let contents = if live {
+        std::process::Command::new("docker")
+            .args(["logs", &docker::scorer_container(name)])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default()
+    } else {
+        std::fs::read_to_string(directory.join(docker::SCORE_LOG)).unwrap_or_default()
     };
 
     contents
         .lines()
         .filter(|line| line.starts_with('{'))
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// The best solving push among `attempts`, the earliest one breaking ties.
+fn best_push(attempts: &[serde_json::Value]) -> Option<&serde_json::Value> {
+    attempts
+        .iter()
+        .filter(|push| {
+            push.get("solved")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        })
+        .max_by_key(|push| {
+            (
+                number(push, "points"),
+                std::cmp::Reverse(number(push, "seconds")),
+            )
+        })
+}
+
+/// The scored pushes as table rows.
+fn attempt_rows(attempts: &[serde_json::Value]) -> Vec<Vec<String>> {
+    attempts
+        .iter()
         .map(|push| {
             let solved = push
                 .get("solved")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             vec![
-                number(&push, "seconds").to_string(),
+                number(push, "seconds").to_string(),
                 if solved {
                     pill(SOLVED_PILL, false, "solved")
                 } else {
                     pill(UNSOLVED_PILL, false, "unsolved")
                 },
-                points_meter(number(&push, "points")),
-                escape(text(&push, "reason")),
+                points_meter(number(push, "points")),
+                escape(text(push, "reason")),
             ]
         })
         .collect()
@@ -1156,6 +1267,157 @@ fn age(started: u64) -> String {
     }
 }
 
+/// The limit rows of one key, read out of the headers `captured` from its
+/// newest answer.
+fn limit_rows_of(key: &str, captured: &str) -> Vec<Vec<String>> {
+    let headers: std::collections::BTreeMap<&str, &str> = captured
+        .split_whitespace()
+        .filter_map(|pair| pair.split_once('='))
+        .collect();
+    let header = |name: String| headers.get(name.as_str()).copied();
+    let key_cell = format!("<span class=\"{MONO_CLASSES}\">{key}</span>");
+    let mut rows = Vec::new();
+
+    for (window, label) in ANTHROPIC_WINDOWS {
+        let Some(utilization) = header(format!("{ANTHROPIC_LIMIT_PREFIX}{window}-utilization"))
+        else {
+            continue;
+        };
+        let used = (utilization.parse::<f64>().unwrap_or(0.0) * 100.0).round() as u64;
+        rows.push(vec![
+            key_cell.clone(),
+            label.to_string(),
+            meter(
+                used,
+                100,
+                USAGE_FILL,
+                &format!("{used}%"),
+                USAGE_LABEL_WIDTH,
+            ),
+            format!("{}%", 100u64.saturating_sub(used)),
+            status_pill(header(format!("{ANTHROPIC_LIMIT_PREFIX}{window}-status"))),
+            header(format!("{ANTHROPIC_LIMIT_PREFIX}{window}-reset"))
+                .and_then(|epoch| epoch.parse().ok())
+                .map(utc_date)
+                .unwrap_or_default(),
+        ]);
+    }
+
+    if let Some(status) = header(format!("{ANTHROPIC_LIMIT_PREFIX}overage-status")) {
+        let reason = header(format!("{ANTHROPIC_LIMIT_PREFIX}overage-disabled-reason"))
+            .map(|reason| format!(" <span class=\"{MUTED_CLASSES}\">{}</span>", escape(reason)))
+            .unwrap_or_default();
+        rows.push(vec![
+            key_cell.clone(),
+            "overage".to_string(),
+            String::new(),
+            String::new(),
+            format!("{}{reason}", status_pill(Some(status))),
+            String::new(),
+        ]);
+    }
+
+    if let (Some(spend), Some(budget)) = (
+        header(GATEWAY_SPEND_HEADER.to_string()).and_then(|value| value.parse::<f64>().ok()),
+        header(GATEWAY_BUDGET_HEADER.to_string()).and_then(|value| value.parse::<f64>().ok()),
+    ) {
+        rows.push(vec![
+            key_cell.clone(),
+            "budget".to_string(),
+            meter(
+                (spend * 100.0) as u64,
+                (budget * 100.0) as u64,
+                USAGE_FILL,
+                &money(spend),
+                USAGE_LABEL_WIDTH,
+            ),
+            format!("{} of {}", money((budget - spend).max(0.0)), money(budget)),
+            String::new(),
+            String::new(),
+        ]);
+    }
+
+    for window in GATEWAY_WINDOWS {
+        let (Some(limit), Some(remaining)) = (
+            header(format!("{GATEWAY_LIMIT_PREFIX}limit-{window}"))
+                .and_then(|value| value.parse::<u64>().ok()),
+            header(format!("{GATEWAY_LIMIT_PREFIX}remaining-{window}"))
+                .and_then(|value| value.parse::<u64>().ok()),
+        ) else {
+            continue;
+        };
+        let used = limit.saturating_sub(remaining);
+        rows.push(vec![
+            key_cell.clone(),
+            window.to_string(),
+            meter(
+                used,
+                limit,
+                USAGE_FILL,
+                &used.to_string(),
+                USAGE_LABEL_WIDTH,
+            ),
+            format!("{remaining} of {limit}"),
+            String::new(),
+            header(format!("{GATEWAY_LIMIT_PREFIX}reset-{window}"))
+                .map(escape)
+                .unwrap_or_default(),
+        ]);
+    }
+
+    rows
+}
+
+/// A limit status as a pill: allowed is fine, a warning is amber, a
+/// rejection is red, anything else is neutral.
+fn status_pill(status: Option<&str>) -> String {
+    let Some(status) = status else {
+        return String::new();
+    };
+
+    let tint = match status {
+        "allowed" => SOLVED_PILL,
+        "allowed_warning" => STARTING_PILL,
+        "rejected" => FAILED_PILL,
+        _ => UNSOLVED_PILL,
+    };
+
+    pill(tint, false, &escape(status))
+}
+
+/// A dollar amount with cents.
+fn money(amount: f64) -> String {
+    format!("${amount:.2}")
+}
+
+/// The epoch second `epoch` as a UTC date and time, to the minute.
+fn utc_date(epoch: u64) -> String {
+    let days = (epoch / SECONDS_PER_DAY) as i64;
+    let seconds = epoch % SECONDS_PER_DAY;
+
+    // Civil date from days since the epoch, after Howard Hinnant.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        seconds / SECONDS_PER_HOUR,
+        seconds % SECONDS_PER_HOUR / SECONDS_PER_MINUTE
+    )
+}
+
 /// The harness with its thinking level, the way an agent is referred to.
 fn agent_label(harness: &str, thinking: &str) -> String {
     if thinking.is_empty() {
@@ -1182,23 +1444,30 @@ fn pill(tint: &str, pulsing: bool, label: &str) -> String {
 
 /// A points value behind its meter on the shared 0 to 10000 scale.
 fn points_meter(points: u64) -> String {
-    meter(points, POINT_CEILING, POINTS_FILL, &points.to_string())
+    meter(
+        points,
+        POINT_CEILING,
+        POINTS_FILL,
+        &points.to_string(),
+        POINTS_LABEL_WIDTH,
+    )
 }
 
-/// `value` out of `ceiling` as a meter with `label` next to it.
-fn meter(value: u64, ceiling: u64, fill: &str, label: &str) -> String {
+/// `value` out of `ceiling` as a meter filling its cell, with `label` in a
+/// column of `label_width` beside it.
+fn meter(value: u64, ceiling: u64, fill: &str, label: &str, label_width: &str) -> String {
     let percent = (value.min(ceiling) * 100).checked_div(ceiling).unwrap_or(0);
 
     format!(
-        "<span class=\"inline-flex items-center gap-2 whitespace-nowrap\">\
+        "<span class=\"flex items-center gap-2 whitespace-nowrap\">\
          <span class=\"{METER_TRACK_CLASSES}\"><span class=\"block h-full rounded-full {fill}\" style=\"width:{percent}%\"></span></span>\
-         <span class=\"{MONO_CLASSES} tabular-nums text-neutral-200\">{label}</span></span>"
+         <span class=\"{MONO_CLASSES} tabular-nums text-neutral-200 shrink-0 {label_width}\">{label}</span></span>"
     )
 }
 
 /// A table in a card whose `#` marked headers hold right-aligned numbers and
-/// whose `*` marked header takes the slack. Without rows it shows `empty`,
-/// or nothing when there is no note to show.
+/// whose `*` marked headers share the slack evenly. Without rows it shows
+/// `empty`, or nothing when there is no note to show.
 fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> String {
     if rows.is_empty() && empty.is_none() {
         return String::new();
@@ -1208,15 +1477,21 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
         .iter()
         .map(|header| header.starts_with(NUMERIC_MARKER))
         .collect();
-    let slack = headers
+    let mut slack: Vec<usize> = headers
         .iter()
-        .position(|header| header.starts_with(SLACK_MARKER))
-        .unwrap_or(headers.len().saturating_sub(1));
+        .enumerate()
+        .filter(|(_, header)| header.starts_with(SLACK_MARKER))
+        .map(|(index, _)| index)
+        .collect();
+    if slack.is_empty() {
+        slack.push(headers.len().saturating_sub(1));
+    }
+    let share = 100 / slack.len();
     let column = |index: usize| {
-        if index == slack {
-            SLACK_COLUMN_CLASSES
+        if slack.contains(&index) {
+            (SLACK_COLUMN_CLASSES, format!(" style=\"width:{share}%\""))
         } else {
-            PACKED_COLUMN_CLASSES
+            (PACKED_COLUMN_CLASSES, String::new())
         }
     };
 
@@ -1225,9 +1500,9 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
     );
     for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
         let align = if *numeric { "text-right" } else { "text-left" };
+        let (classes, style) = column(index);
         html.push_str(&format!(
-            "<th class=\"{} {HEADER_CLASSES} {align}\">{}</th>",
-            column(index),
+            "<th class=\"{classes} {HEADER_CLASSES} {align}\"{style}>{}</th>",
             header.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER])
         ));
     }
@@ -1245,9 +1520,9 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
         for (index, (cell, numeric)) in row.iter().zip(&numeric).enumerate() {
             let align = if *numeric { NUMERIC_CLASSES } else { "" };
+            let (classes, style) = column(index);
             html.push_str(&format!(
-                "<td class=\"{} {CELL_CLASSES} {align}\">{cell}</td>",
-                column(index)
+                "<td class=\"{classes} {CELL_CLASSES} {align}\"{style}>{cell}</td>"
             ));
         }
         html.push_str("</tr>");

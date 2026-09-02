@@ -167,9 +167,10 @@ function countDeltas(window, tail) {
     return count;
 }
 
-/* The backends report the account limits in their answer headers. The last
- * captured set is the state of the account as of the newest request. */
-const LIMIT_HEADER_PREFIXES = ['anthropic-ratelimit-', 'x-ratelimit-'];
+/* The backends report the account limits in their answer headers, and the
+ * gateway the budget of the key. The last captured set is the state of the
+ * account as of the newest request. */
+const LIMIT_HEADER_PREFIXES = ['anthropic-ratelimit-', 'x-ratelimit-', 'x-litellm-key-'];
 
 function captureLimits(request) {
     const limits = [];
