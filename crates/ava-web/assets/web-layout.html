@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__AVA_TITLE__</title>
+<title>__AVA_HEADING__ · AvA</title>
 <style>
 @font-face {
     font-family: "Geist Mono";
@@ -48,23 +48,37 @@ tailwind = {
 </script>
 <script src="/assets/tailwind.js"></script>
 </head>
-<body class="bg-white text-neutral-900 font-mono text-[13px] antialiased min-h-screen">
-<nav class="border-b-2 border-neutral-900">
-<div class="max-w-screen-xl mx-auto px-6 h-14 flex items-center gap-4">
-<a href="/" class="font-medium text-lg tracking-tight">AvA</a>
-<span class="text-neutral-500">agents vs agents</span>
-<span class="grow"></span>
-<div class="flex gap-4 -mr-3">
-<a href="/" data-page="runs" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">runs</a>
-<a href="/scoreboard" data-page="scoreboard" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">scoreboard</a>
-<a href="/games" data-page="games" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">games</a>
-<a href="/setup" data-page="setup" class="px-3 py-1.5 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100">setup</a>
-</div>
-</div>
+<body class="h-full bg-neutral-950 text-neutral-200 font-sans text-sm antialiased">
+<div class="flex min-h-full">
+<aside class="sticky top-0 h-screen w-52 shrink-0 flex flex-col border-r border-neutral-800 bg-neutral-950">
+<a href="/" class="h-14 flex items-center gap-2.5 px-5 border-b border-neutral-800">
+<span class="h-6 w-6 rounded-md bg-indigo-500 text-white text-xs font-semibold inline-flex items-center justify-center">A</span>
+<span class="text-base font-semibold tracking-tight text-neutral-100">AvA</span>
+</a>
+<nav class="flex flex-col gap-1 p-3">
+<a href="/" data-page="runs" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></svg>
+runs</a>
+<a href="/scoreboard" data-page="scoreboard" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V4M16 20v-7M3 20h18"/></svg>
+scoreboard</a>
+<a href="/games" data-page="games" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
+games</a>
+<a href="/setup" data-page="setup" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+setup</a>
 </nav>
-<main class="max-w-screen-xl mx-auto px-6 pt-8 pb-16">
+</aside>
+<div class="flex-1 min-w-0 flex flex-col">
+<header class="h-14 flex items-center px-6 border-b border-neutral-800">
+<h1 class="text-base font-semibold text-neutral-100">__AVA_HEADING__</h1>
+</header>
+<main class="w-full max-w-screen-xl px-6 py-6">
 __AVA_BODY__
 </main>
+</div>
+</div>
 <script>
 /* Keep the marked regions current without reloading, so forms keep their
  * state. The query is dropped from the address after the first swap, which
@@ -78,6 +92,9 @@ async function refresh() {
     }
 
     const response = await fetch(location.pathname);
+    if (!response.ok) {
+        return;
+    }
     const fresh = new DOMParser().parseFromString(await response.text(), "text/html");
 
     for (const region of regions) {
@@ -98,7 +115,8 @@ const active = document.querySelector(
     `nav a[data-page="${SECTIONS[location.pathname.split("/")[1]]}"]`,
 );
 if (active) {
-    active.classList.add("text-neutral-900", "font-medium", "underline", "underline-offset-4");
+    active.classList.remove("text-neutral-400");
+    active.classList.add("bg-neutral-800", "text-neutral-100");
 }
 </script>
 </body>

@@ -11,11 +11,6 @@ const INSTRUCTIONS_FILE: &str = "README.md";
 /// bar comparable across all of them.
 const POINT_CEILING: u64 = 10000;
 
-/// The width of a bar, in block characters.
-const BAR_CELLS: u64 = 10;
-const BAR_FULL: char = '\u{2588}';
-const BAR_EMPTY: char = '\u{2591}';
-
 /// How many solving runs a game lists on its standings.
 const STANDINGS_LIMIT: usize = 3;
 
@@ -40,7 +35,7 @@ const RUN_FILES: [&str; 9] = [
 const CONSOLE_TAIL_BYTES: usize = 16 * 1024;
 
 const LAYOUT_TEMPLATE: &str = include_str!("../assets/web-layout.html");
-const TITLE_PLACEHOLDER: &str = "__AVA_TITLE__";
+const HEADING_PLACEHOLDER: &str = "__AVA_HEADING__";
 const BODY_PLACEHOLDER: &str = "__AVA_BODY__";
 
 /// A `#` prefix on a header right-aligns that column for numbers.
@@ -49,40 +44,74 @@ const NUMERIC_MARKER: char = '#';
 /// A `*` prefix on a header marks the column taking the slack of the row.
 const SLACK_MARKER: char = '*';
 
-/// Every table spans the content column. The columns pack on one gutter,
-/// shrunk to their content, and one of them takes the slack, so the columns
-/// before it start on the left edge, the ones after it end on the right edge
-/// and every gap stays the same width. Without a marked column the last one
-/// takes the slack.
+/// The unified runs table, holding pending, live and finished runs alike.
+const RUN_HEADERS: [&str; 9] = [
+    "RUN", "STATE", "GAME", "MODEL", "*HARNESS", "TIME", "#PUSHES", "POINTS", "",
+];
+const NO_RUNS_NOTE: &str = "no runs yet, start one above";
+
+/// A card holds one table or one form, so every block on a page shares the
+/// same edges and corners.
+const CARD_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900";
+
+/// Every table spans its card. The columns pack on one gutter, shrunk to
+/// their content, and one of them takes the slack, so the columns before it
+/// start on the left edge, the ones after it end on the right edge and every
+/// gap stays the same width. Without a marked column the last one takes the
+/// slack.
 const TABLE_CLASSES: &str = "w-full border-collapse";
-const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap pr-4 last:pr-0";
-const SLACK_COLUMN_CLASSES: &str = "w-full pr-4 last:pr-0";
-const HEADER_CLASSES: &str = "text-neutral-500 font-normal py-1.5";
-const CELL_CLASSES: &str = "py-1 border-t border-neutral-200 align-top";
-const ROW_CLASSES: &str = "hover:bg-neutral-50";
-const TITLE_CLASSES: &str = "font-medium mt-10 mb-2";
+const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap px-3 first:pl-4 last:pr-4";
+const SLACK_COLUMN_CLASSES: &str = "w-full px-3 first:pl-4 last:pr-4";
+const HEADER_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500 py-2.5";
+const CELL_CLASSES: &str = "py-2.5 border-t border-neutral-800 align-middle";
+const ROW_CLASSES: &str = "hover:bg-neutral-800/40 transition-colors";
+const NUMERIC_CLASSES: &str = "text-right font-mono tabular-nums";
+const EMPTY_ROW_CLASSES: &str =
+    "px-4 py-8 text-center text-neutral-500 border-t border-neutral-800";
 
-/// The first title of a page rests on the top padding of the layout.
-const FIRST_TITLE_CLASSES: &str = "font-medium mb-2";
-const NOTE_CLASSES: &str = "text-neutral-500";
+const TITLE_CLASSES: &str = "text-sm font-semibold text-neutral-100 mt-8 mb-3";
 
-/// A background bleeds into the margins by its own padding, keeping the text
-/// on the column edge.
-const CONSOLE_CLASSES: &str =
-    "text-xs whitespace-pre-wrap break-all bg-neutral-50 -mx-3 p-3 overflow-x-auto";
-const LINK_CLASSES: &str =
-    "underline decoration-neutral-300 underline-offset-2 hover:decoration-neutral-900";
-/// A folded section is told apart by its dotted underline, not by a marker
-/// that would push its label off the column edge.
+/// The first title of a page rests on the padding of the layout.
+const FIRST_TITLE_CLASSES: &str = "text-sm font-semibold text-neutral-100 mb-3";
+const NOTE_CLASSES: &str = "text-neutral-400";
+const MUTED_CLASSES: &str = "text-neutral-500";
+const MONO_CLASSES: &str = "font-mono";
+const LINK_CLASSES: &str = "font-mono text-indigo-300 hover:text-indigo-200 transition-colors";
+const CONSOLE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-950 p-4 text-xs \
+     font-mono text-neutral-300 whitespace-pre-wrap break-all overflow-x-auto";
 const SUMMARY_CLASSES: &str = "cursor-pointer list-none [&::-webkit-details-marker]:hidden \
-     underline decoration-dotted decoration-neutral-400 underline-offset-4";
+     text-neutral-400 hover:text-neutral-200 transition-colors";
 
 /// One height for every form control, so a row of them shares a baseline.
-const CONTROL_HEIGHT: &str = "h-8";
-const BUTTON_CLASSES: &str = "bg-green-700 text-white px-4 hover:bg-green-800";
-const STOP_CLASSES: &str = "border border-red-700 text-red-700 px-2 hover:bg-red-50";
-const FIELD_CLASSES: &str = "border border-neutral-400 bg-white px-2 w-full";
-const LABEL_CLASSES: &str = "block text-neutral-500 mb-1";
+const CONTROL_HEIGHT: &str = "h-9";
+const BUTTON_CLASSES: &str =
+    "rounded-md bg-indigo-500 hover:bg-indigo-400 px-4 font-medium text-white transition-colors";
+const STOP_CLASSES: &str = "rounded-md border border-red-500/40 text-red-400 hover:bg-red-500/10 \
+     px-2.5 py-1 text-xs font-medium transition-colors";
+const FIELD_CLASSES: &str = "w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 \
+     text-neutral-100 focus:outline-none focus:border-indigo-500 focus:ring-2 \
+     focus:ring-indigo-500/30 transition";
+const LABEL_CLASSES: &str = "block text-xs font-medium text-neutral-400 mb-1.5";
+
+/// The pills marking a state, one tint per outcome.
+const PILL_CLASSES: &str =
+    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium";
+const LIVE_PILL: &str = "bg-emerald-500/10 text-emerald-400";
+const SOLVED_PILL: &str = "bg-emerald-500/10 text-emerald-400";
+const UNSOLVED_PILL: &str = "bg-neutral-800 text-neutral-400";
+const FAILED_PILL: &str = "bg-red-500/10 text-red-400";
+const STARTING_PILL: &str = "bg-amber-500/10 text-amber-400";
+
+/// The meters: a track, a fill and a mono label.
+const METER_TRACK_CLASSES: &str = "h-1.5 w-16 rounded-full bg-neutral-800 overflow-hidden";
+const POINTS_FILL: &str = "bg-emerald-500";
+const ELAPSED_FILL: &str = "bg-indigo-500";
+
+/// The tiles summarizing a run, one figure each.
+const TILE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3";
+const TILE_LABEL_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500";
+const TILE_VALUE_CLASSES: &str =
+    "mt-1 text-lg font-semibold text-neutral-100 font-mono tabular-nums";
 
 /// What the last action left for the page to show.
 pub(crate) struct Notice {
@@ -93,14 +122,20 @@ pub(crate) struct Notice {
 }
 
 impl Notice {
-    /// The notice as an inline line, colored by outcome.
+    /// The notice as a banner, tinted by outcome.
     fn render(&self) -> String {
         if let Some(refused) = &self.refused {
-            return format!("<p class=\"text-red-700 mt-4\">{}</p>", escape(refused));
+            return format!(
+                "<p class=\"mt-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p>",
+                escape(refused)
+            );
         }
 
         match &self.started {
-            Some(action) => format!("<p class=\"text-green-700 mt-4\">{}</p>", escape(action)),
+            Some(action) => format!(
+                "<p class=\"mt-4 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-300\">{}</p>",
+                escape(action)
+            ),
             None => String::new(),
         }
     }
@@ -160,9 +195,7 @@ impl RunEntry {
 
     /// The harness with its thinking level, the way an agent is referred to.
     fn agent(&self) -> String {
-        format!("{} {}", escape(self.harness()), escape(self.thinking()))
-            .trim_end()
-            .to_string()
+        agent_label(self.harness(), self.thinking())
     }
 
     fn started(&self) -> u64 {
@@ -231,46 +264,79 @@ impl RunEntry {
         )
     }
 
-    /// The state of the run as a marked, colored label.
-    fn state(&self) -> String {
-        let (class, label) = if self.live {
-            (
-                "text-green-700",
-                "<span class=\"animate-pulse\">\u{25cf}</span> live",
-            )
-        } else if self.solved() {
-            ("text-green-700", "\u{2713} solved")
-        } else if self.score.is_some() {
-            ("text-neutral-500", "\u{00b7} unsolved")
-        } else {
-            ("text-red-700", "\u{2715} no score")
-        };
-
-        format!("<span class=\"{class}\">{label}</span>")
-    }
-
-    /// How far into its time budget a live run is, as a bar.
-    ///
-    /// The heartbeat of the run loop is the elapsed time of record: the loop
-    /// clock pauses with a sleeping host, which wall clock arithmetic misses.
-    fn elapsed_bar(&self) -> String {
-        let elapsed = match &self.monitor {
-            Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
-            None => epoch_now().saturating_sub(self.started()),
-        }
-        .min(self.limit());
-
+    /// The run cell of the runs table: the link with the age beneath it.
+    fn run_cell(&self) -> String {
         format!(
-            "<span class=\"whitespace-nowrap\">{} {elapsed}/{}s</span>",
-            bar(elapsed, self.limit()),
-            self.limit()
+            "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} ago</div>",
+            self.link(),
+            age(self.started())
         )
     }
 
-    /// What the agent printed so far, for a live run.
-    fn output(&self) -> String {
+    /// The state of the run as a pill.
+    fn state(&self) -> String {
+        if self.live {
+            pill(LIVE_PILL, true, "live")
+        } else if self.solved() {
+            pill(SOLVED_PILL, false, "solved")
+        } else if self.score.is_some() {
+            pill(UNSOLVED_PILL, false, "unsolved")
+        } else {
+            pill(FAILED_PILL, false, "no score")
+        }
+    }
+
+    /// The seconds a live run has used of its budget.
+    ///
+    /// The heartbeat of the run loop is the elapsed time of record: the loop
+    /// clock pauses with a sleeping host, which wall clock arithmetic misses.
+    fn elapsed(&self) -> u64 {
         match &self.monitor {
-            Some(heartbeat) => format!("{} KiB", number(heartbeat, "output_bytes") / 1024),
+            Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
+            None => epoch_now().saturating_sub(self.started()),
+        }
+        .min(self.limit())
+    }
+
+    /// How far into its time budget a live run is, as a meter.
+    fn elapsed_meter(&self) -> String {
+        let elapsed = self.elapsed();
+        meter(
+            elapsed,
+            self.limit(),
+            ELAPSED_FILL,
+            &format!("{elapsed}/{}s", self.limit()),
+        )
+    }
+
+    /// The time cell of the runs table: the budget used by a live run, the
+    /// time a finished run took against its budget.
+    fn time_cell(&self) -> String {
+        if self.live {
+            return self.elapsed_meter();
+        }
+
+        match self.wall {
+            Some(wall) => format!(
+                "<span class=\"{MONO_CLASSES}\">{wall}s</span> <span class=\"{MUTED_CLASSES}\">/ {}s</span>",
+                self.limit()
+            ),
+            None => format!("<span class=\"{MUTED_CLASSES}\">{}s</span>", self.limit()),
+        }
+    }
+
+    /// The pushes cell of the runs table, empty until the run is scored.
+    fn pushes_cell(&self) -> String {
+        match self.score {
+            Some(_) => self.attempts().to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// The points cell of the runs table, empty until the run is scored.
+    fn points_cell(&self) -> String {
+        match self.score {
+            Some(_) => points_meter(self.points()),
             None => String::new(),
         }
     }
@@ -286,9 +352,24 @@ impl RunEntry {
             escape(&self.name)
         )
     }
+
+    /// The row of this run in the runs table.
+    fn row(&self) -> Vec<String> {
+        vec![
+            self.run_cell(),
+            self.state(),
+            escape(self.game()),
+            escape(self.model()),
+            self.agent(),
+            self.time_cell(),
+            self.pushes_cell(),
+            self.points_cell(),
+            self.stop_form(),
+        ]
+    }
 }
 
-/// The landing page: what runs now, the start panel, and the history.
+/// The landing page: the start panel and every run, newest first.
 pub(crate) fn runs_page(
     notice: &Notice,
     selection: &Selection,
@@ -296,7 +377,7 @@ pub(crate) fn runs_page(
 ) -> std::io::Result<String> {
     let runs = collect_runs()?;
 
-    let mut live_rows: Vec<Vec<String>> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
     // A start shows up the moment it was asked for, and stays a starting row
     // until the runs it spawns appear on disk.
@@ -312,82 +393,37 @@ pub(crate) fn runs_page(
             .count() as u64;
 
         for _ in appeared..start.parallel {
-            live_rows.push(vec![
+            rows.push(vec![
                 format!(
-                    "<span class=\"{NOTE_CLASSES}\"><span class=\"animate-pulse\">\u{25cc}</span> starting</span>"
+                    "<span class=\"{MUTED_CLASSES}\">pending</span><div class=\"text-xs {MUTED_CLASSES} mt-0.5\">asked {} ago</div>",
+                    age(start.started)
                 ),
+                pill(STARTING_PILL, true, "starting"),
                 escape(&start.game),
                 escape(&start.model),
-                format!("{} {}", escape(&start.agent), escape(&start.thinking))
-                    .trim_end()
-                    .to_string(),
-                format!("asked {} ago", age(start.started)),
+                agent_label(&start.agent, &start.thinking),
+                String::new(),
+                String::new(),
                 String::new(),
                 String::new(),
             ]);
         }
     }
 
-    live_rows.extend(runs.iter().filter(|run| run.live).map(|run| {
-        vec![
-            run.link(),
-            escape(run.game()),
-            escape(run.model()),
-            run.agent(),
-            run.elapsed_bar(),
-            run.output(),
-            run.stop_form(),
-        ]
-    }));
+    rows.extend(runs.iter().map(RunEntry::row));
 
-    let history_rows: Vec<Vec<String>> = runs
-        .iter()
-        .filter(|run| !run.live)
-        .map(|run| {
-            vec![
-                run.link(),
-                run.state(),
-                escape(run.game()),
-                escape(run.model()),
-                run.agent(),
-                run.wall.map(|wall| format!("{wall}s")).unwrap_or_default(),
-                format!("{}s", run.limit()),
-                age(run.started()),
-                run.attempts().to_string(),
-                points_bar(run.points()),
-            ]
-        })
-        .collect();
-
+    let live = runs.iter().filter(|run| run.live).count();
     let mut body = start_panel(selection)?;
-    body.push_str("<div data-refresh=\"live\">");
+    body.push_str("<div data-refresh=\"runs\">");
     body.push_str(&notice.render());
-
-    if !live_rows.is_empty() {
-        body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES} text-green-700\">live</p>{}",
-            table(
-                &["RUN", "GAME", "MODEL", "*HARNESS", "ELAPSED", "#OUTPUT", ""],
-                live_rows
-            )
-        ));
-    }
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">runs <span class=\"{NOTE_CLASSES} font-normal\">{} on disk, {live} live</span></p>{}",
+        runs.len(),
+        table(&RUN_HEADERS, rows, Some(NO_RUNS_NOTE))
+    ));
     body.push_str("</div>");
 
-    body.push_str(&format!(
-        "<details class=\"mt-10\"><summary class=\"{SUMMARY_CLASSES} font-medium\">history</summary>\
-         <div data-refresh=\"history\"><p class=\"{NOTE_CLASSES} mt-2 mb-2\">{} runs</p>{}</div></details>",
-        history_rows.len(),
-        table(
-            &[
-                "RUN", "STATE", "GAME", "MODEL", "*HARNESS", "#TIME", "#LIMIT", "#AGE", "#PUSHES",
-                "POINTS"
-            ],
-            history_rows
-        )
-    ));
-
-    Ok(page("AvA", &body))
+    Ok(page("runs", &body))
 }
 
 /// The panel starting a run, offering what the registry and the games folder
@@ -424,14 +460,14 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
 
     Ok(format!(
         "<p class=\"{FIRST_TITLE_CLASSES}\">new run</p>\
-         <form method=\"post\" action=\"/start\" class=\"flex flex-wrap items-end gap-4\">\
+         <form method=\"post\" action=\"/start\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          {}{}{}{}\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">seconds</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"1\"></label>\
          <label class=\"w-20\"><span class=\"{LABEL_CLASSES}\">parallel</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" value=\"{parallel}\" min=\"1\"></label>\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
-         <input type=\"checkbox\" name=\"force\" class=\"accent-green-700\">\
+         <input type=\"checkbox\" name=\"force\" class=\"h-4 w-4 rounded accent-indigo-500\">\
          <span class=\"{NOTE_CLASSES}\">rebuild images</span></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">start</button>\
          </form>",
@@ -457,7 +493,7 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
 /// A labeled dropdown named `name` offering `options`, with `selected` marked.
 ///
 /// The dropdowns grow to fill the form row, which puts the right edge of the
-/// form on the column edge the nav and the tables end on.
+/// form on the edge the tables end on.
 fn select(name: &str, options: &[&str], selected: &str) -> String {
     let mut rendered = format!(
         "<label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{name}</span>\
@@ -471,7 +507,7 @@ fn select(name: &str, options: &[&str], selected: &str) -> String {
     rendered
 }
 
-/// One run: its state and score first, the pushes, the console, then the rest.
+/// One run: its state and figures first, the pushes, the console, then the rest.
 pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     let directory = run_directory(name)?;
 
@@ -489,48 +525,56 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     };
 
     let mut body = format!(
-        "<div data-refresh=\"run\"><div class=\"flex items-baseline gap-4\">\
-         <h1 class=\"font-medium text-lg\">{}</h1>{}{}</div>",
+        "<div data-refresh=\"run\"><div class=\"flex items-center gap-3\">\
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}{}</div>",
         escape(name),
         entry.state(),
         entry.stop_form()
     );
     body.push_str(&notice.render());
 
-    let took = match entry.wall.filter(|_| !entry.live) {
-        Some(wall) => format!("{wall}s of "),
-        None => String::new(),
-    };
     body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1\">{} \u{00b7} {} \u{00b7} {} \u{00b7} {took}{}s budget \u{00b7} started {} ago</p>",
+        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} \u{00b7} {} \u{00b7} {} \u{00b7} started {} ago</p>",
         escape(entry.game()),
         escape(entry.model()),
         entry.agent(),
-        entry.limit(),
         age(entry.started()),
     ));
 
-    if entry.live {
-        body.push_str(&format!("<p class=\"mt-3\">{}</p>", entry.elapsed_bar()));
-    }
-
-    if entry.score.is_some() {
-        let outcome = if entry.solved() {
-            format!(", solved at {}s", entry.seconds())
-        } else {
-            ", unsolved".to_string()
-        };
+    let time = if entry.live {
+        entry.elapsed_meter()
+    } else {
+        entry.time_cell()
+    };
+    let solved_at = if entry.solved() {
+        format!("{}s", entry.seconds())
+    } else {
+        "not solved".to_string()
+    };
+    let tiles = [
+        ("points", points_meter(entry.points())),
+        ("pushes", entry.attempts().to_string()),
+        ("solved at", solved_at),
+        ("time", time),
+        ("requests", entry.metric("requests").to_string()),
+        ("output tokens", entry.metric("output_tokens").to_string()),
+    ];
+    body.push_str("<div class=\"mt-6 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3\">");
+    for (label, value) in tiles {
         body.push_str(&format!(
-            "<p class=\"mt-3\">{} points{outcome}, {} pushes</p>",
-            points_bar(entry.points()),
-            entry.attempts()
+            "<div class=\"{TILE_CLASSES}\"><p class=\"{TILE_LABEL_CLASSES}\">{label}</p><div class=\"{TILE_VALUE_CLASSES}\">{value}</div></div>"
         ));
     }
+    body.push_str("</div>");
 
     let pushes = push_rows(&directory.join(docker::SCORE_LOG));
     if !pushes.is_empty() {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">pushes</p>"));
-        body.push_str(&table(&["#SECONDS", "STATE", "POINTS", "*REASON"], pushes));
+        body.push_str(&table(
+            &["#SECONDS", "STATE", "POINTS", "*REASON"],
+            pushes,
+            None,
+        ));
     }
 
     if let Some(metrics) = entry
@@ -566,7 +610,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     ));
 
     body.push_str(&format!(
-        "<details class=\"mt-10\"><summary class=\"{SUMMARY_CLASSES} {NOTE_CLASSES}\">parameters</summary>{}</details>",
+        "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">parameters</summary><div class=\"mt-3\">{}</div></details>",
         object_table(&entry.metadata)
     ));
     body.push_str("</div>");
@@ -633,7 +677,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
                 agent.clone(),
                 standing.runs.to_string(),
                 standing.solved.to_string(),
-                points_bar(standing.points),
+                points_meter(standing.points),
                 standing.seconds.to_string(),
             ]
         })
@@ -646,10 +690,11 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
                 "GAME", "MODEL", "*HARNESS", "#RUNS", "#SOLVED", "BEST", "#SECONDS",
             ],
             rows,
+            Some("nothing scored yet"),
         )
     );
 
-    Ok(page("AvA scoreboard", &body))
+    Ok(page("scoreboard", &body))
 }
 
 /// Every game: its task, its record and its standings.
@@ -666,16 +711,6 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             .collect();
         standing.sort_by_key(|run| std::cmp::Reverse(run.points()));
 
-        let title_classes = if index == 0 {
-            FIRST_TITLE_CLASSES
-        } else {
-            TITLE_CLASSES
-        };
-        body.push_str(&format!(
-            "<p class=\"{title_classes}\">{}</p>",
-            escape(&game)
-        ));
-
         let record = match standing.first() {
             Some(best) => format!(
                 "{} runs, {solved} solved, the record is {} by {} on {}",
@@ -687,7 +722,16 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             None if played.is_empty() => "not played yet".to_string(),
             None => format!("{} runs, none solving under the ceiling", played.len()),
         };
-        body.push_str(&format!("<p class=\"{NOTE_CLASSES}\">{record}</p>"));
+
+        let title_classes = if index == 0 {
+            FIRST_TITLE_CLASSES
+        } else {
+            TITLE_CLASSES
+        };
+        body.push_str(&format!(
+            "<p class=\"{title_classes}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{record}</span></p>",
+            escape(&game)
+        ));
 
         let task = std::fs::read_to_string(
             std::path::Path::new(GAMES_DIRECTORY)
@@ -695,10 +739,6 @@ pub(crate) fn games_page() -> std::io::Result<String> {
                 .join(TASK_FILE),
         )
         .unwrap_or_default();
-        body.push_str(&format!(
-            "<div class=\"mt-2\">{}</div>",
-            crate::markdown::render(&task)
-        ));
 
         let standings: Vec<Vec<String>> = standing
             .iter()
@@ -707,30 +747,34 @@ pub(crate) fn games_page() -> std::io::Result<String> {
                 vec![
                     escape(run.model()),
                     run.agent(),
-                    points_bar(run.points()),
+                    points_meter(run.points()),
                     run.seconds().to_string(),
                     run.link(),
                 ]
             })
             .collect();
-        if !standings.is_empty() {
-            body.push_str(&table(
+
+        body.push_str(&format!(
+            "<div class=\"{CARD_CLASSES} overflow-hidden\"><div class=\"px-4 pb-4\">{}</div>{}</div>",
+            crate::markdown::render(&task),
+            table(
                 &["MODEL", "*HARNESS", "POINTS", "#SECONDS", "RUN"],
                 standings,
-            ));
-        }
+                None,
+            )
+        ));
     }
 
     if let Ok(instructions) =
         std::fs::read_to_string(std::path::Path::new(GAMES_DIRECTORY).join(INSTRUCTIONS_FILE))
     {
         body.push_str(&format!(
-            "<details class=\"mt-10\"><summary class=\"{SUMMARY_CLASSES} {NOTE_CLASSES}\">the instructions shared by every game</summary>{}</details>",
+            "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">the instructions shared by every game</summary><div class=\"{CARD_CLASSES} mt-3 px-4 pb-4\">{}</div></details>",
             crate::markdown::render(&instructions)
         ));
     }
 
-    Ok(page("AvA games", &body))
+    Ok(page("games", &body))
 }
 
 /// The registry, the credentials and the docker images runs are built from.
@@ -749,9 +793,9 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         ("openapi", registry::GATEWAY_KEY, registry::GATEWAY_TOKEN),
     ] {
         let state = if std::env::var(variable).is_ok() {
-            "<span class=\"text-green-700\">\u{2713} set</span>"
+            pill(SOLVED_PILL, false, "set")
         } else {
-            "<span class=\"text-red-700\">\u{2715} missing</span>"
+            pill(FAILED_PILL, false, "missing")
         };
 
         // A subscription run carries its token under the same name, so the
@@ -766,7 +810,11 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             })
             .collect();
 
-        let mut row = vec![variable.to_string(), backend.to_string(), state.to_string()];
+        let mut row = vec![
+            format!("<span class=\"{MONO_CLASSES}\">{variable}</span>"),
+            backend.to_string(),
+            state,
+        ];
         row.push(fed.len().to_string());
         for metric in [
             "requests",
@@ -791,7 +839,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             .find(|run| !run.metric_text("ratelimits").is_empty())
         {
             limit_lines.push_str(&format!(
-                "<p class=\"{NOTE_CLASSES} mt-2 max-w-4xl\">{backend} limits, reported {} ago: <span class=\"text-neutral-900\">{}</span></p>",
+                "<p class=\"{NOTE_CLASSES} mt-3\">{backend} limits, reported {} ago: <span class=\"{MONO_CLASSES} text-neutral-200\">{}</span></p>",
                 age(run.started()),
                 escape(run.metric_text("ratelimits"))
             ));
@@ -804,7 +852,10 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             model_rows.push(vec![
                 escape(&model.name),
                 route.backend.name().to_string(),
-                escape(&route.id),
+                format!(
+                    "<span class=\"{MONO_CLASSES}\">{}</span>",
+                    escape(&route.id)
+                ),
                 route.context_window.to_string(),
                 route.max_output.to_string(),
             ]);
@@ -822,7 +873,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
                     .iter()
                     .map(|backend| backend.name())
                     .collect::<Vec<_>>()
-                    .join(" "),
+                    .join(", "),
             ]
         })
         .collect();
@@ -843,15 +894,17 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             "#CACHE WRITE",
         ],
         key_rows,
+        None,
     ));
     body.push_str(&limit_lines);
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">models</p>"));
     body.push_str(&table(
         &["MODEL", "BACKEND", "*ID", "#CONTEXT", "#MAX OUTPUT"],
         model_rows,
+        None,
     ));
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">harnesses</p>"));
-    body.push_str(&table(&["HARNESS", "BACKENDS"], harness_rows));
+    body.push_str(&table(&["HARNESS", "BACKENDS"], harness_rows, None));
 
     if let Ok(listing) = process::run_and_assume_success(
         "docker",
@@ -868,20 +921,20 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             .map(|line| line.split('\t').map(escape).collect())
             .collect();
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">images</p>"));
-        body.push_str(&table(&["IMAGE", "TAG", "SIZE", "CREATED"], rows));
+        body.push_str(&table(&["IMAGE", "TAG", "SIZE", "CREATED"], rows, None));
     }
 
-    Ok(page("AvA setup", &body))
+    Ok(page("setup", &body))
 }
 
 /// A page carrying one failure, for the errors of the reading views.
 pub(crate) fn error_page(message: &str) -> String {
     let body = format!(
-        "<p class=\"max-w-prose\">{}</p><p class=\"mt-4\"><a class=\"{LINK_CLASSES}\" href=\"/\">back to the runs</a></p>",
+        "<p class=\"max-w-prose rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p><p class=\"mt-4\"><a class=\"{LINK_CLASSES}\" href=\"/\">back to the runs</a></p>",
         escape(message)
     );
 
-    page("AvA error", &body)
+    page("error", &body)
 }
 
 /// The known game folders, sorted.
@@ -986,32 +1039,35 @@ fn push_rows(log: &std::path::Path) -> Vec<Vec<String>> {
             vec![
                 number(&push, "seconds").to_string(),
                 if solved {
-                    "<span class=\"text-green-700\">\u{2713} solved</span>".to_string()
+                    pill(SOLVED_PILL, false, "solved")
                 } else {
-                    "<span class=\"text-neutral-500\">\u{00b7} unsolved</span>".to_string()
+                    pill(UNSOLVED_PILL, false, "unsolved")
                 },
-                points_bar(number(&push, "points")),
+                points_meter(number(&push, "points")),
                 escape(text(&push, "reason")),
             ]
         })
         .collect()
 }
 
-/// A flat JSON object as a two column table.
+/// A flat JSON object as a two column table in a card.
 fn object_table(value: &serde_json::Value) -> String {
     let Some(object) = value.as_object() else {
         return String::new();
     };
 
-    let mut html = format!("<table class=\"{TABLE_CLASSES}\"><tbody>");
-    for (key, value) in object {
+    let mut html = format!(
+        "<div class=\"{CARD_CLASSES} overflow-hidden\"><table class=\"{TABLE_CLASSES}\"><tbody>"
+    );
+    for (index, (key, value)) in object.iter().enumerate() {
+        let border = if index == 0 { "border-t-0" } else { "" };
         html.push_str(&format!(
-            "<tr><td class=\"{PACKED_COLUMN_CLASSES} {CELL_CLASSES} text-neutral-500\">{}</td><td class=\"{SLACK_COLUMN_CLASSES} {CELL_CLASSES}\">{}</td></tr>",
+            "<tr class=\"{ROW_CLASSES}\"><td class=\"{PACKED_COLUMN_CLASSES} {CELL_CLASSES} {border} text-neutral-400\">{}</td><td class=\"{SLACK_COLUMN_CLASSES} {CELL_CLASSES} {border} {MONO_CLASSES} text-neutral-200\">{}</td></tr>",
             escape(key),
             escape(&plain(value))
         ));
     }
-    html.push_str("</tbody></table>");
+    html.push_str("</tbody></table></div>");
     html
 }
 
@@ -1100,32 +1156,51 @@ fn age(started: u64) -> String {
     }
 }
 
-/// A points value behind its bar on the shared 0 to 10000 scale, kept on
-/// one line even in a column that wraps.
-fn points_bar(points: u64) -> String {
+/// The harness with its thinking level, the way an agent is referred to.
+fn agent_label(harness: &str, thinking: &str) -> String {
+    if thinking.is_empty() {
+        return escape(harness);
+    }
+
     format!(
-        "<span class=\"whitespace-nowrap\">{} {points}</span>",
-        bar(points.min(POINT_CEILING), POINT_CEILING)
+        "<span class=\"whitespace-nowrap\">{} <span class=\"{MUTED_CLASSES}\">{}</span></span>",
+        escape(harness),
+        escape(thinking)
     )
 }
 
-/// `value` out of `ceiling` as a fixed width bar of block characters.
-fn bar(value: u64, ceiling: u64) -> String {
-    let filled = (value.min(ceiling) * BAR_CELLS + ceiling / 2)
-        .checked_div(ceiling)
-        .unwrap_or(0);
+/// A state pill, with a pulsing dot for a state still changing.
+fn pill(tint: &str, pulsing: bool, label: &str) -> String {
+    let dot = if pulsing {
+        "<span class=\"h-1.5 w-1.5 rounded-full bg-current animate-pulse\"></span>"
+    } else {
+        ""
+    };
+
+    format!("<span class=\"{PILL_CLASSES} {tint}\">{dot}{label}</span>")
+}
+
+/// A points value behind its meter on the shared 0 to 10000 scale.
+fn points_meter(points: u64) -> String {
+    meter(points, POINT_CEILING, POINTS_FILL, &points.to_string())
+}
+
+/// `value` out of `ceiling` as a meter with `label` next to it.
+fn meter(value: u64, ceiling: u64, fill: &str, label: &str) -> String {
+    let percent = (value.min(ceiling) * 100).checked_div(ceiling).unwrap_or(0);
 
     format!(
-        "<span class=\"text-green-700\">{}</span><span class=\"text-neutral-300\">{}</span>",
-        BAR_FULL.to_string().repeat(filled as usize),
-        BAR_EMPTY.to_string().repeat((BAR_CELLS - filled) as usize)
+        "<span class=\"inline-flex items-center gap-2 whitespace-nowrap\">\
+         <span class=\"{METER_TRACK_CLASSES}\"><span class=\"block h-full rounded-full {fill}\" style=\"width:{percent}%\"></span></span>\
+         <span class=\"{MONO_CLASSES} tabular-nums text-neutral-200\">{label}</span></span>"
     )
 }
 
-/// A table whose `#` marked headers hold right-aligned numbers and whose `*`
-/// marked header takes the slack, or nothing when there are no rows to head.
-fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
-    if rows.is_empty() {
+/// A table in a card whose `#` marked headers hold right-aligned numbers and
+/// whose `*` marked header takes the slack. Without rows it shows `empty`,
+/// or nothing when there is no note to show.
+fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> String {
+    if rows.is_empty() && empty.is_none() {
         return String::new();
     }
 
@@ -1145,7 +1220,9 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
         }
     };
 
-    let mut html = format!("<table class=\"{TABLE_CLASSES}\"><thead><tr>");
+    let mut html = format!(
+        "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"><thead><tr>"
+    );
     for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
         let align = if *numeric { "text-right" } else { "text-left" };
         html.push_str(&format!(
@@ -1156,26 +1233,34 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     }
     html.push_str("</tr></thead><tbody>");
 
+    if rows.is_empty() {
+        html.push_str(&format!(
+            "<tr><td colspan=\"{}\" class=\"{EMPTY_ROW_CLASSES}\">{}</td></tr>",
+            headers.len(),
+            empty.unwrap_or_default()
+        ));
+    }
+
     for row in rows {
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
         for (index, (cell, numeric)) in row.iter().zip(&numeric).enumerate() {
-            let align = if *numeric { " text-right" } else { "" };
+            let align = if *numeric { NUMERIC_CLASSES } else { "" };
             html.push_str(&format!(
-                "<td class=\"{} {CELL_CLASSES}{align}\">{cell}</td>",
+                "<td class=\"{} {CELL_CLASSES} {align}\">{cell}</td>",
                 column(index)
             ));
         }
         html.push_str("</tr>");
     }
 
-    html.push_str("</tbody></table>");
+    html.push_str("</tbody></table></div>");
     html
 }
 
-/// The layout around one rendered `body`.
-fn page(title: &str, body: &str) -> String {
+/// The layout around one rendered `body`, headed by `heading`.
+fn page(heading: &str, body: &str) -> String {
     LAYOUT_TEMPLATE
-        .replace(TITLE_PLACEHOLDER, &escape(title))
+        .replace(HEADING_PLACEHOLDER, &escape(heading))
         .replace(BODY_PLACEHOLDER, body)
 }
 

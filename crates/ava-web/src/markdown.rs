@@ -2,14 +2,15 @@
 //! paragraphs, lists, fenced code and inline code and emphasis.
 
 const HEADER_CLASSES: [&str; 3] = [
-    "text-lg font-semibold mt-6 mb-2",
-    "text-base font-semibold mt-5 mb-1",
-    "font-semibold mt-4 mb-1",
+    "text-lg font-semibold text-neutral-100 mt-6 mb-2",
+    "text-base font-semibold text-neutral-100 mt-5 mb-1",
+    "font-semibold text-neutral-100 mt-4 mb-1",
 ];
-const PARAGRAPH_CLASSES: &str = "my-2 max-w-prose leading-relaxed";
-const LIST_CLASSES: &str = "my-2 ml-5 max-w-prose leading-relaxed space-y-1";
-const FENCE_CLASSES: &str = "font-mono text-[13px] bg-neutral-50 -mx-3 p-3 my-3 overflow-x-auto";
-const CODE_CLASSES: &str = "font-mono text-[13px] bg-neutral-100 px-1";
+const PARAGRAPH_CLASSES: &str = "my-2 max-w-prose leading-relaxed text-neutral-300";
+const LIST_CLASSES: &str = "my-2 ml-5 max-w-prose leading-relaxed space-y-1 text-neutral-300";
+const FENCE_CLASSES: &str = "font-mono text-xs text-neutral-300 bg-neutral-950 border border-neutral-800 \
+     rounded-md p-3 my-3 overflow-x-auto";
+const CODE_CLASSES: &str = "font-mono text-xs text-neutral-200 bg-neutral-800 rounded px-1 py-0.5";
 
 const FENCE: &str = "```";
 
