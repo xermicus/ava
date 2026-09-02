@@ -85,7 +85,7 @@ const SANDBOX_TMPFS: &str = "/tmp:exec";
 const EXEC_OPTION: &str = ":exec,uid=1000,gid=1000";
 
 /// The workspace tmpfs size.
-const TMPFS_SIZE: &str = "size=2g";
+const TMPFS_SIZE: &str = "size=4g";
 
 /// Without this, crashing submissions leave a core dump into the host journal.
 const NO_CORE_DUMPS: &str = "core=0";
@@ -119,6 +119,14 @@ pub const DONE_MARKER: &str = "/home/agent/done";
 /// agent gets to act on the one last call they deliver.
 const LAST_CALL_MARKER: &str = "/home/agent/last-call";
 const LAST_CALL_SECONDS: u64 = 120;
+
+/// The ceiling on waiting out a last call.
+///
+/// A loop plugin looks for the marker only when a turn ends, and a turn can
+/// outlast the grace by minutes, so the wait follows the agent instead of
+/// expiring on a fixed count. This bounds how far past its limit a run may
+/// go when the agent keeps printing but never comes back.
+const LAST_CALL_LIMIT_SECONDS: u64 = 900;
 
 pub const METADATA_FILE: &str = "run.json";
 pub const VERSION_FILE: &str = "harness.version";
@@ -885,7 +893,9 @@ fn record(
 ///
 /// The first deadline is a last call: a marker the loop plugins turn into one
 /// final prompt to commit and push, with a grace period to act on it. The
-/// kill comes when the grace runs out.
+/// plugins deliver it when a turn ends, so the grace holds while the agent
+/// keeps printing and the kill comes once it falls quiet or reaches
+/// [`LAST_CALL_LIMIT_SECONDS`].
 ///
 /// Killing the docker client would leave the container running, so the
 /// container is what gets killed, and the client exits on its own once it
@@ -937,6 +947,8 @@ fn await_sandbox(
     let mut warned_silence = std::time::Duration::ZERO;
     let mut warned_looping = false;
     let mut last_called = false;
+    let last_call_ceiling = started
+        + std::time::Duration::from_secs(command.limit.saturating_add(LAST_CALL_LIMIT_SECONDS));
     let scorer = scorer_container(run);
     log::info!("{run}: the agent has {} seconds", command.limit);
     record_heartbeat(run, command, started, monitor);
@@ -962,6 +974,15 @@ fn await_sandbox(
                     .output();
                 deadline += std::time::Duration::from_secs(LAST_CALL_SECONDS);
                 last_called = true;
+                continue;
+            }
+
+            let grace = std::time::Duration::from_secs(LAST_CALL_SECONDS);
+            if monitor.silent_for() < grace && std::time::Instant::now() < last_call_ceiling {
+                log::info!(
+                    "{run}: the agent is still printing, holding the last call open for another {LAST_CALL_SECONDS} seconds"
+                );
+                deadline += grace;
                 continue;
             }
 

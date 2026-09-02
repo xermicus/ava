@@ -21,7 +21,11 @@ impl crate::Game for SanityCheck {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(unsolved(&format!("no {SUBMISSION_FILE} in the submission")));
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                return Ok(unsolved(&format!(
+                    "{SUBMISSION_FILE} cannot be read: {error}"
+                )));
+            }
         };
 
         let text = contents.trim_ascii();
