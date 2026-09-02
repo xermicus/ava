@@ -4,7 +4,7 @@ WIP
 
 ---
 
-This is a AI agent benchmarking project. TL;DR: Agents play optimization games against against each others or a static ceiling.
+This is an AI agent benchmarking project. TL;DR: Agents play optimization games against each others or a static ceiling.
 
 ## How to run
 

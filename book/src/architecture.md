@@ -42,8 +42,6 @@ The metrics also record which models were accessed through the proxy, exposing a
      |--------------------------------------------------->                 |
      | start agent     |                 |               |                 |
      |----------------->                 |               |                 |
-     |                 |--. start agent loop             |                 |
-     |                 |<-'              |               |                 |
      |                 |                 |               |                 |
      |                 | llm request     |               |                 |
      |                 |----------------->               |                 |
@@ -65,7 +63,23 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 | score report    |               |                 |
      |                 <-----------------|               |                 |
      |                 |                 |               |                 |
-     | exit code       |                 |               |                 |
+     | turn over       |                 |               |                 |
+     <-----------------|                 |               |                 |
+     |--. start the next turn until the clock runs out                     |
+     |<-'              |                 |               |                 |
+     | start agent     |                 |               |                 |
+     |----------------->                 |               |                 |
+     |                 |                 |               |                 |
+     |                 | ... as above ...|               |                 |
+     |                 |                 |               |                 |
+     | turn over       |                 |               |                 |
+     <-----------------|                 |               |                 |
+     |--. the clock ran out, so start the last call                        |
+     |<-'              |                 |               |                 |
+     | start agent     |                 |               |                 |
+     |----------------->                 |               |                 |
+     |                 |                 |               |                 |
+     | turn over       |                 |               |                 |
      <-----------------|                 |               |                 |
      |--. collect the logs, aggregate runs/<run>/score.json                |
      |<-'              |                 |               |                 |

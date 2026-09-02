@@ -25,6 +25,13 @@ git -C "$REPOSITORY" config http.receivepack true
 SEED=$(mktemp -d)
 cp -r /home/agent/task/. "$SEED"
 cp /home/agent/README.md "$SEED/README.md"
+
+{
+	echo "AGENTS.md"
+	echo "CLAUDE.md"
+	echo ".claude/"
+} > "$SEED/.gitignore"
+
 git -C "$SEED" init --quiet --initial-branch master
 git -C "$SEED" add --all
 git -C "$SEED" -c user.name=ci -c user.email=ci@ava commit --quiet --message task

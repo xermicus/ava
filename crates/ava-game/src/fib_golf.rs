@@ -17,10 +17,13 @@ const FIBONACCI: [u64; 47] = [
     267914296, 433494437, 701408733, 1134903170, 1836311903,
 ];
 
-/// The size the ELF of a solving submission is scored against: every halving
-/// of the size below the ceiling earns the same share of the points, so a
-/// smaller ELF scores higher across the whole range.
-const SCORE_CEILING: u64 = 1 << 15;
+/// The size a solving ELF is scored against, earning the share of it left
+/// unspent.
+const SCORE_CEILING: u64 = 1 << 14;
+
+/// The size a submission is rejected at. Between the ceiling and this it
+/// scores nothing and still reports whether the output was right.
+const SIZE_LIMIT: u64 = 1 << 15;
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -93,18 +96,23 @@ impl crate::Game for FibGolf {
             }
         }
 
-        let points = earned_points(bytes);
-        if points == 0 {
+        if bytes >= SIZE_LIMIT {
             return Ok(unsolved(&format!(
-                "{SUBMISSION_BINARY} works but earns nothing at {bytes} bytes, the ceiling is {SCORE_CEILING}"
+                "{SUBMISSION_BINARY} prints what it should but is {bytes} bytes, past the {SIZE_LIMIT} the task is scored within at all"
             )));
         }
+
+        let points = earned_points(bytes);
 
         Ok(crate::Score {
             game: GAME_NAME,
             solved: true,
             points,
-            reason: None,
+            reason: (points == 0).then(|| {
+                format!(
+                    "{SUBMISSION_BINARY} prints what it should at {bytes} bytes and earns nothing above the {SCORE_CEILING} byte ceiling"
+                )
+            }),
         })
     }
 }
@@ -136,17 +144,11 @@ fn difference(output: &[u8], expected: &[u8]) -> usize {
         .unwrap_or(output.len().min(expected.len()))
 }
 
-/// The points granted for a solving ELF of `bytes`, log scaled so that every
-/// halving of the size earns the same share of the points.
+/// The points for a solving ELF of `bytes`.
 fn earned_points(bytes: u64) -> u64 {
-    if bytes >= SCORE_CEILING {
-        return 0;
-    }
+    let saved = SCORE_CEILING.saturating_sub(bytes);
 
-    let total_halvings = (SCORE_CEILING as f64).log2();
-    let earned_halvings = (SCORE_CEILING as f64 / bytes as f64).log2();
-
-    (crate::MAXIMUM_POINTS as f64 * earned_halvings / total_halvings).round() as u64
+    (saved * crate::MAXIMUM_POINTS + SCORE_CEILING / 2) / SCORE_CEILING
 }
 
 /// The score of a submission which does not solve the task.

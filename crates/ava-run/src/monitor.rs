@@ -39,6 +39,21 @@ impl Monitor {
         }
     }
 
+    /// Start watching a new sandbox on the counters of the run.
+    ///
+    /// The bytes are the console of the whole run, so they carry over, while
+    /// the silence clock and the repeat detector are about the process that is
+    /// live and start over with it.
+    pub(crate) fn restart(&self) {
+        let mut inner = self.lock();
+        inner.last_output = std::time::Instant::now();
+        inner.line_hasher = Default::default();
+        inner.line_bytes = 0;
+        inner.last_line = None;
+        inner.repeats = 0;
+        inner.doom_looping = false;
+    }
+
     /// Count `chunk` and, on the line scanned stream, watch for repeats.
     pub(crate) fn observe(&self, chunk: &[u8], scan_lines: bool) {
         let mut inner = self.lock();

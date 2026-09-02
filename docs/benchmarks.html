@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-10c06042.js";
+            window.path_to_searchindex_js = "searchindex-a019e7f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -185,18 +185,50 @@
 <p><code>ava image</code> rebuilds every docker image ahead of runs; <code>-a &lt;agent&gt;</code>, <code>-p</code> (proxy) and <code>-s</code> (scorer) select single images.</p>
 <p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings and the setup, rendered from the run artifacts on disk.</p>
 <ul>
-<li><code>games/&lt;name&gt;</code> and <code>games/README.md</code> are mounted read only into the scorer container, which seeds them as the <code>master</code> commit of its repository before the hooks exist. The task description is <code>task.md</code>; the README holds the instructions shared by every game and a one line prompt points the harness at it. <code>AGENTS.md</code> and <code>CLAUDE.md</code> in the workspace are symlinks to it, the files every harness reads into context by itself when a session starts.</li>
-<li>Each harness loops itself over that prompt: claude through the ralph-wiggum plugin, pi through a staged extension, opencode through a staged server plugin, codex through a wrapper resuming its recorded session between turns. <code>ava</code> starts the sandbox once and only watches the clock and the done marker. The console goes to <code>runs/&lt;run&gt;/agent.log</code>; <code>ava</code> logs a status line every minute and warns when the agent stays silent for long or repeats one output line.</li>
-<li>The output tokens of a single turn are capped on every harness to the ceiling claude code uses for its own requests, so one turn cannot run out the whole clock.</li>
-<li>The agent starts in <code>/home/agent/workspace</code>, a tmpfs.</li>
-<li>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. <code>master</code> rejects every push.</li>
-<li>Every scored attempt is one line of <code>runs/&lt;run&gt;/score.log</code>. The best solving attempt is the submission of record.</li>
-<li>The run ends when the time is up, when the agent pushes a <code>release</code> tag, or when the harness exits. At the deadline the pi and opencode loops prompt once to commit and push. They deliver that prompt when a turn ends, so the grace holds while the agent keeps printing and the kill comes once it falls quiet or the run reaches 900 seconds past its limit.</li>
-<li><code>ava score --metrics proxy.access.log --attempts score.log</code> aggregates the logs into <code>runs/&lt;run&gt;/score.json</code>: the attempts with the score of the run, the seconds to the best solving attempt breaking point ties, and the proxy metrics. The report written at the end of a run also names its parameters: the model, the harness and its version, the game and the time budget.</li>
+<li>
+<p><code>games/&lt;name&gt;</code> and <code>games/README.md</code> are mounted read only into the scorer container, which seeds them as the <code>master</code> commit of its repository before the hooks exist. The task description is <code>task.md</code>; the README holds the instructions shared by every game and a one line prompt points the harness at it. <code>AGENTS.md</code> and <code>CLAUDE.md</code> in the workspace are symlinks to it, the files every harness reads into context by itself when a session starts.</p>
+</li>
+<li>
+<p><code>ava</code> loops the harness over that prompt. A turn is one start of the harness: it answers, it exits, and that exit is the boundary the next turn starts on with <code>Loop iteration N.</code> ahead of the same prompt. Every harness resumes its recorded session by its own option, <code>--continue</code> for claude, pi and opencode and <code>codex exec resume</code> for codex, so the conversation accumulates across turns instead of restarting. The loop is one thing rather than one per harness, and the turn count is something the run records rather than something only the harness knows. <code>ava</code> starts the sandbox and only watches the clock and the done marker, and starts it a second time for the last call. The console goes to <code>runs/&lt;run&gt;/agent.log</code>; <code>ava</code> logs a status line every minute and warns when the agent stays silent for long or repeats one output line.</p>
+</li>
+<li>
+<p>The output tokens of a single turn are capped to the ceiling claude code uses for its own requests, 32000, or 64000 at the highest thinking levels. Codex has no per turn output knob, so the cap goes unenforced there. It bounds what a turn spends and not how long it takes: a model streaming at 20 tokens a second reaches the cap after 1600 seconds, so a single turn can and does outlast a phase.</p>
+</li>
+<li>
+<p>The agent starts in <code>/home/agent/workspace</code>, inside a home of its own described under <a href="#the-agent-home">The agent home</a>.</p>
+</li>
+<li>
+<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. <code>master</code> rejects every push.</p>
+</li>
+<li>
+<p>Every scored attempt is one line of <code>runs/&lt;run&gt;/score.log</code>. The best solving attempt is the submission of record.</p>
+</li>
+<li>
+<p>The run ends when the time is up, when the agent pushes a <code>release</code> tag, or when the harness exits. Running out of time is not the end of the run, it is the last call described below.</p>
+</li>
+<li>
+<p><code>ava score --metrics proxy.access.log --attempts score.log</code> aggregates the logs into <code>runs/&lt;run&gt;/score.json</code>: the attempts with the score of the run, the seconds to the best solving attempt breaking point ties, and the proxy metrics. The report written at the end of a run also names its parameters: the model, the harness and its version, the game and the time budget.</p>
+</li>
 </ul>
+<h2 id="the-agent-home"><a class="header" href="#the-agent-home">The agent home</a></h2>
+<p><code>/home/agent</code> is a volume of the run’s own, a tmpfs the local volume driver mounts, with a second one of the same kind nested at <code>/home/agent/workspace</code>. Three things follow from that.</p>
+<p>The size is a limit the kernel enforces. <code>--storage-opt size</code> cannot do this job: under overlay2 it needs an xfs backing filesystem mounted with <code>pquota</code>, and under btrfs it refuses any size below the image and enforces nothing unless the host has qgroups enabled. A tmpfs needs nothing from the host.</p>
+<p>Nothing the agent writes reaches the host disk, and removing the volume at teardown is what deletes it.</p>
+<p>The home outlives the sandbox, which is what makes the last call possible.</p>
+<p>It is also the portable way to get all three. The volume and its tmpfs are created by the docker daemon, so on macOS this happens inside its linux virtual machine and behaves exactly as it does on linux. Nothing here needs a host ramdisk, a loop device, a filesystem quota or root on the host.</p>
+<p>The cost is that the home is memory. A run holds the copied home for its whole length, 622 MiB for the shared base image with each harness adding its own install on top, so <code>-j</code> multiplies it and the ceiling of 4 GiB of home plus 4 GiB of workspace plus 2 GiB of scratch is per run.</p>
+<p>The workspace is split off because the two sides fail differently. A tool call whose output never ends is what fills a filesystem here, and the harness writes that output into its own session store under the home. With one volume that took the workspace with it, and the last chance could not commit, so the run recorded nothing at all. With two, a full home costs the harness its session and leaves the submission untouched. The workspace is the side that has to keep working, since git writes to commit, so it is not sized to absorb anything beyond the task. For the same reason the git identity travels in the environment instead of <code>$HOME/.gitconfig</code>: writing that file is the first thing the bridge does, and on a full home it aborts before reaching git at all.</p>
+<p>A single file is capped at half the smaller volume through <code>RLIMIT_FSIZE</code>, so one runaway write dies of <code>SIGXFSZ</code> rather than filling a tmpfs. It bounds one file and not a total, which is the shape of what has actually gone wrong.</p>
+<p>Two details follow from overmounting a directory the image installs into. The volume is not populated from the image on its own, so <code>ava</code> copies the image home in before the agent starts, harness and toolchains included; the size has to cover that copy on top of what the harness writes. And a tmpfs is torn down once the last container using it exits, so a holder container keeps both mounted for the whole run.</p>
+<p>Everything else the agent could write to is closed off. The root filesystem is read only, which holds against the passwordless <code>sudo</code> in the image because the container has no <code>CAP_SYS_ADMIN</code> to remount it. <code>/tmp</code> is a small tmpfs of its own and no restart carries it over.</p>
+<h2 id="the-last-call"><a class="header" href="#the-last-call">The last call</a></h2>
+<p>When the time is up the agent is stopped and started again on the home it left behind, prompted once to commit and push. It is one more turn of the loop, resuming the same session, and the only things that set it apart are the prompt and that no turn follows it.</p>
+<p>The prompt states the bound as the final turn, not as seconds. Without a loop the start is one turn, so that is what holds, and the agent has nothing to time itself against. The 120 seconds are the timeout on that turn, not a budget the prompt asks it to spend, and the prompt also says that submitting is free, since the scorer keeps the best attempt of the run.</p>
+<p>The prompt is an argument to that start, which is what makes it arrive at all. A file a harness polls cannot: anything watching between turns is never read by a turn that outlasts the wait.</p>
+<p>Nothing has to be switched off for it either. The loop is <code>ava</code> deciding to start another turn, so the last call is <code>ava</code> deciding not to.</p>
 <h2 id="scoring-a-submission"><a class="header" href="#scoring-a-submission">Scoring a submission</a></h2>
 <ul>
-<li>Points are the quantity the game optimizes, higher is better. <code>fib-golf</code> scores the halvings of the ELF byte size below a ceiling.</li>
+<li>Points are the quantity the game optimizes, higher is better. <code>fib-golf</code> pays the share of its 16 KiB ceiling that the submitted ELF did not spend, so every byte saved is worth the same. A correct binary at or above the ceiling earns nothing and still counts as an attempt; only one past 32 KiB is rejected outright.</li>
 <li>Every game scores within 0 and 10000 points, which keeps runs of different games comparable.</li>
 <li>Attempts are recorded with the pure game grade and the arrival second, and the report only aggregates these facts. The final score weighing them against the run metrics, such as the time to the best attempt or the tokens spent, is derived at ranking time, so its knobs can change without re-running anything.</li>
 <li>The scorer executes the submission under a timeout and an output cap.</li>

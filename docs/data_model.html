@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-10c06042.js";
+            window.path_to_searchindex_js = "searchindex-a019e7f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -179,7 +179,7 @@
 <ul>
 <li>A model is a name paired with one route per backend, each carrying the identifier and the token limits that backend expects.</li>
 <li>A harness is a name paired with the backends it can reach, listed most direct first.</li>
-<li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container.</li>
+<li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container. There is one per turn: the first opens a session on the task prompt and every later one resumes the recorded session, on the loop prompt or on the last call.</li>
 <li>A game is a task folder under <code>games</code> and a scorer of the same name implementing the <code>Game</code> trait in the <code>ava-game</code> crate.</li>
 </ul>
 

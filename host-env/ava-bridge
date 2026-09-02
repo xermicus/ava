@@ -9,17 +9,24 @@ socat TCP-LISTEN:8080,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/ava/proxy.
 # The workspace is a clone of the run's remote, worked on the task branch.
 # Without the socket volume this is not a run and there is nothing to set up.
 if [ -S /run/ava/proxy.sock ]; then
-	git config --global user.name agent
-	git config --global user.email agent@ava
-	git config --global http.postBuffer 67108864
+	# In the environment rather than in a config file, so a full home cannot
+	# stop the commit the last chance has to make.
+	export GIT_CONFIG_COUNT=3
+	export GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=agent
+	export GIT_CONFIG_KEY_1=user.email GIT_CONFIG_VALUE_1=agent@ava
+	export GIT_CONFIG_KEY_2=http.postBuffer GIT_CONFIG_VALUE_2=67108864
 
-	for _ in $(seq 100); do
-		if git clone --quiet http://git:8080/task.git /home/agent/workspace 2>/dev/null; then
-			break
-		fi
-		sleep 0.2
-	done
-	git -C /home/agent/workspace checkout --quiet -b task
+	# The last call restarts the agent on the home the run left behind, where
+	# the workspace is already a clone, so cloning again would only fail.
+	if [ ! -d /home/agent/workspace/.git ]; then
+		for _ in $(seq 100); do
+			if git clone --quiet http://git:8080/task.git /home/agent/workspace 2>/dev/null; then
+				break
+			fi
+			sleep 0.2
+		done
+		git -C /home/agent/workspace checkout --quiet -b task
+	fi
 fi
 
 # Common agent instruction paths are just symlinked to the puzzle instructions.

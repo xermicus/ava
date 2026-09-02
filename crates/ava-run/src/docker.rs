@@ -78,14 +78,52 @@ const AGENT_IMAGE_PREFIX: &str = "ava/agent-";
 const AGENT_CONTEXT: &str = "agents";
 const SANDBOX_WORKSPACE: &str = "/home/agent/workspace";
 const SANDBOX_TMPFS: &str = "/tmp:exec";
+const HOME_VOLUME_PREFIX: &str = "ava-home-";
+const WORKSPACE_VOLUME_PREFIX: &str = "ava-work-";
+const HOLDER_CONTAINER_PREFIX: &str = "ava-holder-";
 
-/// A tmpfs belongs to root until told otherwise, which leaves the agent unable
-/// to write in the very directory it is pointed at. The image builds the account
-/// with this id.
-const EXEC_OPTION: &str = ":exec,uid=1000,gid=1000";
+/// The agent home, overmounted with the memory backed home of the run.
+const AGENT_HOME: &str = "/home/agent";
 
-/// The workspace tmpfs size.
-const TMPFS_SIZE: &str = "size=4g";
+/// Where the home volume is mounted while it is held open and seeded.
+const HOME_STAGE: &str = "/seed";
+
+/// Where the workspace volume is mounted for the same, nested in the home the
+/// way it is nested in the sandbox.
+const WORKSPACE_STAGE: &str = "/seed/workspace";
+
+/// The size of the agent home.
+///
+/// A tmpfs enforces this in the kernel, which the container filesystem cannot
+/// do without a host quota. It has to cover the image home copied into it on
+/// top of everything the harness writes, which is where a runaway tool output
+/// lands. Filling it costs the harness its session and nothing else, since the
+/// workspace is a volume of its own.
+const HOME_SIZE: &str = "size=4g";
+
+/// The size of the workspace.
+///
+/// Its own tmpfs, so the harness cannot spend the room the submission needs
+/// and the agent cannot spend the room the harness needs. This is the side a
+/// full filesystem would cost the run its submission, since git has to write
+/// to commit, so it is not sized to absorb anything beyond the task.
+const WORKSPACE_SIZE: &str = "size=4g";
+
+/// The bytes any one file in the sandbox may reach.
+///
+/// A runaway write dies of `SIGXFSZ` at this size instead of taking a whole
+/// tmpfs with it. The limit is per file rather than a total, so it is half of
+/// the smaller of the two volumes and stops one file short of filling it.
+const MAX_FILE_BYTES: &str = "fsize=2147483648";
+
+/// The size of the scratch space, which no restart carries over.
+const SCRATCH_SIZE: &str = "size=2g";
+
+/// The owner of everything under the agent home.
+const SANDBOX_OWNER: &str = "1000:1000";
+
+/// Holds the home volume mounted for the whole run and does nothing else.
+const HOLD_OPEN: &str = "sleep infinity";
 
 /// Without this, crashing submissions leave a core dump into the host journal.
 const NO_CORE_DUMPS: &str = "core=0";
@@ -115,18 +153,27 @@ const SILENCE_WARNING: std::time::Duration = std::time::Duration::from_secs(120)
 /// The marker the receive hook leaves once the agent pushes a release tag.
 pub const DONE_MARKER: &str = "/home/agent/done";
 
-/// The marker telling the loop plugins the time is up, and the seconds the
-/// agent gets to act on the one last call they deliver.
-const LAST_CALL_MARKER: &str = "/home/agent/last-call";
+/// The seconds the agent gets to answer the last call.
 const LAST_CALL_SECONDS: u64 = 120;
 
-/// The ceiling on waiting out a last call.
-///
-/// A loop plugin looks for the marker only when a turn ends, and a turn can
-/// outlast the grace by minutes, so the wait follows the agent instead of
-/// expiring on a fixed count. This bounds how far past its limit a run may
-/// go when the agent keeps printing but never comes back.
-const LAST_CALL_LIMIT_SECONDS: u64 = 900;
+/// The seconds a turn ending faster than this waits before the next one, so a
+/// harness that fails at startup cannot spin through the whole clock.
+const TURN_RETRY_SECONDS: u64 = 5;
+
+/// The branch a submission is pushed to.
+const TASK_BRANCH: &str = "task";
+
+/// The entrypoint every harness image starts through, which forwards the git
+/// host onto the proxy socket.
+const BRIDGE: &str = "ava-bridge";
+
+/// The message on the commit ava makes on the agent's behalf.
+const LAST_CHANCE_MESSAGE: &str = "last chance";
+
+/// How long the last chance keeps trying to reach the git host, which the
+/// bridge forwards from a socat it has only just started.
+const PUSH_ATTEMPTS: u32 = 50;
+const PUSH_INTERVAL_SECONDS: &str = "0.2";
 
 pub const METADATA_FILE: &str = "run.json";
 pub const VERSION_FILE: &str = "harness.version";
@@ -188,6 +235,234 @@ pub fn sandbox_container(run: &str) -> String {
 /// The volume carrying the socket between one sandbox and its proxy.
 fn socket_volume(run: &str) -> String {
     format!("{SOCKET_VOLUME_PREFIX}{run}")
+}
+
+/// The memory backed home of one run, outliving the sandbox that writes it.
+fn home_volume(run: &str) -> String {
+    format!("{HOME_VOLUME_PREFIX}{run}")
+}
+
+/// The volume carrying the workspace of one run, nested in its home.
+fn workspace_volume(run: &str) -> String {
+    format!("{WORKSPACE_VOLUME_PREFIX}{run}")
+}
+
+/// The volume arguments handing one run its home and its workspace.
+///
+/// Docker mounts by the depth of the destination, so the workspace lands on
+/// the mount point inside the home whichever order these are passed in.
+fn home_mounts(run: &str) -> [String; 4] {
+    [
+        String::from("--volume"),
+        format!("{}:{AGENT_HOME}", home_volume(run)),
+        String::from("--volume"),
+        format!("{}:{SANDBOX_WORKSPACE}", workspace_volume(run)),
+    ]
+}
+
+/// The container keeping the home of one run mounted between its two starts.
+fn holder_container(run: &str) -> String {
+    format!("{HOLDER_CONTAINER_PREFIX}{run}")
+}
+
+/// The prompt one turn of the loop is started on.
+///
+/// Every harness gets this same text, because the loop is `ava` starting the
+/// harness again rather than anything a harness does to itself.
+fn loop_prompt(turn: u32) -> String {
+    format!("Loop iteration {turn}.\n\n{TASK_PROMPT}")
+}
+
+/// The prompt the agent is restarted on once its time is up.
+///
+/// The bound is stated as the turn rather than the seconds it is given. This
+/// start carries no loop, so it really is one turn, while a wall clock is
+/// something the agent would have to guess its own latency against and nothing
+/// meters what it spends.
+fn last_call_prompt() -> String {
+    String::from(
+        "Time is up. This is your final turn. Submit right now: commit and push what you have. \
+         Submitting is free: if the submission is invalid or scores less than your best score, \
+         your best score is still what counts.",
+    )
+}
+
+/// Copy the image home into the home volume and hand it to the sandbox user.
+fn seed_home_command() -> String {
+    format!(
+        "tar -C {AGENT_HOME} -cf - . | tar -C {HOME_STAGE} -xf - && chown -R {SANDBOX_OWNER} {HOME_STAGE}"
+    )
+}
+
+/// Create the agent home of one run, keep it mounted and seed it.
+///
+/// The holder starts first and stays for the whole run: a tmpfs is torn down
+/// once the last container using it exits, which would drop the session
+/// between the two starts. Seeding comes after, because overmounting the home
+/// hides what the image installed there and the volume is not populated from
+/// the image on its own.
+fn prepare_agent_home(run: &str, image: &str) -> std::io::Result<()> {
+    let holder = holder_container(run);
+    let home = format!("{}:{HOME_STAGE}", home_volume(run));
+    let workspace = format!("{}:{WORKSPACE_STAGE}", workspace_volume(run));
+
+    for (volume, size) in [
+        (home_volume(run), HOME_SIZE),
+        (workspace_volume(run), WORKSPACE_SIZE),
+    ] {
+        log::info!("creating {volume} with {size}");
+        process::run_and_assume_success(
+            "docker",
+            &[
+                "volume",
+                "create",
+                "--driver",
+                "local",
+                "--opt",
+                "type=tmpfs",
+                "--opt",
+                "device=tmpfs",
+                "--opt",
+                &format!("o={size}"),
+                &volume,
+            ],
+        )?;
+    }
+
+    process::run_and_assume_success(
+        "docker",
+        &[
+            "run",
+            "--detach",
+            "--name",
+            &holder,
+            "--network",
+            "none",
+            "--read-only",
+            "--volume",
+            &home,
+            "--volume",
+            &workspace,
+            "--entrypoint",
+            BASH,
+            image,
+            "-c",
+            HOLD_OPEN,
+        ],
+    )?;
+
+    log::info!("seeding the home of {run} from {image}");
+    process::run_and_assume_success(
+        "docker",
+        &[
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            ROOT_USER,
+            "--volume",
+            &home,
+            "--volume",
+            &workspace,
+            "--entrypoint",
+            BASH,
+            image,
+            "-c",
+            &seed_home_command(),
+        ],
+    )?;
+
+    Ok(())
+}
+
+/// Commit and push the workspace on the agent's behalf.
+///
+/// One string, because it runs as the argument of a shell in the harness
+/// image. A commit that finds nothing to add fails, which is no reason to skip
+/// the push, since there may be commits the agent never pushed.
+///
+/// The push is forced, because a task branch the agent left ahead of its own
+/// working tree would reject a plain one and the submission would be lost for
+/// nothing: attempts are recorded as they arrive, the score comes from that
+/// log rather than from the branch, and the repository goes with the scorer at
+/// teardown.
+fn last_chance_command() -> String {
+    format!(
+        "echo \"branch=$(git branch --show-current) head=$(git rev-parse --short HEAD)\"; \
+         git add --all; \
+         git commit --quiet --message '{LAST_CHANCE_MESSAGE}' || echo 'nothing new to commit'; \
+         for _ in $(seq {PUSH_ATTEMPTS}); do \
+             git push --force --quiet origin HEAD:refs/heads/{TASK_BRANCH} && exit 0; \
+             sleep {PUSH_INTERVAL_SECONDS}; \
+         done; \
+         echo 'the git host never answered'; \
+         exit 0"
+    )
+}
+
+/// Submit whatever the agent left behind, once it has had its last call.
+///
+/// An agent can spend its last call reasoning about an optimisation and never
+/// commit the working one it already had. The best solving attempt is the
+/// submission of record, so a push worse than one already scored changes
+/// nothing, and a broken one is only an unsolved attempt. The single thing
+/// this can do is recover work that would otherwise go with the home.
+///
+/// The sandbox is gone by now, so this runs in a container of its own on the
+/// same home, entered through the bridge so the git host resolves and the
+/// proxy socket carries the push. The sidecars are still up, since `play_run`
+/// removes them only once the run is over.
+fn last_chance(run: &str, image: &str) {
+    log::info!("{run}: submitting what the agent left, on its behalf");
+
+    let output = std::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--tmpfs",
+            &format!("{SANDBOX_TMPFS},{SCRATCH_SIZE}"),
+            "--volume",
+            &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(run)),
+            "--add-host",
+            &format!("{SCORE_HOST}:{SANDBOX_LOOPBACK}"),
+            "--workdir",
+            SANDBOX_WORKSPACE,
+        ])
+        .args(home_mounts(run))
+        .args([
+            "--entrypoint",
+            BRIDGE,
+            image,
+            BASH,
+            "-c",
+            &last_chance_command(),
+        ])
+        .output();
+
+    match output {
+        Ok(output) => {
+            // The receive hook answers in the push output, which git relays on
+            // the error stream, so both are worth keeping.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            for line in stdout.lines().chain(stderr.lines()) {
+                log::info!("{run}: last chance: {line}");
+            }
+        }
+        Err(error) => log::warn!("{run}: the last chance did not run: {error}"),
+    }
+}
+
+/// Drop a container, ignoring one that is already gone.
+fn remove_container(container: &str) {
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "--force", container])
+        .output();
 }
 
 /// Create the egress network when it does not exist yet, once before any run
@@ -475,7 +750,10 @@ fn remove_sidecars(run: &str) {
     for arguments in [
         vec!["rm", "--force", &scorer_container(run)],
         vec!["rm", "--force", &proxy_container(run)],
+        vec!["rm", "--force", &holder_container(run)],
         vec!["volume", "rm", "--force", &socket_volume(run)],
+        vec!["volume", "rm", "--force", &home_volume(run)],
+        vec!["volume", "rm", "--force", &workspace_volume(run)],
     ] {
         let _ = std::process::Command::new("docker")
             .args(arguments)
@@ -595,6 +873,7 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
         &command.model,
         TASK_PROMPT,
         command.thinking.as_deref(),
+        crate::registry::Start::Task,
     )?;
 
     let force = command.force_build_images;
@@ -670,6 +949,7 @@ fn play_run(
     let status = record_metadata(run, command, identity, TASK_PROMPT, &invocation)
         .and_then(|()| start_proxy(run))
         .and_then(|()| start_score_server(run, &command.game))
+        .and_then(|()| prepare_agent_home(run, &image))
         .and_then(|()| run_sandbox(command, &image, run, &staging, invocation));
 
     let collected = collect_logs(run, &proxy_container(run), ACCESS_LOG, ERROR_LOG);
@@ -753,11 +1033,21 @@ fn score_run(run: &str, command: &Agent, harness_version: &str) -> std::io::Resu
 /// pinned to loopback in the container host file, where the bridge started by
 /// the image entrypoint forwards to the proxy socket.
 ///
-/// Nothing survives the run: submissions leave through the scoring server,
-/// and both the home and the workspace come from memory or from the image, so
-/// no harness can observe another one and no run inherits leftovers.
-/// Credentials are set on the child rather than passed as arguments, which
-/// keeps them out of the host process list.
+/// Nothing survives the run: submissions leave through the scoring server and
+/// the home is a volume of the run's own, removed with it, so no harness can
+/// observe another one and no run inherits leftovers. Credentials are set on
+/// the child rather than passed as arguments, which keeps them out of the host
+/// process list.
+///
+/// The run is a loop of turns. `ava` prompts the harness, the harness answers
+/// one turn and exits, and that exit is the boundary the next turn starts on,
+/// continuing the session the turn before it recorded. Every harness takes
+/// this same path, so the loop is one thing rather than one per harness, and
+/// the turn count is something the run records instead of something only the
+/// harness knows.
+///
+/// The clock bounds the whole loop, not a turn: each start is given whatever
+/// is left of the run. Running out of it is the last call.
 fn run_sandbox(
     command: &Agent,
     image: &str,
@@ -765,28 +1055,148 @@ fn run_sandbox(
     staging: &std::path::Path,
     invocation: crate::registry::Invocation,
 ) -> std::io::Result<i32> {
-    let agent = command.name.as_str();
     let container = sandbox_container(run);
+    let registry = crate::registry::load()?;
+    let mut phase = Phase {
+        limit: command.limit,
+        started: std::time::Instant::now(),
+        run_limit: command.limit,
+        last_call: false,
+        turn: 1,
+        monitor: std::sync::Arc::new(crate::monitor::Monitor::new()),
+    };
+
+    let mut turn = invocation;
+
+    loop {
+        let entered = std::time::Instant::now();
+        let ending = start_sandbox(command, image, run, staging, &turn, &phase, &container)?;
+
+        let code = match ending {
+            Ending::Done(code) => return Ok(code),
+            Ending::OutOfTime(_) => {
+                return last_call(command, image, run, staging, &container, &phase);
+            }
+            Ending::TurnOver(code) => code,
+        };
+
+        let Some(left) = phase.remaining() else {
+            log::info!("{run}: the clock ran out as the turn ended, going to the last call");
+            return last_call(command, image, run, staging, &container, &phase);
+        };
+
+        // A harness failing at startup would otherwise spin through the clock.
+        let spent = entered.elapsed().as_secs();
+        if spent < TURN_RETRY_SECONDS {
+            log::warn!(
+                "{run}: turn {} ended after {spent} seconds with {code}, waiting to start the next",
+                phase.turn
+            );
+            std::thread::sleep(std::time::Duration::from_secs(TURN_RETRY_SECONDS));
+        }
+
+        phase.turn += 1;
+        phase.limit = left;
+        turn = registry.invocation(
+            &command.name,
+            &command.model,
+            &loop_prompt(phase.turn),
+            command.thinking.as_deref(),
+            crate::registry::Start::Resume,
+        )?;
+    }
+}
+
+/// Start the agent one final turn, prompted to submit instead of to carry on.
+///
+/// The home is a volume, so the harness session and the workspace are both
+/// still there and this turn continues the conversation like any other. The
+/// only thing that sets it apart is the prompt and that no turn follows it.
+fn last_call(
+    command: &Agent,
+    image: &str,
+    run: &str,
+    staging: &std::path::Path,
+    container: &str,
+    task: &Phase,
+) -> std::io::Result<i32> {
+    let prompt = last_call_prompt();
+    let invocation = crate::registry::load()?.invocation(
+        &command.name,
+        &command.model,
+        &prompt,
+        command.thinking.as_deref(),
+        crate::registry::Start::Resume,
+    )?;
+
+    log::info!("{run}: starting the agent for the last call");
+
+    let phase = Phase {
+        limit: LAST_CALL_SECONDS,
+        started: task.started,
+        run_limit: task.run_limit,
+        last_call: true,
+        turn: task.turn + 1,
+        monitor: task.monitor.clone(),
+    };
+
+    let ending = start_sandbox(command, image, run, staging, &invocation, &phase, container);
+
+    // Whatever the agent left is worth submitting even when the last call
+    // itself never got going.
+    last_chance(run, image);
+
+    match ending? {
+        Ending::TurnOver(code) | Ending::Done(code) | Ending::OutOfTime(code) => Ok(code),
+    }
+}
+
+/// Why the sandbox stopped.
+enum Ending {
+    /// The harness exited, which ends a turn rather than the run. The next
+    /// turn continues the session this one recorded.
+    TurnOver(i32),
+    /// The agent reported itself done or the run was interrupted, so no turn
+    /// follows and there is nothing left to ask for.
+    Done(i32),
+    /// The clock ran out, so the agent still gets its last call.
+    OutOfTime(i32),
+}
+
+/// Start one sandbox on `image`, wait for it and report why it stopped.
+fn start_sandbox(
+    command: &Agent,
+    image: &str,
+    run: &str,
+    staging: &std::path::Path,
+    invocation: &crate::registry::Invocation,
+    phase: &Phase,
+    container: &str,
+) -> std::io::Result<Ending> {
+    let agent = command.name.as_str();
 
     let mut sandbox = std::process::Command::new("docker");
     sandbox.args([
         "run",
         "--rm",
         "--name",
-        &container,
+        container,
         "--network",
         "none",
         "--ulimit",
         NO_CORE_DUMPS,
+        "--ulimit",
+        MAX_FILE_BYTES,
+        "--read-only",
         "--tmpfs",
-        &format!("{SANDBOX_TMPFS},{TMPFS_SIZE}"),
-        "--tmpfs",
-        &format!("{SANDBOX_WORKSPACE}{EXEC_OPTION},{TMPFS_SIZE}"),
+        &format!("{SANDBOX_TMPFS},{SCRATCH_SIZE}"),
         "--workdir",
         SANDBOX_WORKSPACE,
         "--volume",
         &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(run)),
     ]);
+
+    sandbox.args(home_mounts(run));
 
     sandbox.args(["--hostname", agent]);
     sandbox.args(["--add-host", &format!("{agent}:{SANDBOX_LOOPBACK}")]);
@@ -806,6 +1216,11 @@ fn run_sandbox(
         sandbox.env(name, value);
     }
 
+    // Every turn starts a container of the same name, and `--rm` frees that
+    // name a moment after the client exits rather than before, so the name is
+    // cleared here instead of raced for.
+    remove_container(container);
+
     log::info!("starting the sandbox {container} from {image}");
     log::debug!("{agent} arguments: {:?}", invocation.arguments);
 
@@ -818,24 +1233,30 @@ fn run_sandbox(
 
     let mut child = sandbox.arg(image).args(&invocation.arguments).spawn()?;
 
-    let monitor = std::sync::Arc::new(crate::monitor::Monitor::new());
-    let readers = record_output(&mut child, run, &monitor)?;
-    let code = await_sandbox(child, &container, command, run, &monitor)?;
+    phase.monitor.restart();
+    let readers = record_output(&mut child, run, &phase.monitor)?;
+    let ending = await_sandbox(child, container, run, phase)?;
 
     for reader in readers {
         reader.join().expect("the reader threads do not panic")?;
     }
 
-    Ok(code)
+    Ok(ending)
 }
 
 /// The file keeping what the agent printed.
+///
+/// Appended rather than truncated, so the last call adds to the console of the
+/// run instead of replacing what the task start wrote.
 fn agent_log(run: &str) -> std::io::Result<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
     let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
     std::fs::create_dir_all(&directory)?;
 
     Ok(std::sync::Arc::new(std::sync::Mutex::new(
-        std::fs::File::create(directory.join(AGENT_LOG))?,
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(directory.join(AGENT_LOG))?,
     )))
 }
 
@@ -885,22 +1306,35 @@ fn record(
     })
 }
 
-/// Wait for the sandbox, killing the container once the agent reports itself
-/// done, its time is up, or the user interrupts the run.
+/// What one start of the sandbox is bounded by, and where it sits in the run.
 ///
-/// A status line is logged every minute, with warnings for an agent gone
-/// silent or repeating itself.
-///
-/// The first deadline is a last call: a marker the loop plugins turn into one
-/// final prompt to commit and push, with a grace period to act on it. The
-/// plugins deliver it when a turn ends, so the grace holds while the agent
-/// keeps printing and the kill comes once it falls quiet or reaches
-/// [`LAST_CALL_LIMIT_SECONDS`].
-///
-/// Killing the docker client would leave the container running, so the
-/// container is what gets killed, and the client exits on its own once it
-/// does. An interrupt outranks a dead client, since a Ctrl+C reaches the
-/// client too and killing it never killed the container.
+/// The clock the interface shows counts from the start of the run, not from the
+/// start of this phase, or a restart would send it back to zero.
+struct Phase {
+    /// The seconds this start is given.
+    limit: u64,
+    /// When the run began.
+    started: std::time::Instant,
+    /// The seconds the run as a whole was given.
+    run_limit: u64,
+    /// Whether this start is the last call.
+    last_call: bool,
+    /// Which turn of the run this start is, counted from one.
+    turn: u32,
+    /// What the agent printed over the run, shared with the reader threads and
+    /// carried across a restart so the console it counts is the whole run.
+    monitor: std::sync::Arc<crate::monitor::Monitor>,
+}
+
+impl Phase {
+    /// The seconds left of the run, or nothing once they are spent.
+    fn remaining(&self) -> Option<u64> {
+        self.run_limit
+            .checked_sub(self.started.elapsed().as_secs())
+            .filter(|left| *left > 0)
+    }
+}
+
 /// What the run loop knows about a live run, for the web interface.
 #[derive(serde::Serialize)]
 struct Heartbeat {
@@ -908,20 +1342,21 @@ struct Heartbeat {
     limit_seconds: u64,
     output_bytes: u64,
     silent_seconds: u64,
+    /// Which turn of the run is live, which only the loop knows.
+    turn: u32,
+    /// Whether the run is past its limit and answering its last call.
+    last_call: bool,
 }
 
 /// Write the state of the run loop under the run, best effort.
-fn record_heartbeat(
-    run: &str,
-    command: &Agent,
-    started: std::time::Instant,
-    monitor: &crate::monitor::Monitor,
-) {
+fn record_heartbeat(run: &str, phase: &Phase) {
     let heartbeat = Heartbeat {
-        elapsed_seconds: started.elapsed().as_secs(),
-        limit_seconds: command.limit,
-        output_bytes: monitor.output_bytes(),
-        silent_seconds: monitor.silent_for().as_secs(),
+        elapsed_seconds: phase.started.elapsed().as_secs(),
+        limit_seconds: phase.run_limit,
+        output_bytes: phase.monitor.output_bytes(),
+        silent_seconds: phase.monitor.silent_for().as_secs(),
+        turn: phase.turn,
+        last_call: phase.last_call,
     };
 
     if let Ok(contents) = serde_json::to_string(&heartbeat) {
@@ -934,24 +1369,40 @@ fn record_heartbeat(
     }
 }
 
+/// Wait for the sandbox, killing the container once the agent reports itself
+/// done, its time is up, or the user interrupts the run.
+///
+/// A status line is logged every minute, with warnings for an agent gone
+/// silent or repeating itself.
+///
+/// Running out of time ends the phase rather than the run: the task phase
+/// reports [`Ending::OutOfTime`] and the agent is started again for its last
+/// call.
+///
+/// Killing the docker client would leave the container running, so the
+/// container is what gets killed, and the client exits on its own once it
+/// does. An interrupt outranks a dead client, since a Ctrl+C reaches the
+/// client too and killing it never killed the container.
 fn await_sandbox(
     mut client: std::process::Child,
     container: &str,
-    command: &Agent,
     run: &str,
-    monitor: &crate::monitor::Monitor,
-) -> std::io::Result<i32> {
-    let started = std::time::Instant::now();
-    let mut deadline = started + std::time::Duration::from_secs(command.limit);
-    let mut next_status = started + STATUS_INTERVAL;
+    phase: &Phase,
+) -> std::io::Result<Ending> {
+    let monitor = phase.monitor.as_ref();
+    let entered = std::time::Instant::now();
+    let deadline = entered + std::time::Duration::from_secs(phase.limit);
+    let mut next_status = entered + STATUS_INTERVAL;
     let mut warned_silence = std::time::Duration::ZERO;
     let mut warned_looping = false;
-    let mut last_called = false;
-    let last_call_ceiling = started
-        + std::time::Duration::from_secs(command.limit.saturating_add(LAST_CALL_LIMIT_SECONDS));
+    let mut out_of_time = false;
     let scorer = scorer_container(run);
-    log::info!("{run}: the agent has {} seconds", command.limit);
-    record_heartbeat(run, command, started, monitor);
+    log::info!(
+        "{run}: turn {} of the agent has {} seconds",
+        phase.turn,
+        phase.limit
+    );
+    record_heartbeat(run, phase);
 
     loop {
         let exited = client.try_wait()?;
@@ -959,34 +1410,19 @@ fn await_sandbox(
         if crate::interrupt::interrupted() {
             log::warn!("the run was interrupted, killing {container}");
         } else if let Some(status) = exited {
-            log::info!("{run}: the agent exited with {status}");
-            return Ok(status.code().unwrap_or(1));
+            log::info!(
+                "{run}: turn {} of the agent exited with {status}",
+                phase.turn
+            );
+            return Ok(Ending::TurnOver(status.code().unwrap_or(1)));
         } else if exists(&["exec", &scorer, "test", "-f", DONE_MARKER])? {
             log::info!("{run}: the agent reported itself done, stopping {container}");
         } else if std::time::Instant::now() >= deadline {
-            if !last_called {
-                log::warn!(
-                    "{run}: the agent ran out of time after {} seconds, last call",
-                    command.limit
-                );
-                let _ = std::process::Command::new("docker")
-                    .args(["exec", container, "touch", LAST_CALL_MARKER])
-                    .output();
-                deadline += std::time::Duration::from_secs(LAST_CALL_SECONDS);
-                last_called = true;
-                continue;
-            }
-
-            let grace = std::time::Duration::from_secs(LAST_CALL_SECONDS);
-            if monitor.silent_for() < grace && std::time::Instant::now() < last_call_ceiling {
-                log::info!(
-                    "{run}: the agent is still printing, holding the last call open for another {LAST_CALL_SECONDS} seconds"
-                );
-                deadline += grace;
-                continue;
-            }
-
-            log::warn!("the last call grace is over, killing {container}");
+            log::warn!(
+                "{run}: the agent ran out of time after {} seconds, stopping it",
+                phase.limit
+            );
+            out_of_time = true;
         } else {
             let silence = monitor.silent_for();
 
@@ -1010,13 +1446,14 @@ fn await_sandbox(
 
             if std::time::Instant::now() >= next_status {
                 log::info!(
-                    "{run}: {}s of {}s, {} KiB from the agent, the last output {}s ago",
-                    started.elapsed().as_secs(),
-                    command.limit,
+                    "{run}: turn {}, {}s of {}s, {} KiB from the agent, the last output {}s ago",
+                    phase.turn,
+                    phase.started.elapsed().as_secs(),
+                    phase.run_limit,
                     monitor.output_bytes() / KIBIBYTE,
                     silence.as_secs()
                 );
-                record_heartbeat(run, command, started, monitor);
+                record_heartbeat(run, phase);
                 next_status += STATUS_INTERVAL;
             }
 
@@ -1027,7 +1464,13 @@ fn await_sandbox(
         let _ = std::process::Command::new("docker")
             .args(["kill", container])
             .output();
-        return Ok(client.wait()?.code().unwrap_or(1));
+        let code = client.wait()?.code().unwrap_or(1);
+
+        return Ok(if out_of_time {
+            Ending::OutOfTime(code)
+        } else {
+            Ending::Done(code)
+        });
     }
 }
 

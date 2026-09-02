@@ -35,7 +35,9 @@ RUN apt update && \
 	golang-go \
 	jq \
 	socat \
-	xxd
+	xxd && \
+	apt clean && \
+	rm -rf /var/lib/apt/lists/*
 
 # The uid is pinned to what the workspace tmpfs is mounted with.
 RUN sed -i -E "s/ ALL$/ NOPASSWD: ALL/g" /etc/sudoers && \
@@ -58,7 +60,13 @@ WORKDIR /home/${SANDBOX_USERNAME}
 ENV AGENT_HOME="/home/${SANDBOX_USERNAME}"
 ENV PATH="${AGENT_HOME}/.local/bin:${AGENT_HOME}/.cargo/bin:${AGENT_HOME}/.foundry/bin:${PATH}"
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.0
+# The minimal profile leaves out rust-docs, which is over half of the agent
+# home on its own and useless to a sandbox with no browser and no network. The
+# home is copied into a memory backed volume for every run, so its size is RAM.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+	--profile minimal \
+	--component clippy,rustfmt \
+	--default-toolchain 1.98.0
 
 RUN mkdir -p ${AGENT_HOME}/workspace
 

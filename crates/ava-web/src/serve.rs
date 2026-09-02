@@ -285,7 +285,7 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
     // A credential the host never set is the operator's to fix, unlike a
     // pairing this harness cannot serve, which is the form's to correct.
     registry
-        .invocation(name, model, "", thinking.as_deref())
+        .invocation(name, model, "", thinking.as_deref(), registry::Start::Task)
         .map_err(|error| {
             let reason = error.to_string();
             if registry::is_missing_credential(&error) {

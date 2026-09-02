@@ -5,6 +5,16 @@ const SUBMISSION_DIRECTORY: &str = "submission";
 
 const SUCCESS_STATUS: u32 = 200;
 
+/// What the proxy logs for a request it finished serving.
+const COMPLETED: &str = "OK";
+
+/// The share of a request an upstream has to withhold its headers for before
+/// the answer counts as buffered rather than streamed. A streamed answer sends
+/// its headers within the first fraction of the request, while a buffered one
+/// holds them until the body is ready, which puts the two three orders of
+/// magnitude apart and leaves the exact share uncritical.
+const BUFFERED_HEADER_SHARE: f64 = 0.95;
+
 /// The submission scoring command.
 #[derive(Debug, Default)]
 pub struct Score {
@@ -21,9 +31,23 @@ pub struct Score {
 struct Record {
     host: String,
     status: u32,
+    /// What the proxy logged for the completion of the request. Empty means the
+    /// client went away before the answer was fully written, which is what the
+    /// restart at the end of a phase does to whatever request is in flight. A
+    /// log written before the proxy recorded it holds no answer either way, so
+    /// it reads as completed and reports nothing abandoned.
+    #[serde(default = "completed")]
+    completed: String,
     request_bytes: u64,
     response_bytes: u64,
     request_seconds: f64,
+    /// When the upstream answered with its headers, formatted by the proxy and
+    /// empty for a request that never reached an upstream.
+    #[serde(default)]
+    header_seconds: String,
+    /// How long the upstream took for the whole answer, in the same shape.
+    #[serde(default)]
+    upstream_seconds: String,
     first_token_seconds: f64,
     served_models: String,
     input_tokens: u64,
@@ -47,11 +71,18 @@ struct Metrics {
     requests: u64,
     /// The requests answered with a non-200 status.
     failed_requests: u64,
-    /// The requests a model answered without ever reporting its usage.
+    /// The requests a model answered in full without ever reporting its usage,
+    /// so the stream was cut short upstream.
     truncated_requests: u64,
-    /// The truncated requests the run continued past, so the stream was lost
-    /// rather than cut off by the clock running out.
-    dropped_requests: u64,
+    /// The requests the client abandoned before the answer was written. The
+    /// restart at the end of a phase leaves one of these behind whenever the
+    /// agent had a request in flight, so these are expected rather than a
+    /// fault of the upstream.
+    aborted_requests: u64,
+    /// The answers an upstream withheld until it had generated all of them, so
+    /// nothing reached the harness while the model worked. Time to the first
+    /// token is the whole generation time for these, not a latency.
+    buffered_requests: u64,
     /// Every distinct host that was requested.
     hosts: Vec<String>,
     /// Every distinct model identifier seen in a response body.
@@ -176,7 +207,6 @@ fn aggregate(log: &str) -> std::io::Result<Metrics> {
 
     let mut metrics = Metrics::default();
     let mut first_token_seconds = 0f64;
-    let mut truncated_pending = false;
     let mut streamed_requests = 0u64;
 
     for line in contents.lines().filter(|line| line.starts_with('{')) {
@@ -193,13 +223,17 @@ fn aggregate(log: &str) -> std::io::Result<Metrics> {
             record_distinct(&mut metrics.served_models, model);
         }
 
-        if truncated_pending {
-            metrics.dropped_requests += 1;
+        let answered = !record.served_models.is_empty();
+        let aborted = record.completed != COMPLETED;
+
+        if aborted {
+            metrics.aborted_requests += 1;
+        } else if answered && record.output_tokens == 0 {
+            metrics.truncated_requests += 1;
         }
 
-        truncated_pending = !record.served_models.is_empty() && record.output_tokens == 0;
-        if truncated_pending {
-            metrics.truncated_requests += 1;
+        if answered && buffered(&record) {
+            metrics.buffered_requests += 1;
         }
 
         metrics.input_tokens += record.input_tokens;
@@ -228,14 +262,43 @@ fn aggregate(log: &str) -> std::io::Result<Metrics> {
     }
 
     log::info!(
-        "{log}: {} requests, {} failed, {} truncated, models: {}",
+        "{log}: {} requests, {} failed, {} truncated, {} aborted, {} buffered, models: {}",
         metrics.requests,
         metrics.failed_requests,
         metrics.truncated_requests,
+        metrics.aborted_requests,
+        metrics.buffered_requests,
         metrics.served_models.join(" ")
     );
 
     Ok(metrics)
+}
+
+/// What a request the proxy did not record a completion for reads as.
+fn completed() -> String {
+    COMPLETED.to_string()
+}
+
+/// Whether the upstream held `record` back until it had generated the whole
+/// answer, so the harness saw nothing while the model worked.
+fn buffered(record: &Record) -> bool {
+    let header = seconds(&record.header_seconds);
+    let upstream = seconds(&record.upstream_seconds);
+
+    upstream > 0.0 && header >= upstream * BUFFERED_HEADER_SHARE
+}
+
+/// One elapsed time as the proxy formats it, zero when there is none. A
+/// request answered from more than one upstream carries one time per try, and
+/// the last of them is the try that answered.
+fn seconds(field: &str) -> f64 {
+    field
+        .rsplit(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or_default()
 }
 
 /// Aggregate the scoring log at `log` into one [`Attempts`].

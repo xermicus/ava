@@ -13,28 +13,40 @@ const CODEX_HARNESS: &str = "codex";
 const CODEX_CONFIG_FILE: &str = "/home/agent/.codex/config.toml";
 const CODEX_API_PATH: &str = "/v1";
 
-/// The server run for a whole benchmark, so the loop plugin prompts one
-/// process instead of anything re-invoking the harness. The port is fixed
-/// because the default is a random one, and the `opencode-loop` wrapper sends
-/// its bootstrap request to the same port.
-const OPENCODE_SERVE: [&str; 3] = ["serve", "--port", "4096"];
-
 /// Keep the reason a run stalled in the agent log rather than in the container.
 const OPENCODE_LOGS: &str = "--print-logs";
 const OPENCODE_CONFIG_FILE: &str = "/home/agent/.config/opencode/opencode.json";
 
-/// A discovery location opencode loads plugins from, holding the staged loop
-/// plugin.
-const OPENCODE_PLUGIN_FILE: &str = "/home/agent/.config/opencode/plugin/ralph-loop.js";
 const OPENCODE_API_PATH: &str = "/v1";
 
 /// The staged files, vendored as plain assets whose `__AVA_*__` placeholders
 /// are filled by [`template`].
 const CODEX_CONFIGURATION_TEMPLATE: &str = include_str!("../assets/codex-config.toml");
 const OPENCODE_CONFIGURATION_TEMPLATE: &str = include_str!("../assets/opencode.json");
-const OPENCODE_RALPH_LOOP_TEMPLATE: &str = include_str!("../assets/opencode-ralph-loop.js");
 const PI_MODELS_TEMPLATE: &str = include_str!("../assets/pi-models.json");
-const PI_RALPH_LOOP_TEMPLATE: &str = include_str!("../assets/pi-ralph-loop.js");
+
+/// What one start of a harness is: the turn that opens the session, or a turn
+/// continuing the session the start before it left behind.
+///
+/// Every turn of a run is a start of its own. `ava` prompts the harness, the
+/// harness answers one turn and exits, and the exit is the turn boundary `ava`
+/// starts the next turn on. No harness loops itself, so all four take the same
+/// path and the loop is one thing rather than four.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Start {
+    /// The first turn, which opens the session.
+    Task,
+    /// A later turn, continuing the recorded session.
+    Resume,
+}
+
+/// The options resuming the recorded session of each harness.
+const CLAUDE_CONTINUE: &str = "--continue";
+const PI_CONTINUE: &str = "--continue";
+const OPENCODE_RUN: [&str; 2] = ["run", "--auto"];
+const OPENCODE_CONTINUE: &str = "--continue";
+const CODEX_EXEC: [&str; 2] = ["exec", "--json"];
+const CODEX_RESUME: [&str; 4] = ["exec", "resume", "--last", "--json"];
 
 /// How much thinking a run asks for, weakest first.
 ///
@@ -48,10 +60,6 @@ const PI_THINKING: &str = "--thinking";
 /// The arguments printing every event of an unattended claude run as a JSON
 /// line, without which a run leaves no live log.
 const CLAUDE_PRINT: [&str; 4] = ["--print", "--verbose", "--output-format", "stream-json"];
-
-/// The command of the official loop plugin, whose stop hook re-feeds the same
-/// prompt every time claude tries to stop, so one invocation works the whole run.
-const CLAUDE_RALPH_LOOP: &str = "/ralph-wiggum:ralph-loop";
 
 /// Output tokens one turn may spend, the same ceiling claude code puts on
 /// its own requests. The highest thinking levels need more room above their
@@ -76,8 +84,6 @@ const PI_PROTOCOL: &str = "anthropic-messages";
 /// The arguments printing every event of an unattended pi run as a JSON line.
 const PI_MODE_JSON: [&str; 2] = ["--mode", "json"];
 
-/// Where pi discovers extensions, holding the staged loop extension.
-const PI_EXTENSION_FILE: &str = "/home/agent/.pi/agent/extensions/ralph-loop.ts";
 const MODEL_OPTION: &str = "--model";
 /// The variable holding the subscription of the anthropic backend, under the
 /// same name on the host and in the sandbox.
@@ -206,6 +212,7 @@ impl Registry {
         model: &str,
         prompt: &str,
         thinking: Option<&str>,
+        start: Start,
     ) -> std::io::Result<Invocation> {
         let model = self
             .models
@@ -241,10 +248,10 @@ impl Registry {
         );
 
         match harness.name.as_str() {
-            CLAUDE_HARNESS => claude_invocation(route, prompt, thinking),
-            PI_HARNESS => pi_invocation(route, prompt, thinking),
-            OPENCODE_HARNESS => opencode_invocation(route, prompt, thinking),
-            CODEX_HARNESS => codex_invocation(route, prompt, thinking),
+            CLAUDE_HARNESS => claude_invocation(route, prompt, thinking, start),
+            PI_HARNESS => pi_invocation(route, prompt, thinking, start),
+            OPENCODE_HARNESS => opencode_invocation(route, prompt, thinking, start),
+            CODEX_HARNESS => codex_invocation(route, prompt, thinking, start),
             name => Err(std::io::Error::other(format!(
                 "no adapter is defined for the {name} harness"
             ))),
@@ -313,6 +320,7 @@ fn opencode_invocation(
     route: &Route,
     prompt: &str,
     thinking: Option<&str>,
+    start: Start,
 ) -> std::io::Result<Invocation> {
     let mut invocation = gateway_invocation(OPENCODE_HARNESS, route)?;
     let url = gateway_url(OPENCODE_HARNESS, route)?;
@@ -340,16 +348,16 @@ fn opencode_invocation(
         ],
     );
 
-    // The serve command reads the model from the configuration and takes no
+    // The run command reads the model from the configuration and takes no
     // model argument, so the gateway arguments are replaced.
-    invocation.arguments = OPENCODE_SERVE
+    invocation.arguments = OPENCODE_RUN
         .iter()
         .map(|argument| argument.to_string())
         .collect();
-    invocation.files.push((
-        OPENCODE_PLUGIN_FILE.to_string(),
-        opencode_ralph_plugin(prompt, thinking),
-    ));
+    if start == Start::Resume {
+        invocation.arguments.push(OPENCODE_CONTINUE.to_string());
+    }
+    invocation.arguments.push(prompt.to_string());
 
     invocation.arguments.push(OPENCODE_LOGS.to_string());
     invocation
@@ -357,29 +365,6 @@ fn opencode_invocation(
         .push((OPENCODE_CONFIG_FILE.to_string(), configuration));
 
     Ok(invocation)
-}
-
-/// The plugin looping opencode over the prompt with the server's own event
-/// and prompt APIs, the counterpart of the claude loop plugin.
-///
-/// The kickoff is scheduled unawaited because the factory runs while the
-/// server still bootstraps the instance, where an awaited request deadlocks.
-/// Every settled turn, an errored one included, queues the prompt again with
-/// the iteration named, until the run is ended from outside. The thinking
-/// variant rides on every prompt and a rejected request is retried, so one
-/// hiccup cannot end the loop. Only the kickoff session is prompted, since
-/// the harness spawns side sessions of its own. There is no one to answer a
-/// permission or question ask, so both are answered for the run to continue.
-fn opencode_ralph_plugin(prompt: &str, thinking: Option<&str>) -> String {
-    let variant = thinking.map(quoted).unwrap_or_else(|| "null".to_string());
-
-    template(
-        OPENCODE_RALPH_LOOP_TEMPLATE,
-        &[
-            ("__AVA_PROMPT__", quoted(prompt).as_str()),
-            ("__AVA_VARIANT__", variant.as_str()),
-        ],
-    )
 }
 
 /// Ask the harness for `thinking` under the `option` naming it.
@@ -401,6 +386,7 @@ fn pi_invocation(
     route: &Route,
     prompt: &str,
     thinking: Option<&str>,
+    start: Start,
 ) -> std::io::Result<Invocation> {
     let url = gateway_url(PI_HARNESS, route)?;
     let models = template(
@@ -428,30 +414,16 @@ fn pi_invocation(
     ];
     think(&mut arguments, PI_THINKING, thinking);
     arguments.extend(PI_MODE_JSON.iter().map(|argument| argument.to_string()));
+    if start == Start::Resume {
+        arguments.push(PI_CONTINUE.to_string());
+    }
     arguments.push(prompt.to_string());
 
     Ok(Invocation {
         variables: vec![(GATEWAY_TOKEN.to_string(), credential(GATEWAY_KEY)?)],
         arguments,
-        files: vec![
-            (PI_MODELS_FILE.to_string(), models),
-            (PI_EXTENSION_FILE.to_string(), pi_ralph_extension(prompt)),
-        ],
+        files: vec![(PI_MODELS_FILE.to_string(), models)],
     })
-}
-
-/// The extension looping pi over the prompt with pi's own event and message
-/// APIs, the counterpart of the claude loop plugin.
-///
-/// A follow up queued at `agent_end` keeps the run from settling, so the
-/// single invocation lasts until the run is ended from outside. An end pi
-/// retries by itself is left alone; every other end, errors included, is
-/// re-prompted with the iteration named.
-fn pi_ralph_extension(prompt: &str) -> String {
-    template(
-        PI_RALPH_LOOP_TEMPLATE,
-        &[("__AVA_PROMPT__", quoted(prompt).as_str())],
-    )
 }
 
 /// Point codex at the gateway, looped from the outside.
@@ -464,6 +436,7 @@ fn codex_invocation(
     route: &Route,
     prompt: &str,
     thinking: Option<&str>,
+    start: Start,
 ) -> std::io::Result<Invocation> {
     let url = gateway_url(CODEX_HARNESS, route)?;
     let effort = match thinking {
@@ -490,7 +463,18 @@ fn codex_invocation(
 
     Ok(Invocation {
         variables: vec![(GATEWAY_TOKEN.to_string(), credential(GATEWAY_KEY)?)],
-        arguments: vec![prompt.to_string()],
+        arguments: match start {
+            Start::Task => CODEX_EXEC
+                .iter()
+                .map(|argument| argument.to_string())
+                .chain([prompt.to_string()])
+                .collect(),
+            Start::Resume => CODEX_RESUME
+                .iter()
+                .map(|argument| argument.to_string())
+                .chain([prompt.to_string()])
+                .collect(),
+        },
         files: vec![(CODEX_CONFIG_FILE.to_string(), configuration)],
     })
 }
@@ -529,6 +513,7 @@ fn claude_invocation(
     route: &Route,
     prompt: &str,
     thinking: Option<&str>,
+    start: Start,
 ) -> std::io::Result<Invocation> {
     let mut environment: Vec<(String, String)> = CLAUDE_SETTINGS
         .iter()
@@ -556,7 +541,10 @@ fn claude_invocation(
     let mut arguments = Vec::new();
     think(&mut arguments, CLAUDE_EFFORT, thinking);
     arguments.extend(CLAUDE_PRINT.iter().map(|argument| argument.to_string()));
-    arguments.push(format!("{CLAUDE_RALPH_LOOP} {prompt}"));
+    if start == Start::Resume {
+        arguments.push(CLAUDE_CONTINUE.to_string());
+    }
+    arguments.push(prompt.to_string());
 
     Ok(Invocation {
         variables: environment,

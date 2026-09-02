@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-10c06042.js";
+            window.path_to_searchindex_js = "searchindex-a019e7f0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -212,8 +212,6 @@ The metrics also record which models were accessed through the proxy, exposing a
      |---------------------------------------------------&gt;                 |
      | start agent     |                 |               |                 |
      |-----------------&gt;                 |               |                 |
-     |                 |--. start agent loop             |                 |
-     |                 |&lt;-'              |               |                 |
      |                 |                 |               |                 |
      |                 | llm request     |               |                 |
      |                 |-----------------&gt;               |                 |
@@ -235,7 +233,23 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 | score report    |               |                 |
      |                 &lt;-----------------|               |                 |
      |                 |                 |               |                 |
-     | exit code       |                 |               |                 |
+     | turn over       |                 |               |                 |
+     &lt;-----------------|                 |               |                 |
+     |--. start the next turn until the clock runs out                     |
+     |&lt;-'              |                 |               |                 |
+     | start agent     |                 |               |                 |
+     |-----------------&gt;                 |               |                 |
+     |                 |                 |               |                 |
+     |                 | ... as above ...|               |                 |
+     |                 |                 |               |                 |
+     | turn over       |                 |               |                 |
+     &lt;-----------------|                 |               |                 |
+     |--. the clock ran out, so start the last call                        |
+     |&lt;-'              |                 |               |                 |
+     | start agent     |                 |               |                 |
+     |-----------------&gt;                 |               |                 |
+     |                 |                 |               |                 |
+     | turn over       |                 |               |                 |
      &lt;-----------------|                 |               |                 |
      |--. collect the logs, aggregate runs/&lt;run&gt;/score.json                |
      |&lt;-'              |                 |               |                 |

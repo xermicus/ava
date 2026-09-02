@@ -45,8 +45,8 @@ const NUMERIC_MARKER: char = '#';
 const SLACK_MARKER: char = '*';
 
 /// The unified runs table, holding pending, live and finished runs alike.
-const RUN_HEADERS: [&str; 9] = [
-    "RUN", "STATE", "GAME", "MODEL", "HARNESS", "*TIME", "#PUSHES", "*POINTS", "",
+const RUN_HEADERS: [&str; 10] = [
+    "RUN", "STATE", "GAME", "MODEL", "HARNESS", "*TIME", "#PUSHES", "#CUT", "*POINTS", "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
 const NO_LIMITS_NOTE: &str = "no limits reported yet, the first run of a key brings them";
@@ -316,7 +316,15 @@ impl RunEntry {
     /// The state of the run as a pill.
     fn state(&self) -> String {
         if self.live {
-            pill(LIVE_PILL, true, "live")
+            pill(
+                LIVE_PILL,
+                true,
+                if self.last_call() {
+                    "last call"
+                } else {
+                    "live"
+                },
+            )
         } else if self.solved() {
             pill(SOLVED_PILL, false, "solved")
         } else if self.score.is_some() {
@@ -326,10 +334,22 @@ impl RunEntry {
         }
     }
 
+    /// Whether the run is past its limit and answering its last call, which is
+    /// why its elapsed meter sits full while it is still live.
+    fn last_call(&self) -> bool {
+        self.monitor
+            .as_ref()
+            .and_then(|heartbeat| heartbeat.get("last_call"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
     /// The seconds a live run has used of its budget.
     ///
     /// The heartbeat of the run loop is the elapsed time of record: the loop
     /// clock pauses with a sleeping host, which wall clock arithmetic misses.
+    /// It counts from the start of the run, so the last call restart does not
+    /// send it back to zero.
     fn elapsed(&self) -> u64 {
         match &self.monitor {
             Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
@@ -380,6 +400,18 @@ impl RunEntry {
         }
     }
 
+    /// The requests a model answered without ever reporting their usage.
+    ///
+    /// Blank when there were none. It is what tells a run that spent its
+    /// budget on streams which never finished apart from one where the model
+    /// simply did not solve the task, since both score zero.
+    fn truncated_cell(&self) -> String {
+        match self.metric("truncated_requests") {
+            0 => String::new(),
+            cut => cut.to_string(),
+        }
+    }
+
     /// The points cell of the runs table: the best solving push so far while
     /// live, the points of record once scored.
     fn points_cell(&self) -> String {
@@ -417,6 +449,7 @@ impl RunEntry {
             self.agent(),
             self.time_cell(),
             self.pushes_cell(),
+            self.truncated_cell(),
             self.points_cell(),
             self.stop_form(),
         ]
@@ -456,6 +489,7 @@ pub(crate) fn runs_page(
                 escape(&start.game),
                 escape(&start.model),
                 agent_label(&start.agent, &start.thinking),
+                String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
