@@ -46,12 +46,17 @@ const BODY_PLACEHOLDER: &str = "__AVA_BODY__";
 /// A `#` prefix on a header right-aligns that column for numbers.
 const NUMERIC_MARKER: char = '#';
 
+/// A `*` prefix on a header marks the column taking the slack of the row.
+const SLACK_MARKER: char = '*';
+
 /// Every table spans the content column. The columns pack on one gutter,
-/// shrunk to their content, and the last one takes the slack, so the rules
-/// reach the column edge while every gap stays the same width.
+/// shrunk to their content, and one of them takes the slack, so the columns
+/// before it start on the left edge, the ones after it end on the right edge
+/// and every gap stays the same width. Without a marked column the last one
+/// takes the slack.
 const TABLE_CLASSES: &str = "w-full border-collapse";
-const COLUMN_CLASSES: &str =
-    "w-px whitespace-nowrap pr-4 last:w-full last:whitespace-normal last:pr-0";
+const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap pr-4 last:pr-0";
+const SLACK_COLUMN_CLASSES: &str = "w-full pr-4 last:pr-0";
 const HEADER_CLASSES: &str = "text-neutral-500 font-normal py-1.5";
 const CELL_CLASSES: &str = "py-1 border-t border-neutral-200 align-top";
 const ROW_CLASSES: &str = "hover:bg-neutral-50";
@@ -362,7 +367,7 @@ pub(crate) fn runs_page(
         body.push_str(&format!(
             "<p class=\"{TITLE_CLASSES} text-green-700\">live</p>{}",
             table(
-                &["RUN", "GAME", "MODEL", "HARNESS", "ELAPSED", "#OUTPUT", ""],
+                &["RUN", "GAME", "MODEL", "*HARNESS", "ELAPSED", "#OUTPUT", ""],
                 live_rows
             )
         ));
@@ -375,7 +380,7 @@ pub(crate) fn runs_page(
         history_rows.len(),
         table(
             &[
-                "RUN", "STATE", "GAME", "MODEL", "HARNESS", "#TIME", "#LIMIT", "#AGE", "#PUSHES",
+                "RUN", "STATE", "GAME", "MODEL", "*HARNESS", "#TIME", "#LIMIT", "#AGE", "#PUSHES",
                 "POINTS"
             ],
             history_rows
@@ -525,7 +530,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     let pushes = push_rows(&directory.join(docker::SCORE_LOG));
     if !pushes.is_empty() {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">pushes</p>"));
-        body.push_str(&table(&["#SECONDS", "STATE", "POINTS", "REASON"], pushes));
+        body.push_str(&table(&["#SECONDS", "STATE", "POINTS", "*REASON"], pushes));
     }
 
     if let Some(metrics) = entry
@@ -638,7 +643,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         "<p class=\"{FIRST_TITLE_CLASSES}\">scoreboard <span class=\"{NOTE_CLASSES} font-normal\">the best run of every pairing</span></p>{}",
         table(
             &[
-                "GAME", "MODEL", "HARNESS", "#RUNS", "#SOLVED", "BEST", "#SECONDS",
+                "GAME", "MODEL", "*HARNESS", "#RUNS", "#SOLVED", "BEST", "#SECONDS",
             ],
             rows,
         )
@@ -710,7 +715,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             .collect();
         if !standings.is_empty() {
             body.push_str(&table(
-                &["MODEL", "HARNESS", "POINTS", "#SECONDS", "RUN"],
+                &["MODEL", "*HARNESS", "POINTS", "#SECONDS", "RUN"],
                 standings,
             ));
         }
@@ -829,7 +834,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         &[
             "KEY",
             "BACKEND",
-            "STATE",
+            "*STATE",
             "#RUNS",
             "#REQUESTS",
             "#INPUT",
@@ -842,7 +847,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     body.push_str(&limit_lines);
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">models</p>"));
     body.push_str(&table(
-        &["MODEL", "BACKEND", "ID", "#CONTEXT", "#MAX OUTPUT"],
+        &["MODEL", "BACKEND", "*ID", "#CONTEXT", "#MAX OUTPUT"],
         model_rows,
     ));
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">harnesses</p>"));
@@ -1001,7 +1006,7 @@ fn object_table(value: &serde_json::Value) -> String {
     let mut html = format!("<table class=\"{TABLE_CLASSES}\"><tbody>");
     for (key, value) in object {
         html.push_str(&format!(
-            "<tr><td class=\"{COLUMN_CLASSES} {CELL_CLASSES} text-neutral-500\">{}</td><td class=\"{COLUMN_CLASSES} {CELL_CLASSES}\">{}</td></tr>",
+            "<tr><td class=\"{PACKED_COLUMN_CLASSES} {CELL_CLASSES} text-neutral-500\">{}</td><td class=\"{SLACK_COLUMN_CLASSES} {CELL_CLASSES}\">{}</td></tr>",
             escape(key),
             escape(&plain(value))
         ));
@@ -1117,8 +1122,8 @@ fn bar(value: u64, ceiling: u64) -> String {
     )
 }
 
-/// A table whose `#` marked headers hold right-aligned numbers, or nothing
-/// when there are no rows to head.
+/// A table whose `#` marked headers hold right-aligned numbers and whose `*`
+/// marked header takes the slack, or nothing when there are no rows to head.
 fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     if rows.is_empty() {
         return String::new();
@@ -1128,23 +1133,36 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
         .iter()
         .map(|header| header.starts_with(NUMERIC_MARKER))
         .collect();
+    let slack = headers
+        .iter()
+        .position(|header| header.starts_with(SLACK_MARKER))
+        .unwrap_or(headers.len().saturating_sub(1));
+    let column = |index: usize| {
+        if index == slack {
+            SLACK_COLUMN_CLASSES
+        } else {
+            PACKED_COLUMN_CLASSES
+        }
+    };
 
     let mut html = format!("<table class=\"{TABLE_CLASSES}\"><thead><tr>");
-    for (header, numeric) in headers.iter().zip(&numeric) {
+    for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
         let align = if *numeric { "text-right" } else { "text-left" };
         html.push_str(&format!(
-            "<th class=\"{COLUMN_CLASSES} {HEADER_CLASSES} {align}\">{}</th>",
-            header.trim_start_matches(NUMERIC_MARKER)
+            "<th class=\"{} {HEADER_CLASSES} {align}\">{}</th>",
+            column(index),
+            header.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER])
         ));
     }
     html.push_str("</tr></thead><tbody>");
 
     for row in rows {
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
-        for (cell, numeric) in row.iter().zip(&numeric) {
+        for (index, (cell, numeric)) in row.iter().zip(&numeric).enumerate() {
             let align = if *numeric { " text-right" } else { "" };
             html.push_str(&format!(
-                "<td class=\"{COLUMN_CLASSES} {CELL_CLASSES}{align}\">{cell}</td>"
+                "<td class=\"{} {CELL_CLASSES}{align}\">{cell}</td>",
+                column(index)
             ));
         }
         html.push_str("</tr>");
