@@ -63,8 +63,9 @@ const PROXY_CONTAINER_PREFIX: &str = "ava-proxy-";
 const SCORER_CONTAINER_PREFIX: &str = "ava-scorer-";
 const SANDBOX_CONTAINER_PREFIX: &str = "ava-agent-";
 
-/// The host name the proxy routes onto the scoring socket.
-const SCORE_HOST: &str = "git";
+/// The hosts the proxy routes onto the scoring socket.
+const GIT_HOST: &str = "git";
+const SCORER_HOST: &str = "score";
 const SCORE_ENTRY: &str = "/home/agent/score-entry.sh";
 const BASH: &str = "bash";
 const ROOT_USER: &str = "0";
@@ -434,7 +435,7 @@ fn last_chance(run: &str, image: &str) {
             "--volume",
             &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(run)),
             "--add-host",
-            &format!("{SCORE_HOST}:{SANDBOX_LOOPBACK}"),
+            &format!("{GIT_HOST}:{SANDBOX_LOOPBACK}"),
             "--workdir",
             SANDBOX_WORKSPACE,
         ])
@@ -1222,7 +1223,8 @@ fn start_sandbox(
         sandbox.args(["--add-host", &format!("{host}:{SANDBOX_LOOPBACK}")]);
     }
 
-    sandbox.args(["--add-host", &format!("{SCORE_HOST}:{SANDBOX_LOOPBACK}")]);
+    sandbox.args(["--add-host", &format!("{GIT_HOST}:{SANDBOX_LOOPBACK}")]);
+    sandbox.args(["--add-host", &format!("{SCORER_HOST}:{SANDBOX_LOOPBACK}")]);
 
     for (path, contents) in &invocation.files {
         sandbox.args(["--volume", &staged_mount(staging, path, contents)?]);

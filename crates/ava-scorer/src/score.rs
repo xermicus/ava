@@ -1,7 +1,7 @@
 //! The `score` sub command: scoring submissions and aggregating proxy metrics.
 
 /// Where the scorer expects the submission, relative to the working directory.
-const SUBMISSION_DIRECTORY: &str = "submission";
+pub const SUBMISSION_DIRECTORY: &str = "submission";
 
 const SUCCESS_STATUS: u32 = 200;
 

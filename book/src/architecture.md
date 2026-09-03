@@ -21,7 +21,7 @@ A unix socket that connects to the `ava-proxy` sidecar is mounted in.
 `ava-proxy` reverse-proxies to the LLM backend, allowing the agent to access LLMs.
 
 The benchmark task is mounted into the containers.
-The proxy routes the `git` host to a bare repository in a container without network, which is how an agent submits: every push to the `task` branch is scored on the spot and the best solving one counts. `ava remote` serves that repository over the score socket, a CGI shim around `git http-backend` answering one request at a time.
+The proxy routes the `git` host to a bare repository in a container without network, which is how an agent submits: every push to the `task` branch is scored on the spot and the best solving one counts. `ava remote` serves that repository over the score socket, a CGI shim around `git http-backend` answering one request at a time. The `score` host on the same socket scores a posted tar without recording it.
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.
 
 Each benchmark implements a scorer, for security reasons it's evaluated in a container too.

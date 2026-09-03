@@ -2,9 +2,9 @@
 //!
 //! A thin CGI shim around `git http-backend`: the sandbox pushes and fetches
 //! over plain HTTP through the proxy, and the scoring happens in the receive
-//! hooks of the repository, not here. Requests are answered one at a time,
-//! which makes one answered request the proof that a scoring in flight has
-//! finished.
+//! hooks of the repository, not here. The `score` host scores a posted tar
+//! without recording it. Requests are answered one at a time, which makes one
+//! answered request the proof that a scoring in flight has finished.
 
 use std::io::{Read, Write};
 
@@ -33,12 +33,27 @@ const SOCKET_MODE: u32 = 0o666;
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 const BACKEND_TIMEOUT_SECONDS: &str = "180";
 
+/// The same bound the receive hook puts on a scoring.
+const SCORE_TIMEOUT_SECONDS: &str = "90";
+
 /// How coreutils `timeout` reports an expired deadline.
 const TIMEOUT_STATUS: i32 = 124;
+
+/// The host a posted tar is scored under.
+const SCORER_HOST: &str = "score";
+
+/// Written by the scorer entrypoint next to the repository.
+const GAME_FILE: &str = "game";
+
+/// One scratch directory is enough, requests are answered one at a time.
+const SCRATCH_PREFIX: &str = "ava-score-";
+const TARBALL_FILE: &str = "submission.tar";
 
 const STATUS_HEADER: &str = "status";
 const CONTENT_LENGTH_HEADER: &str = "content-length";
 const CONTENT_TYPE_HEADER: &str = "Content-Type";
+const HOST_HEADER: &str = "Host";
+const JSON_CONTENT_TYPE: &str = "application/json";
 
 unsafe extern "C" {
     fn getuid() -> u32;
@@ -74,13 +89,127 @@ pub fn run(command: &Remote) -> std::io::Result<i32> {
     loop {
         let mut request = server.recv()?;
 
-        let answer = backend(&mut request, root)
-            .unwrap_or_else(|error| refuse(500, &format!("the git backend failed: {error}")));
+        let answer = if scoring(&request) {
+            score(&mut request, root)
+                .unwrap_or_else(|error| refuse(500, &format!("scoring failed: {error}")))
+        } else {
+            backend(&mut request, root)
+                .unwrap_or_else(|error| refuse(500, &format!("the git backend failed: {error}")))
+        };
 
         if let Err(error) = request.respond(answer) {
             log::warn!("answering the sandbox failed: {error}");
         }
     }
+}
+
+/// Whether `request` came in under the scorer host.
+fn scoring(request: &tiny_http::Request) -> bool {
+    header(request, HOST_HEADER).is_some_and(|host| host == SCORER_HOST)
+}
+
+/// The `name` header of `request`.
+fn header(request: &tiny_http::Request, name: &'static str) -> Option<String> {
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv(name))
+        .map(|header| header.value.to_string())
+}
+
+/// The request body, refused past the cap.
+fn body(request: &mut tiny_http::Request) -> Result<Vec<u8>, Answer> {
+    let mut body = Vec::new();
+    request
+        .as_reader()
+        .take(MAX_BODY_BYTES as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|error| refuse(500, &format!("reading the body failed: {error}")))?;
+
+    if body.len() > MAX_BODY_BYTES {
+        return Err(refuse(
+            413,
+            &format!("the body exceeds {MAX_BODY_BYTES} bytes"),
+        ));
+    }
+
+    Ok(body)
+}
+
+/// Score a posted tar the way a push is scored, without recording an attempt.
+fn score(request: &mut tiny_http::Request, root: &str) -> std::io::Result<Answer> {
+    if *request.method() != tiny_http::Method::Post {
+        return Ok(refuse(405, "post a tar archive of the tree to score"));
+    }
+
+    let tarball = match body(request) {
+        Ok(tarball) => tarball,
+        Err(answer) => return Ok(answer),
+    };
+
+    let game = std::fs::read_to_string(std::path::Path::new(root).join(GAME_FILE))?;
+
+    let scratch = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(scratch.join(crate::score::SUBMISSION_DIRECTORY))?;
+
+    let answer = unpack_and_score(&scratch, &tarball, game.trim());
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    answer
+}
+
+/// Unpack `tarball` under `scratch` and run the scorer over it.
+fn unpack_and_score(
+    scratch: &std::path::Path,
+    tarball: &[u8],
+    game: &str,
+) -> std::io::Result<Answer> {
+    let archive = scratch.join(TARBALL_FILE);
+    std::fs::write(&archive, tarball)?;
+
+    let unpacked = std::process::Command::new("tar")
+        .arg("-xf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(scratch.join(crate::score::SUBMISSION_DIRECTORY))
+        .output()?;
+    if !unpacked.status.success() {
+        return Ok(refuse(
+            400,
+            &format!(
+                "the body is not a tar archive: {}",
+                String::from_utf8_lossy(&unpacked.stderr).trim()
+            ),
+        ));
+    }
+
+    let scored = std::process::Command::new("timeout")
+        .arg(SCORE_TIMEOUT_SECONDS)
+        .arg(std::env::current_exe()?)
+        .args(["score", "--game", game])
+        .current_dir(scratch)
+        .output()?;
+
+    let _ = std::io::stderr().write_all(&scored.stderr);
+
+    if scored.status.code() == Some(TIMEOUT_STATUS) {
+        return Ok(refuse(500, "scoring timed out"));
+    }
+    if !scored.status.success() {
+        return Ok(refuse(
+            500,
+            &format!(
+                "scoring failed: {}",
+                String::from_utf8_lossy(&scored.stderr).trim()
+            ),
+        ));
+    }
+
+    Ok(tiny_http::Response::from_data(scored.stdout).with_header(
+        tiny_http::Header::from_bytes(CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE)
+            .expect("a fixed header parses"),
+    ))
 }
 
 /// Answer one request with `git http-backend`, speaking CGI on its behalf.
@@ -96,24 +225,12 @@ fn backend(request: &mut tiny_http::Request, root: &str) -> std::io::Result<Answ
         None => (request.url().to_string(), String::new()),
     };
 
-    let content_type = request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv(CONTENT_TYPE_HEADER))
-        .map(|header| header.value.to_string())
-        .unwrap_or_default();
+    let content_type = header(request, CONTENT_TYPE_HEADER).unwrap_or_default();
 
-    let mut body = Vec::new();
-    request
-        .as_reader()
-        .take(MAX_BODY_BYTES as u64 + 1)
-        .read_to_end(&mut body)?;
-    if body.len() > MAX_BODY_BYTES {
-        return Ok(refuse(
-            413,
-            &format!("the push exceeds {MAX_BODY_BYTES} bytes"),
-        ));
-    }
+    let body = match body(request) {
+        Ok(body) => body,
+        Err(answer) => return Ok(answer),
+    };
 
     let mut child = std::process::Command::new("timeout")
         .args([BACKEND_TIMEOUT_SECONDS, "git", "http-backend"])

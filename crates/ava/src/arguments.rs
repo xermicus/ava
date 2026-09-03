@@ -182,7 +182,7 @@ struct RemoteCli;
 
 impl RemoteCli {
     const NAME: &str = "remote";
-    const DESCRIPTION: &str = "serve the git remote of a run on the score socket";
+    const DESCRIPTION: &str = "serve the git remote and the scorer of a run on the score socket";
 
     const SOCKET_LONG: &str = "socket";
     const ROOT_LONG: &str = "root";

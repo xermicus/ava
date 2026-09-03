@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9779c113.js";
+            window.path_to_searchindex_js = "searchindex-1732c82c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -203,7 +203,7 @@
 <p>The agent starts in <code>/home/agent/workspace</code>, inside a home of its own described under <a href="#the-agent-home">The agent home</a>.</p>
 </li>
 <li>
-<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. <code>master</code> rejects every push.</p>
+<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. A tar posted to <code>http://score:8080</code> is scored the same way and not recorded. <code>master</code> rejects every push.</p>
 </li>
 <li>
 <p>Every scored attempt is one line of <code>runs/&lt;run&gt;/score.log</code>. The best solving attempt is the submission of record.</p>
@@ -276,7 +276,7 @@ The sandbox docker container has no network access.
 A unix socket that connects to the <code>ava-proxy</code> sidecar is mounted in.
 <code>ava-proxy</code> reverse-proxies to the LLM backend, allowing the agent to access LLMs.</p>
 <p>The benchmark task is mounted into the containers.
-The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is scored on the spot and the best solving one counts. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time.
+The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is scored on the spot and the best solving one counts. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket scores a posted tar without recording it.
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.</p>
 <p>Each benchmark implements a scorer, for security reasons it’s evaluated in a container too.
 The verifier checks the score of the submission however it wishes.
