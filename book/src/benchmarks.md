@@ -7,7 +7,7 @@ A game is a task folder under `games` and a scorer of the same name in the `ava-
 
 ## Playing a game
 
-Run `ava agent -a <agent> -m <model> -g <name>`, where `-t` sets the seconds the agent is given and `-j` starts that many runs in parallel. Existing docker images are reused; `--force-build-images` rebuilds them.
+Run `ava agent -a <agent> -m <model> -g <name>`, where `-t` sets the seconds the agent is given, the last call included, and `-j` starts that many runs in parallel. Existing docker images are reused; `--force-build-images` rebuilds them.
 
 `ava image` rebuilds every docker image ahead of runs; `-a <agent>`, `-p` (proxy) and `-s` (scorer) select single images.
 

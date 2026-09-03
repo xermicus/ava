@@ -567,13 +567,18 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
         .as_deref()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(docker::Agent::DEFAULT_PARALLEL_RUNS);
+    let last_call = docker::LAST_CALL_SECONDS;
+    let seconds_label = explained(
+        "seconds",
+        &format!("the whole budget, the {last_call} second last call included"),
+    );
 
     Ok(format!(
         "<p class=\"{FIRST_TITLE_CLASSES}\">new run</p>\
          <form method=\"post\" action=\"/start\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          {}{}{}{}\
-         <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">seconds</span>\
-         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"1\"></label>\
+         <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{seconds_label}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
          <label class=\"w-20\"><span class=\"{LABEL_CLASSES}\">parallel</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" value=\"{parallel}\" min=\"1\"></label>\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
@@ -1501,14 +1506,14 @@ fn pill(tint: &str, pulsing: bool, label: &str) -> String {
     format!("<span class=\"{PILL_CLASSES} {tint}\">{dot}{label}</span>")
 }
 
-/// A column title, carrying its tooltip when the header named one.
-fn heading(title: &str, tooltip: &str) -> String {
+/// A label with its explanation behind a tooltip, or bare without one.
+fn explained(label: &str, tooltip: &str) -> String {
     if tooltip.is_empty() {
-        return title.to_string();
+        return label.to_string();
     }
 
     format!(
-        "<span class=\"{TOOLTIP_CLASSES}\" title=\"{}\">{title}</span>",
+        "<span class=\"{TOOLTIP_CLASSES}\" title=\"{}\">{label}</span>",
         escape(tooltip)
     )
 }
@@ -1584,7 +1589,7 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
         let (title, tooltip) = header.split_once(TOOLTIP_SEPARATOR).unwrap_or((header, ""));
         html.push_str(&format!(
             "<th class=\"{classes} {HEADER_CLASSES} {align}\"{style}>{}</th>",
-            heading(
+            explained(
                 title.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER]),
                 tooltip
             )

@@ -276,10 +276,16 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
     let parallel: u64 = value(form, "parallel")
         .parse()
         .map_err(|_| Refusal::Rejected("the parallel count is a number".to_string()))?;
-    if limit == 0 || parallel == 0 {
+    if parallel == 0 {
         return Err(Refusal::Rejected(
-            "the seconds and the parallel count are at least 1".to_string(),
+            "the parallel count is at least 1".to_string(),
         ));
+    }
+    if limit < docker::LAST_CALL_SECONDS {
+        return Err(Refusal::Rejected(format!(
+            "the seconds pay for the last call, so they are at least {}",
+            docker::LAST_CALL_SECONDS
+        )));
     }
 
     // A credential the host never set is the operator's to fix, unlike a

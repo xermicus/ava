@@ -58,7 +58,8 @@ impl AgentCli {
         arg_help_chr(
             Self::TIME_LIMIT_SHORT,
             &format!(
-                "the seconds the agent is given, {} by default",
+                "the seconds the agent is given including its {} second last call, {} by default",
+                ava_run::docker::LAST_CALL_SECONDS,
                 ava_run::docker::Agent::DEFAULT_LIMIT_SECONDS
             ),
         );
@@ -335,6 +336,15 @@ impl Parser {
                     let limit: u64 = seconds
                         .parse()
                         .unwrap_or_else(|_| bail(flag, "the limit is a number of seconds"));
+                    if limit < ava_run::docker::LAST_CALL_SECONDS {
+                        bail(
+                            flag,
+                            &format!(
+                                "the limit pays for the last call, so it is at least {} seconds",
+                                ava_run::docker::LAST_CALL_SECONDS
+                            ),
+                        );
+                    }
                     let Some(SubCommand::Agent(ref mut command)) = self.command else {
                         bail(
                             flag,

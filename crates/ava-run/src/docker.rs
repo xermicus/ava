@@ -11,7 +11,8 @@ pub struct Agent {
     pub model: String,
     /// The game to play and score, naming a directory under `games`.
     pub game: String,
-    /// The wall clock time the agent is given, in seconds.
+    /// The wall clock time the agent is given, in seconds, the last call
+    /// included.
     pub limit: u64,
     /// How many runs are started in parallel.
     pub parallel: u64,
@@ -154,7 +155,12 @@ const SILENCE_WARNING: std::time::Duration = std::time::Duration::from_secs(120)
 pub const DONE_MARKER: &str = "/home/agent/done";
 
 /// The seconds the agent gets to answer the last call.
-const LAST_CALL_SECONDS: u64 = 120;
+pub const LAST_CALL_SECONDS: u64 = 120;
+
+/// The seconds the turn loop may spend of a `total` budget.
+pub fn loop_seconds(total: u64) -> u64 {
+    total.saturating_sub(LAST_CALL_SECONDS)
+}
 
 /// The seconds a turn ending faster than this waits before the next one, so a
 /// harness that fails at startup cannot spin through the whole clock.
@@ -1058,14 +1064,23 @@ fn run_sandbox(
 ) -> std::io::Result<i32> {
     let container = sandbox_container(run);
     let registry = crate::registry::load()?;
+    let loop_limit = loop_seconds(command.limit);
     let mut phase = Phase {
-        limit: command.limit,
+        limit: loop_limit,
         started: std::time::Instant::now(),
+        loop_limit,
         run_limit: command.limit,
         last_call: false,
         turn: 1,
         monitor: std::sync::Arc::new(crate::monitor::Monitor::new()),
     };
+
+    // A budget of exactly the last call leaves the loop nothing to spend.
+    if loop_limit == 0 {
+        log::info!("{run}: the budget covers the last call and nothing before it");
+        phase.turn = 0;
+        return last_call(command, image, run, staging, &container, &phase);
+    }
 
     let mut turn = invocation;
 
@@ -1135,6 +1150,7 @@ fn last_call(
     let phase = Phase {
         limit: LAST_CALL_SECONDS,
         started: task.started,
+        loop_limit: task.loop_limit,
         run_limit: task.run_limit,
         last_call: true,
         turn: task.turn + 1,
@@ -1316,7 +1332,9 @@ struct Phase {
     limit: u64,
     /// When the run began.
     started: std::time::Instant,
-    /// The seconds the run as a whole was given.
+    /// The seconds the turn loop may spend, the budget less the last call.
+    loop_limit: u64,
+    /// The seconds the run as a whole was given, the last call included.
     run_limit: u64,
     /// Whether this start is the last call.
     last_call: bool,
@@ -1328,9 +1346,9 @@ struct Phase {
 }
 
 impl Phase {
-    /// The seconds left of the run, or nothing once they are spent.
+    /// The seconds the turn loop has left, or nothing once they are spent.
     fn remaining(&self) -> Option<u64> {
-        self.run_limit
+        self.loop_limit
             .checked_sub(self.started.elapsed().as_secs())
             .filter(|left| *left > 0)
     }

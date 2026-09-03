@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f01aa115.js";
+            window.path_to_searchindex_js = "searchindex-9779c113.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -186,7 +186,7 @@
 <li>Multi player: agents author puzzles for each other and solve what they receive.</li>
 </ul>
 <h2 id="playing-a-game"><a class="header" href="#playing-a-game">Playing a game</a></h2>
-<p>Run <code>ava agent -a &lt;agent&gt; -m &lt;model&gt; -g &lt;name&gt;</code>, where <code>-t</code> sets the seconds the agent is given and <code>-j</code> starts that many runs in parallel. Existing docker images are reused; <code>--force-build-images</code> rebuilds them.</p>
+<p>Run <code>ava agent -a &lt;agent&gt; -m &lt;model&gt; -g &lt;name&gt;</code>, where <code>-t</code> sets the seconds the agent is given, the last call included, and <code>-j</code> starts that many runs in parallel. Existing docker images are reused; <code>--force-build-images</code> rebuilds them.</p>
 <p><code>ava image</code> rebuilds every docker image ahead of runs; <code>-a &lt;agent&gt;</code>, <code>-p</code> (proxy) and <code>-s</code> (scorer) select single images.</p>
 <p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings and the setup, rendered from the run artifacts on disk.</p>
 <ul>
