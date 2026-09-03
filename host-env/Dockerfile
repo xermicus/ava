@@ -48,9 +48,9 @@ RUN sed -i -E "s/ ALL$/ NOPASSWD: ALL/g" /etc/sudoers && \
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
 	locale-gen
 
-COPY ava-bridge /usr/local/bin/ava-bridge
+COPY ava-bridge ava-analyst /usr/local/bin/
 
-RUN chmod 755 /usr/local/bin/ava-bridge
+RUN chmod 755 /usr/local/bin/ava-bridge /usr/local/bin/ava-analyst
 
 # The toolchains shared by every agent
 

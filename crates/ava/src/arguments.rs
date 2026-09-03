@@ -34,6 +34,7 @@ impl Arguments {
 pub(crate) enum SubCommand {
     Agent(ava_run::docker::Agent),
     Image(ava_run::docker::Image),
+    Analyze(ava_run::docker::Analyze),
     Score(ava_scorer::score::Score),
     Serve(ava_web::serve::Serve),
     Remote(ava_scorer::remote::Remote),
@@ -94,6 +95,50 @@ impl AgentCli {
             (&command.name, Self::AGENT_SHORT, "agent"),
             (&command.model, Self::MODEL_SHORT, "model"),
             (&command.game, Self::GAME_SHORT, "game"),
+        ] {
+            if value.is_empty() {
+                fail(&format!("no {subject} given, pass one with -{flag}"));
+            }
+        }
+    }
+}
+
+/// The command line of the run analysis command.
+struct AnalyzeCli;
+
+impl AnalyzeCli {
+    const NAME: &str = "analyze";
+    const DESCRIPTION: &str = "analyze a finished run with an agent, into runs/<run>/analysis.json";
+
+    const RUN_SHORT: char = 'r';
+
+    fn help() {
+        command_help(Self::NAME, Self::DESCRIPTION);
+        arg_help_chr(Self::RUN_SHORT, "the run to analyze");
+        arg_help_chr(AgentCli::AGENT_SHORT, "the agent analyzing it");
+        arg_help_chr(AgentCli::MODEL_SHORT, "the model name to use");
+        arg_help_chr(
+            AgentCli::THINKING_SHORT,
+            &format!(
+                "how much thinking to ask for: {}",
+                ava_run::registry::THINKING_LEVELS.join(", ")
+            ),
+        );
+        arg_help_chr(
+            AgentCli::TIME_LIMIT_SHORT,
+            &format!(
+                "the seconds the analyst is given, {} by default",
+                ava_run::docker::Analyze::DEFAULT_LIMIT_SECONDS
+            ),
+        );
+    }
+
+    /// Exit(1) unless every argument this command requires was given.
+    fn require_arguments(command: &ava_run::docker::Analyze) {
+        for (value, flag, subject) in [
+            (&command.run, Self::RUN_SHORT, "run"),
+            (&command.analyst.name, AgentCli::AGENT_SHORT, "agent"),
+            (&command.analyst.model, AgentCli::MODEL_SHORT, "model"),
         ] {
             if value.is_empty() {
                 fail(&format!("no {subject} given, pass one with -{flag}"));
@@ -240,6 +285,9 @@ impl Parser {
                 ImageCli::NAME => {
                     parser.command = Some(SubCommand::Image(Default::default()));
                 }
+                AnalyzeCli::NAME => {
+                    parser.command = Some(SubCommand::Analyze(Default::default()));
+                }
                 ScoreCli::NAME => {
                     parser.command = Some(SubCommand::Score(Default::default()));
                 }
@@ -267,6 +315,7 @@ impl Parser {
 
         match parser.command {
             Some(SubCommand::Agent(ref command)) => AgentCli::require_arguments(command),
+            Some(SubCommand::Analyze(ref command)) => AnalyzeCli::require_arguments(command),
             Some(SubCommand::Score(ref command)) => ScoreCli::require_arguments(command),
             Some(SubCommand::Image(_))
             | Some(SubCommand::Serve(_))
@@ -303,12 +352,14 @@ impl Parser {
                     match self.command {
                         Some(SubCommand::Agent(ref mut command)) => command.name = name,
                         Some(SubCommand::Image(ref mut command)) => command.agent = name,
+                        Some(SubCommand::Analyze(ref mut command)) => command.analyst.name = name,
                         _ => bail(
                             flag,
                             &format!(
-                                "only valid in the {} or {} subcommands",
+                                "only valid in the {}, {} or {} subcommands",
                                 AgentCli::NAME,
-                                ImageCli::NAME
+                                ImageCli::NAME,
+                                AnalyzeCli::NAME
                             ),
                         ),
                     }
@@ -316,13 +367,18 @@ impl Parser {
                 }
                 AgentCli::MODEL_SHORT => {
                     let model = Self::value(args, &mut chars, flag, "missing model name");
-                    let Some(SubCommand::Agent(ref mut command)) = self.command else {
-                        bail(
+                    match self.command {
+                        Some(SubCommand::Agent(ref mut command)) => command.model = model,
+                        Some(SubCommand::Analyze(ref mut command)) => command.analyst.model = model,
+                        _ => bail(
                             flag,
-                            &format!("only valid in the {} subcommand", AgentCli::NAME),
-                        );
-                    };
-                    command.model = model;
+                            &format!(
+                                "only valid in the {} or {} subcommands",
+                                AgentCli::NAME,
+                                AnalyzeCli::NAME
+                            ),
+                        ),
+                    }
                     break;
                 }
                 AgentCli::GAME_SHORT => {
@@ -341,22 +397,29 @@ impl Parser {
                     let limit: u64 = seconds
                         .parse()
                         .unwrap_or_else(|_| bail(flag, "the limit is a number of seconds"));
-                    if limit < ava_run::docker::LAST_CALL_SECONDS {
-                        bail(
+                    match self.command {
+                        Some(SubCommand::Agent(ref mut command)) => {
+                            if limit < ava_run::docker::LAST_CALL_SECONDS {
+                                bail(
+                                    flag,
+                                    &format!(
+                                        "the limit pays for the last call, so it is at least {} seconds",
+                                        ava_run::docker::LAST_CALL_SECONDS
+                                    ),
+                                );
+                            }
+                            command.limit = limit;
+                        }
+                        Some(SubCommand::Analyze(ref mut command)) => command.limit = limit,
+                        _ => bail(
                             flag,
                             &format!(
-                                "the limit pays for the last call, so it is at least {} seconds",
-                                ava_run::docker::LAST_CALL_SECONDS
+                                "only valid in the {} or {} subcommands",
+                                AgentCli::NAME,
+                                AnalyzeCli::NAME
                             ),
-                        );
+                        ),
                     }
-                    let Some(SubCommand::Agent(ref mut command)) = self.command else {
-                        bail(
-                            flag,
-                            &format!("only valid in the {} subcommand", AgentCli::NAME),
-                        );
-                    };
-                    command.limit = limit;
                     break;
                 }
                 AgentCli::PARALLEL_SHORT => {
@@ -387,13 +450,31 @@ impl Parser {
                             ),
                         );
                     }
-                    let Some(SubCommand::Agent(ref mut command)) = self.command else {
+                    match self.command {
+                        Some(SubCommand::Agent(ref mut command)) => command.thinking = Some(level),
+                        Some(SubCommand::Analyze(ref mut command)) => {
+                            command.analyst.thinking = Some(level)
+                        }
+                        _ => bail(
+                            flag,
+                            &format!(
+                                "only valid in the {} or {} subcommands",
+                                AgentCli::NAME,
+                                AnalyzeCli::NAME
+                            ),
+                        ),
+                    }
+                    break;
+                }
+                AnalyzeCli::RUN_SHORT => {
+                    let run = Self::value(args, &mut chars, flag, "missing run name");
+                    let Some(SubCommand::Analyze(ref mut command)) = self.command else {
                         bail(
                             flag,
-                            &format!("only valid in the {} subcommand", AgentCli::NAME),
+                            &format!("only valid in the {} subcommand", AnalyzeCli::NAME),
                         );
                     };
-                    command.thinking = Some(level);
+                    command.run = run;
                     break;
                 }
                 // Image and serve
@@ -535,6 +616,7 @@ pub(crate) fn help() -> ! {
     eprintln!("Available sub-commands:\n");
     for print_command in [
         AgentCli::help,
+        AnalyzeCli::help,
         ImageCli::help,
         ScoreCli::help,
         ServeCli::help,

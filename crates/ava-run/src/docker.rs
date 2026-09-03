@@ -20,6 +20,8 @@ pub struct Agent {
     pub thinking: Option<String>,
     /// Whether the docker images are rebuilt instead of reused.
     pub force_build_images: bool,
+    /// The agent analyzing the run once it is over.
+    pub analyst: Option<Analyst>,
 }
 
 impl Agent {
@@ -39,6 +41,7 @@ impl Default for Agent {
             parallel: Self::DEFAULT_PARALLEL_RUNS,
             thinking: None,
             force_build_images: false,
+            analyst: None,
         }
     }
 }
@@ -54,6 +57,43 @@ pub struct Image {
     pub scorer: bool,
 }
 
+/// The agent analyzing a run.
+#[derive(Debug, Clone, Default)]
+pub struct Analyst {
+    /// The harness, naming a directory under `agents`.
+    pub name: String,
+    /// The model the harness runs on.
+    pub model: String,
+    /// How much thinking the analyst is asked for.
+    pub thinking: Option<String>,
+}
+
+/// The run analysis command.
+#[derive(Debug)]
+pub struct Analyze {
+    /// The run to analyze, naming a directory under `runs`.
+    pub run: String,
+    /// The agent analyzing it.
+    pub analyst: Analyst,
+    /// The seconds the analyst is given.
+    pub limit: u64,
+}
+
+impl Analyze {
+    /// The seconds an analyst is given unless the command names a limit.
+    pub const DEFAULT_LIMIT_SECONDS: u64 = 1200;
+}
+
+impl Default for Analyze {
+    fn default() -> Self {
+        Self {
+            run: String::new(),
+            analyst: Analyst::default(),
+            limit: Self::DEFAULT_LIMIT_SECONDS,
+        }
+    }
+}
+
 const NETWORK_EGRESS: &str = "ava-egress";
 const SOCKET_VOLUME_PREFIX: &str = "ava-sockets-";
 const SOCKET_DIRECTORY: &str = "/run/ava";
@@ -62,6 +102,12 @@ const SCORE_SOCKET_PATH: &str = "/run/ava/score.sock";
 const PROXY_CONTAINER_PREFIX: &str = "ava-proxy-";
 const SCORER_CONTAINER_PREFIX: &str = "ava-scorer-";
 const SANDBOX_CONTAINER_PREFIX: &str = "ava-agent-";
+const ANALYST_CONTAINER_PREFIX: &str = "ava-analyst-";
+
+const ANALYSIS_SUFFIX: &str = "-analysis";
+const RUN_MOUNT: &str = "/home/agent/run";
+const BOOK_DIRECTORY: &str = "book/src";
+const BOOK_MOUNT: &str = "/home/agent/ava-book";
 
 /// The hosts the proxy routes onto the scoring socket.
 const GIT_HOST: &str = "git";
@@ -142,6 +188,19 @@ pub const ERROR_LOG: &str = "proxy.error.log";
 pub const SCORE_LOG: &str = "score.log";
 pub const SCORE_ERROR_LOG: &str = "score.error.log";
 pub const AGENT_LOG: &str = "agent.log";
+pub const ANALYSIS_FILE: &str = "analysis.json";
+pub const ANALYSIS_LOG: &str = "analysis.log";
+pub const ANALYSIS_ACCESS_LOG: &str = "analysis.access.log";
+pub const ANALYSIS_ERROR_LOG: &str = "analysis.error.log";
+
+/// The files the analyst writes, by the field each becomes in the report.
+const ANALYSIS_PARTS: [(&str, &str); 2] = [
+    ("analysis_summary", "analysis_summary.md"),
+    ("analysis", "analysis.md"),
+];
+
+/// The field a report holds instead when the analysis failed.
+pub const ANALYSIS_ERROR: &str = "error";
 const RECORD_BUFFER_BYTES: usize = 8 * 1024;
 
 /// The bytes `agent.log` may reach, ended by a line saying it was cut.
@@ -178,6 +237,10 @@ const TASK_BRANCH: &str = "task";
 /// host onto the proxy socket.
 const BRIDGE: &str = "ava-bridge";
 
+/// The entrypoint an analyst starts through instead: the proxy forward alone.
+const ANALYST: &str = "ava-analyst";
+const ENTRYPOINT_FORMAT: &str = "{{json .Config.Entrypoint}}";
+
 /// The message on the commit ava makes on the agent's behalf.
 const LAST_CHANCE_MESSAGE: &str = "last chance";
 
@@ -211,6 +274,9 @@ const CLOCK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The prompt a harness is started on.
 const TASK_PROMPT: &str = "Read README.md in your workspace and work on the task it lays out.";
+
+/// The task an analyst is started on.
+const ANALYSIS_PROMPT: &str = include_str!("../assets/analysis.md");
 
 /// Counts the launches of this process, telling apart the runs a long lived
 /// process such as the web interface starts one after another.
@@ -259,6 +325,11 @@ pub fn scorer_container(run: &str) -> String {
 /// The sandbox container of one run.
 pub fn sandbox_container(run: &str) -> String {
     format!("{SANDBOX_CONTAINER_PREFIX}{run}")
+}
+
+/// The container analyzing one run.
+pub fn analyst_container(run: &str) -> String {
+    format!("{ANALYST_CONTAINER_PREFIX}{run}")
 }
 
 /// The volume carrying the socket between one sandbox and its proxy.
@@ -1004,6 +1075,17 @@ fn play_run(
     attempts?;
     versioned?;
     scored?;
+
+    if let Some(analyst) = &command.analyst
+        && let Err(error) = analyze(&Analyze {
+            run: run.to_string(),
+            analyst: analyst.clone(),
+            limit: Analyze::DEFAULT_LIMIT_SECONDS,
+        })
+    {
+        log::error!("{run}: the analysis failed: {error}");
+    }
+
     Ok(code)
 }
 
@@ -1275,7 +1357,7 @@ fn start_sandbox(
     let mut child = sandbox.arg(image).args(&invocation.arguments).spawn()?;
 
     phase.monitor.restart();
-    let readers = record_output(&mut child, run, &phase.monitor)?;
+    let readers = record_output(&mut child, run, AGENT_LOG, &phase.monitor)?;
     let ending = await_sandbox(child, container, run, phase)?;
 
     for reader in readers {
@@ -1295,14 +1377,14 @@ struct Console {
 impl Console {
     /// Appended rather than truncated, so the last call adds to the console of
     /// the run instead of replacing what the task start wrote.
-    fn open(run: &str) -> std::io::Result<Self> {
+    fn open(run: &str, name: &str) -> std::io::Result<Self> {
         let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
         std::fs::create_dir_all(&directory)?;
 
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(directory.join(AGENT_LOG))?;
+            .open(directory.join(name))?;
         let bytes = file.metadata()?.len();
 
         Ok(Self {
@@ -1336,19 +1418,20 @@ impl Console {
     }
 }
 
-/// Keep what the agent printed in `runs/<run>/agent.log`.
+/// Keep what the agent printed in `runs/<run>/<file>`.
 ///
 /// The terminal gets the periodic status log instead of the console. Only the
 /// stdout stream carrying the harness events is scanned for repeated lines.
 fn record_output(
     child: &mut std::process::Child,
     run: &str,
+    file: &str,
     monitor: &std::sync::Arc<crate::monitor::Monitor>,
 ) -> std::io::Result<Vec<std::thread::JoinHandle<std::io::Result<()>>>> {
     let stdout = child.stdout.take().expect("the sandbox output is piped");
     let stderr = child.stderr.take().expect("the sandbox output is piped");
 
-    let console = std::sync::Arc::new(std::sync::Mutex::new(Console::open(run)?));
+    let console = std::sync::Arc::new(std::sync::Mutex::new(Console::open(run, file)?));
 
     Ok(vec![
         record(stdout, console.clone(), monitor.clone(), true),
@@ -1653,4 +1736,260 @@ fn exists(arguments: &[&str]) -> std::io::Result<bool> {
         .output()?
         .status
         .success())
+}
+
+/// Analyze a finished run with an agent into `runs/<run>/analysis.json`.
+///
+/// One start of the harness, like a turn, on the run directory and the book
+/// mounted read only, without a git or score host. The report is copied out of
+/// the container once it exits.
+pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
+    let run = command.run.as_str();
+    let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
+    if !directory.join(METADATA_FILE).is_file() {
+        return Err(std::io::Error::other(format!("{run}: no such run")));
+    }
+
+    let analyst = &command.analyst;
+    let registry = crate::registry::load()?;
+    let invocation = registry.invocation(
+        &analyst.name,
+        &analyst.model,
+        ANALYSIS_PROMPT,
+        analyst.thinking.as_deref(),
+        crate::registry::Start::Task,
+    )?;
+
+    build_image(BASE_IMAGE, BASE_CONTEXT, false)?;
+    let image = format!("{AGENT_IMAGE_PREFIX}{}", analyst.name);
+    build_image(&image, &format!("{AGENT_CONTEXT}/{}", analyst.name), false)?;
+    std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
+    build_image(PROXY_IMAGE, PROXY_CONTEXT, false)?;
+    ensure_egress_network()?;
+
+    let harness = harness_command(&image)?;
+    let sidecar = format!("{run}{ANALYSIS_SUFFIX}");
+    let staging = std::env::temp_dir().join(STAGING_DIRECTORY).join(&sidecar);
+    let container = analyst_container(run);
+    remove_container(&container);
+    let _ = std::fs::remove_file(directory.join(ANALYSIS_LOG));
+
+    log::info!("analyzing {run} with {} on {}", analyst.name, analyst.model);
+
+    let status = start_proxy(&sidecar).and_then(|()| {
+        run_analyst(
+            command,
+            &image,
+            &harness,
+            &sidecar,
+            &staging,
+            &invocation,
+            &container,
+        )
+    });
+
+    let collected = collect_report(&container, &staging);
+    let logged = collect_logs(
+        run,
+        &proxy_container(&sidecar),
+        ANALYSIS_ACCESS_LOG,
+        ANALYSIS_ERROR_LOG,
+    );
+
+    remove_container(&container);
+    remove_sidecars(&sidecar);
+
+    let report = match &collected {
+        Ok(analysis) => analysis.clone(),
+        Err(error) => {
+            let mut failure = serde_json::Map::new();
+            failure.insert(
+                ANALYSIS_ERROR.to_string(),
+                serde_json::Value::String(error.to_string()),
+            );
+            serde_json::Value::Object(failure)
+        }
+    };
+    std::fs::write(
+        directory.join(ANALYSIS_FILE),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&report).map_err(std::io::Error::other)?
+        ),
+    )?;
+
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+
+    let code = status?;
+    logged?;
+    collected.map_err(|error| std::io::Error::other(format!("{run}: {error}")))?;
+    log::info!(
+        "{run}: the analysis is in {}",
+        directory.join(ANALYSIS_FILE).display()
+    );
+
+    Ok(code)
+}
+
+/// The report assembled from the files the analyst wrote, copied out of
+/// `container` through `staging`.
+fn collect_report(
+    container: &str,
+    staging: &std::path::Path,
+) -> std::io::Result<serde_json::Value> {
+    std::fs::create_dir_all(staging)?;
+    let mut report = serde_json::Map::new();
+
+    for (field, file) in ANALYSIS_PARTS {
+        let copy = staging.join(file);
+        process::run_and_assume_success(
+            "docker",
+            &[
+                "cp",
+                &format!("{container}:{SANDBOX_WORKSPACE}/{file}"),
+                &copy.display().to_string(),
+            ],
+        )
+        .map_err(|error| std::io::Error::other(format!("the analyst left no {file}: {error}")))?;
+
+        let text = std::fs::read_to_string(&copy)?;
+        if text.trim().is_empty() {
+            return Err(std::io::Error::other(format!(
+                "the analyst left {file} empty"
+            )));
+        }
+        report.insert(
+            field.to_string(),
+            serde_json::Value::String(text.trim().to_string()),
+        );
+    }
+
+    Ok(serde_json::Value::Object(report))
+}
+
+/// The harness command behind the bridge in the entrypoint of `image`.
+fn harness_command(image: &str) -> std::io::Result<Vec<String>> {
+    let entrypoint = process::run_and_assume_success(
+        "docker",
+        &["image", "inspect", "--format", ENTRYPOINT_FORMAT, image],
+    )?;
+    let mut command: Vec<String> =
+        serde_json::from_str(&entrypoint).map_err(std::io::Error::other)?;
+
+    if command.first().map(String::as_str) != Some(BRIDGE) {
+        return Err(std::io::Error::other(format!(
+            "{image} does not start through {BRIDGE}"
+        )));
+    }
+    command.remove(0);
+
+    Ok(command)
+}
+
+/// Start the analyst on `image` against the proxy of `sidecar` and wait for it.
+fn run_analyst(
+    command: &Analyze,
+    image: &str,
+    harness: &[String],
+    sidecar: &str,
+    staging: &std::path::Path,
+    invocation: &crate::registry::Invocation,
+    container: &str,
+) -> std::io::Result<i32> {
+    let run = command.run.as_str();
+
+    let mut analyst = std::process::Command::new("docker");
+    analyst.args([
+        "run",
+        "--name",
+        container,
+        "--network",
+        "none",
+        "--ulimit",
+        NO_CORE_DUMPS,
+        "--tmpfs",
+        &format!("{SANDBOX_TMPFS},{SCRATCH_SIZE}"),
+        "--workdir",
+        SANDBOX_WORKSPACE,
+        "--volume",
+        &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(sidecar)),
+        "--volume",
+        &read_only_mount(&format!("{RUN_DIRECTORY}/{run}"), RUN_MOUNT)?,
+        "--volume",
+        &read_only_mount(BOOK_DIRECTORY, BOOK_MOUNT)?,
+        "--hostname",
+        &command.analyst.name,
+        "--add-host",
+        &format!("{}:{SANDBOX_LOOPBACK}", command.analyst.name),
+    ]);
+
+    for host in &invocation.hosts {
+        analyst.args(["--add-host", &format!("{host}:{SANDBOX_LOOPBACK}")]);
+    }
+
+    for (path, contents) in &invocation.files {
+        analyst.args(["--volume", &staged_mount(staging, path, contents)?]);
+    }
+
+    for (name, value) in &invocation.variables {
+        analyst.args(["--env", name]);
+        analyst.env(name, value);
+    }
+
+    log::info!("starting the analyst {container} from {image}");
+
+    analyst.stdout(std::process::Stdio::piped());
+    analyst.stderr(std::process::Stdio::piped());
+    std::os::unix::process::CommandExt::process_group(&mut analyst, 0);
+
+    let mut child = analyst
+        .args(["--entrypoint", ANALYST, image])
+        .args(harness)
+        .args(&invocation.arguments)
+        .spawn()?;
+
+    let monitor = std::sync::Arc::new(crate::monitor::Monitor::new());
+    let readers = record_output(&mut child, run, ANALYSIS_LOG, &monitor)?;
+    let code = await_analyst(child, container, run, command.limit)?;
+
+    for reader in readers {
+        reader.join().expect("the reader threads do not panic")?;
+    }
+
+    Ok(code)
+}
+
+/// Wait for the analyst, killing the container at the deadline or on an
+/// interrupt.
+fn await_analyst(
+    mut client: std::process::Child,
+    container: &str,
+    run: &str,
+    limit: u64,
+) -> std::io::Result<i32> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(limit);
+    log::info!("{run}: the analyst has {limit} seconds");
+
+    loop {
+        if let Some(status) = client.try_wait()? {
+            log::info!("{run}: the analyst exited with {status}");
+            return Ok(status.code().unwrap_or(1));
+        }
+        if crate::interrupt::interrupted() {
+            log::warn!("the analysis was interrupted, killing {container}");
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            log::warn!("{run}: the analyst ran out of time after {limit} seconds, stopping it");
+            break;
+        }
+        std::thread::sleep(CLOCK_INTERVAL);
+    }
+
+    let _ = std::process::Command::new("docker")
+        .args(["kill", container])
+        .output();
+    Ok(client.wait()?.code().unwrap_or(1))
 }

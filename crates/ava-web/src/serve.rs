@@ -125,6 +125,10 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         thinking: query_value(query, "thinking"),
         limit: query_value(query, "limit"),
         parallel: query_value(query, "parallel"),
+        analyze: query_value(query, "analyze"),
+        analyst: query_value(query, "analyst"),
+        analyst_model: query_value(query, "analyst_model"),
+        analyst_thinking: query_value(query, "analyst_thinking"),
     };
 
     let pending: Vec<views::Pending> = PENDING
@@ -206,6 +210,11 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
     let (origin, carried, outcome) = match segments {
         ["start"] => ("/".to_string(), preserved(form), start_run(form)),
         ["run", name, "stop"] => (format!("/run/{name}"), String::new(), stop_run(name)),
+        ["run", name, "analyze"] => (
+            format!("/run/{name}"),
+            String::new(),
+            analyze_run(name, form),
+        ),
         _ => return plain_response(404, "no such action\n"),
     };
 
@@ -224,12 +233,23 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
 /// The submitted start fields as query parameters, so the form the browser
 /// returns to holds what was submitted instead of resetting.
 fn preserved(form: &[(String, String)]) -> String {
-    ["agent", "model", "game", "thinking", "limit", "parallel"]
-        .iter()
-        .map(|key| (key, value(form, key)))
-        .filter(|(_, submitted)| !submitted.is_empty())
-        .map(|(key, submitted)| format!("&{key}={}", urlencode(submitted)))
-        .collect()
+    [
+        "agent",
+        "model",
+        "game",
+        "thinking",
+        "limit",
+        "parallel",
+        "analyze",
+        "analyst",
+        "analyst_model",
+        "analyst_thinking",
+    ]
+    .iter()
+    .map(|key| (key, value(form, key)))
+    .filter(|(_, submitted)| !submitted.is_empty())
+    .map(|(key, submitted)| format!("&{key}={}", urlencode(submitted)))
+    .collect()
 }
 
 /// Start a run from the submitted form, in a thread of its own.
@@ -239,36 +259,28 @@ fn preserved(form: &[(String, String)]) -> String {
 /// on what docker does at runtime.
 fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
     let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
+    let (name, model, thinking) = agent_choice(&registry, form, ["agent", "model", "thinking"])?;
 
-    let name = value(form, "agent");
-    if !registry
-        .harnesses
-        .iter()
-        .any(|harness| harness.name == name)
-    {
-        return Err(Refusal::Rejected(format!("unknown harness `{name}`")));
-    }
-
-    let model = value(form, "model");
-    if !registry.models.iter().any(|known| known.name == model) {
-        return Err(Refusal::Rejected(format!("unknown model `{model}`")));
-    }
+    let analyst = if value(form, "analyze") == "on" {
+        let (name, model, thinking) = agent_choice(
+            &registry,
+            form,
+            ["analyst", "analyst_model", "analyst_thinking"],
+        )?;
+        Some(docker::Analyst {
+            name,
+            model,
+            thinking,
+        })
+    } else {
+        None
+    };
 
     let game = value(form, "game");
     let games = views::games().map_err(|error| Refusal::Failed(error.to_string()))?;
     if !games.iter().any(|known| known == game) {
         return Err(Refusal::Rejected(format!("unknown game `{game}`")));
     }
-
-    let thinking = match value(form, "thinking") {
-        "" => None,
-        level if registry::THINKING_LEVELS.contains(&level) => Some(level.to_string()),
-        level => {
-            return Err(Refusal::Rejected(format!(
-                "unknown thinking level `{level}`"
-            )));
-        }
-    };
 
     let limit: u64 = value(form, "limit")
         .parse()
@@ -288,31 +300,21 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
         )));
     }
 
-    // A credential the host never set is the operator's to fix, unlike a
-    // pairing this harness cannot serve, which is the form's to correct.
-    registry
-        .invocation(name, model, "", thinking.as_deref(), registry::Start::Task)
-        .map_err(|error| {
-            let reason = error.to_string();
-            if registry::is_missing_credential(&error) {
-                Refusal::Failed(reason)
-            } else {
-                Refusal::Rejected(reason)
-            }
-        })?;
-
     let command = docker::Agent {
-        name: name.to_string(),
-        model: model.to_string(),
+        name,
+        model,
         game: game.to_string(),
         limit,
         parallel,
         thinking,
         force_build_images: value(form, "force") == "on",
+        analyst,
     };
 
     log::info!(
-        "starting {name} on {model}: game {game}, thinking {}, {limit}s, {parallel} parallel{}",
+        "starting {} on {}: game {game}, thinking {}, {limit}s, {parallel} parallel{}",
+        command.name,
+        command.model,
         command.thinking.as_deref().unwrap_or("default"),
         if command.force_build_images {
             ", rebuilding the images"
@@ -340,7 +342,7 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
             },
         ));
 
-    let note = format!("starting {name} on {model}");
+    let note = format!("starting {} on {}", command.name, command.model);
     std::thread::spawn(move || {
         let outcome = docker::run_agent(&command);
         PENDING
@@ -359,6 +361,91 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
                 command.model
             ),
         }
+    });
+
+    Ok(note)
+}
+
+/// The harness, model and thinking level under `fields` of a form, checked
+/// against the registry.
+fn agent_choice(
+    registry: &registry::Registry,
+    form: &[(String, String)],
+    fields: [&str; 3],
+) -> Result<(String, String, Option<String>), Refusal> {
+    let [agent, model_field, thinking_field] = fields;
+
+    let name = value(form, agent);
+    if !registry
+        .harnesses
+        .iter()
+        .any(|harness| harness.name == name)
+    {
+        return Err(Refusal::Rejected(format!("unknown harness `{name}`")));
+    }
+
+    let model = value(form, model_field);
+    if !registry.models.iter().any(|known| known.name == model) {
+        return Err(Refusal::Rejected(format!("unknown model `{model}`")));
+    }
+
+    let thinking = match value(form, thinking_field) {
+        "" => None,
+        level if registry::THINKING_LEVELS.contains(&level) => Some(level.to_string()),
+        level => {
+            return Err(Refusal::Rejected(format!(
+                "unknown thinking level `{level}`"
+            )));
+        }
+    };
+
+    // A credential the host never set is the operator's to fix, unlike a
+    // pairing this harness cannot serve, which is the form's to correct.
+    registry
+        .invocation(name, model, "", thinking.as_deref(), registry::Start::Task)
+        .map_err(|error| {
+            let reason = error.to_string();
+            if registry::is_missing_credential(&error) {
+                Refusal::Failed(reason)
+            } else {
+                Refusal::Rejected(reason)
+            }
+        })?;
+
+    Ok((name.to_string(), model.to_string(), thinking))
+}
+
+/// Analyze the run in a thread of its own.
+fn analyze_run(name: &str, form: &[(String, String)]) -> Result<String, Refusal> {
+    views::run_directory(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
+    if views::analyzing(name) {
+        return Err(Refusal::Rejected(format!(
+            "{name} is being analyzed already"
+        )));
+    }
+
+    let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
+    let (agent, model, thinking) = agent_choice(&registry, form, ["agent", "model", "thinking"])?;
+
+    let command = docker::Analyze {
+        run: name.to_string(),
+        analyst: docker::Analyst {
+            name: agent,
+            model,
+            thinking,
+        },
+        limit: docker::Analyze::DEFAULT_LIMIT_SECONDS,
+    };
+
+    let note = format!(
+        "analyzing {name} with {} on {}",
+        command.analyst.name, command.analyst.model
+    );
+    log::info!("{note}");
+
+    std::thread::spawn(move || match docker::analyze(&command) {
+        Ok(code) => log::info!("the analysis of {} finished with code {code}", command.run),
+        Err(error) => log::error!("the analysis of {} failed: {error}", command.run),
     });
 
     Ok(note)

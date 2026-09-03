@@ -1,5 +1,6 @@
-//! A renderer for the markdown subset the task files use: headers,
-//! paragraphs, lists, fenced code and inline code and emphasis.
+//! A renderer for the markdown subset the task files and the analyses use:
+//! headers, paragraphs, lists, tables, fenced code and inline code and
+//! emphasis.
 
 const HEADER_CLASSES: [&str; 3] = [
     "text-lg font-semibold text-neutral-100 mt-6 mb-2",
@@ -11,8 +12,15 @@ const LIST_CLASSES: &str = "my-2 ml-5 max-w-prose leading-relaxed space-y-1 text
 const FENCE_CLASSES: &str = "font-mono text-xs text-neutral-300 bg-neutral-950 border border-neutral-800 \
      rounded-md p-3 my-3 overflow-x-auto";
 const CODE_CLASSES: &str = "font-mono text-xs text-neutral-200 bg-neutral-800 rounded px-1 py-0.5";
+const TABLE_CLASSES: &str = "my-3 text-left border-collapse";
+const TABLE_HEADER_CLASSES: &str =
+    "text-xs font-medium uppercase tracking-wider text-neutral-500 py-1.5 pr-4";
+const TABLE_CELL_CLASSES: &str =
+    "py-1.5 pr-4 border-t border-neutral-800 align-top text-neutral-300";
 
 const FENCE: &str = "```";
+const ROW: char = '|';
+const SEPARATOR: [char; 2] = ['-', ':'];
 
 /// What surrounds the line being rendered.
 enum Block {
@@ -20,6 +28,8 @@ enum Block {
     Paragraph,
     List(&'static str),
     Fence,
+    /// Whether the header row was written.
+    Table(bool),
 }
 
 /// Render `markdown` into html, escaping everything the source wrote.
@@ -64,6 +74,34 @@ pub(crate) fn render(markdown: &str) -> String {
             continue;
         }
 
+        if let Some(cells) = row(trimmed) {
+            let headed = match block {
+                Block::Table(headed) => headed,
+                open => {
+                    close(&mut html, open);
+                    html.push_str(&format!("<table class=\"{TABLE_CLASSES}\">"));
+                    false
+                }
+            };
+            block = Block::Table(headed || !separator(&cells));
+            if !separator(&cells) {
+                let (tag, classes) = if headed {
+                    ("td", TABLE_CELL_CLASSES)
+                } else {
+                    ("th", TABLE_HEADER_CLASSES)
+                };
+                html.push_str("<tr>");
+                for cell in cells {
+                    html.push_str(&format!(
+                        "<{tag} class=\"{classes}\">{}</{tag}>",
+                        inline(cell)
+                    ));
+                }
+                html.push_str("</tr>");
+            }
+            continue;
+        }
+
         if let Some((tag, text)) = item(trimmed) {
             match block {
                 Block::List(open) if open == tag => {}
@@ -99,7 +137,22 @@ fn close(html: &mut String, block: Block) {
         Block::Paragraph => html.push_str("</p>"),
         Block::List(tag) => html.push_str(&format!("</{tag}>")),
         Block::Fence => html.push_str("</pre>"),
+        Block::Table(_) => html.push_str("</table>"),
     }
+}
+
+/// The cells of `line`, if it is a table row.
+fn row(line: &str) -> Option<Vec<&str>> {
+    let inner = line.strip_prefix(ROW)?;
+    let inner = inner.strip_suffix(ROW).unwrap_or(inner);
+    Some(inner.split(ROW).map(str::trim).collect())
+}
+
+/// Whether `cells` are the row of dashes under a table header.
+fn separator(cells: &[&str]) -> bool {
+    cells
+        .iter()
+        .all(|cell| !cell.is_empty() && cell.chars().all(|sign| SEPARATOR.contains(&sign)))
 }
 
 /// The rendered heading, if `line` is one.

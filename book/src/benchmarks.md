@@ -60,6 +60,10 @@ Nothing has to be switched off for it either. The loop is `ava` deciding to star
 - The scorer executes the submission under a timeout and an output cap.
 - A broken submission is an unsolved task, not an error. Only a broken harness fails a run.
 
+## Analyzing a run
+
+`ava analyze -r <run> -a <agent> -m <model>` starts the agent once on `runs/<run>` and this book, both mounted read only, with the analysis prompt as its task. The summary of a few sentences and the full analysis in markdown it writes are assembled into `analysis.json` in the run directory, next to the analyst's console `analysis.log` and the access log of its proxy `analysis.access.log`; a failed analysis leaves its reason there instead. The run page shows the summary with the analysis folded behind it and offers the same behind a button. `-e` and `-t` set the thinking level and the seconds, 1200 by default. The start panel of the web interface can have a run analyzed the moment it is over, by claude on claude-sonnet-5 at medium thinking unless chosen otherwise, and the run shows as analyzing meanwhile.
+
 ## Rating multi player matches
 
 The playouts are not implemented yet, the ratings are.

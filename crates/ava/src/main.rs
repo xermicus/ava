@@ -21,6 +21,7 @@ fn main() {
     let outcome = match command {
         Some(arguments::SubCommand::Agent(ref agent)) => ava_run::docker::run_agent(agent),
         Some(arguments::SubCommand::Image(ref image)) => ava_run::docker::build_images(image),
+        Some(arguments::SubCommand::Analyze(ref command)) => ava_run::docker::analyze(command),
         Some(arguments::SubCommand::Score(ref command)) => ava_scorer::score::run(command),
         Some(arguments::SubCommand::Serve(ref command)) => ava_web::serve::run(command),
         Some(arguments::SubCommand::Remote(ref command)) => ava_scorer::remote::run(command),

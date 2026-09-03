@@ -18,10 +18,19 @@ const STANDINGS_LIMIT: usize = 3;
 const DEFAULT_GAME: &str = "sanity-check";
 const DEFAULT_THINKING: &str = "medium";
 
+/// What the analysis settings offer preselected.
+const DEFAULT_ANALYST: &str = "claude";
+const DEFAULT_ANALYST_MODEL: &str = "claude-sonnet-5";
+const DEFAULT_ANALYST_THINKING: &str = "medium";
+
 /// The files of a run the raw file routes hand out, and nothing else.
-const RUN_FILES: [&str; 9] = [
+const RUN_FILES: [&str; 13] = [
     docker::MONITOR_FILE,
     docker::AGENT_LOG,
+    docker::ANALYSIS_FILE,
+    docker::ANALYSIS_LOG,
+    docker::ANALYSIS_ACCESS_LOG,
+    docker::ANALYSIS_ERROR_LOG,
     docker::SCORE_LOG,
     docker::METADATA_FILE,
     docker::SCORE_FILE,
@@ -184,6 +193,10 @@ pub(crate) struct Selection {
     pub thinking: Option<String>,
     pub limit: Option<String>,
     pub parallel: Option<String>,
+    pub analyze: Option<String>,
+    pub analyst: Option<String>,
+    pub analyst_model: Option<String>,
+    pub analyst_thinking: Option<String>,
 }
 
 /// A run the server was asked to start whose containers are not up yet.
@@ -203,6 +216,8 @@ struct RunEntry {
     metadata: serde_json::Value,
     score: Option<serde_json::Value>,
     live: bool,
+    /// Whether an analyst is up for the run.
+    analyzing: bool,
     /// The wall clock seconds the run actually took, for a finished run.
     wall: Option<u64>,
     /// The newest heartbeat of the run loop, for a live run.
@@ -302,6 +317,8 @@ impl RunEntry {
                     "live"
                 },
             )
+        } else if self.analyzing {
+            pill(STARTING_PILL, true, "analyzing")
         } else if self.solved() {
             pill(SOLVED_PILL, false, "solved")
         } else if self.score.is_some() {
@@ -540,33 +557,102 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
          <input type=\"checkbox\" name=\"force\" class=\"h-4 w-4 rounded accent-indigo-500\">\
          <span class=\"{NOTE_CLASSES}\">rebuild images</span></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">start</button>\
+         <div class=\"w-full flex flex-wrap items-end gap-4\">\
+         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
+         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyze the run</label>\
+         <div class=\"hidden peer-checked:contents\">{}{}{}</div>\
+         </div>\
          </form>",
         select(
+            "agent",
             "agent",
             &harnesses,
             selection.agent.as_deref().unwrap_or("")
         ),
-        select("model", &models, selection.model.as_deref().unwrap_or("")),
         select(
+            "model",
+            "model",
+            &models,
+            selection.model.as_deref().unwrap_or("")
+        ),
+        select(
+            "game",
             "game",
             &games,
             selection.game.as_deref().unwrap_or(DEFAULT_GAME)
         ),
         select(
             "thinking",
+            "thinking",
             &levels,
             selection.thinking.as_deref().unwrap_or(DEFAULT_THINKING)
         ),
+        select(
+            "analyst",
+            "analyst",
+            &harnesses,
+            selection.analyst.as_deref().unwrap_or(DEFAULT_ANALYST)
+        ),
+        select(
+            "analyst_model",
+            "model",
+            &models,
+            selection
+                .analyst_model
+                .as_deref()
+                .unwrap_or(DEFAULT_ANALYST_MODEL)
+        ),
+        select(
+            "analyst_thinking",
+            "thinking",
+            &levels,
+            selection
+                .analyst_thinking
+                .as_deref()
+                .unwrap_or(DEFAULT_ANALYST_THINKING)
+        ),
+        analyze = if selection.analyze.as_deref() == Some("on") {
+            " checked"
+        } else {
+            ""
+        },
     ))
 }
 
-/// A labeled dropdown named `name` offering `options`, with `selected` marked.
+/// The form starting an analysis of the run.
+fn analysis_panel(name: &str) -> std::io::Result<String> {
+    let registry = registry::load()?;
+    let harnesses: Vec<&str> = registry
+        .harnesses
+        .iter()
+        .map(|harness| harness.name.as_str())
+        .collect();
+    let models: Vec<&str> = registry
+        .models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect();
+    let mut levels = vec![""];
+    levels.extend(registry::THINKING_LEVELS);
+
+    Ok(format!(
+        "<form method=\"post\" action=\"/run/{}/analyze\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
+         {}{}{}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">analyze</button></form>",
+        escape(name),
+        select("agent", "agent", &harnesses, DEFAULT_ANALYST),
+        select("model", "model", &models, DEFAULT_ANALYST_MODEL),
+        select("thinking", "thinking", &levels, DEFAULT_ANALYST_THINKING),
+    ))
+}
+
+/// A dropdown named `name` under `label`, offering `options` with `selected`
+/// marked.
 ///
 /// The dropdowns grow to fill the form row, which puts the right edge of the
 /// form on the edge the tables end on.
-fn select(name: &str, options: &[&str], selected: &str) -> String {
+fn select(name: &str, label: &str, options: &[&str], selected: &str) -> String {
     let mut rendered = format!(
-        "<label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{name}</span>\
+        "<label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{label}</span>\
          <select class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" name=\"{name}\">"
     );
     for option in options {
@@ -583,15 +669,20 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
 
     let metadata = read_json(&directory.join(docker::METADATA_FILE)).unwrap_or_default();
     let score = read_json(&directory.join(docker::SCORE_FILE));
-    let live = live_runs()
+    let running = live_runs();
+    let live = running
         .iter()
-        .any(|running| running == &docker::sandbox_container(name));
+        .any(|container| container == &docker::sandbox_container(name));
+    let analyzing = running
+        .iter()
+        .any(|container| container == &docker::analyst_container(name));
     let entry = RunEntry {
         name: name.to_string(),
         live,
         wall: wall_seconds(&directory, number(&metadata, "started_seconds")),
         monitor: read_json(&directory.join(docker::MONITOR_FILE)),
         attempts: attempts_of(&directory, name, live),
+        analyzing,
         metadata,
         score,
     };
@@ -612,6 +703,40 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         entry.agent(),
         usage::age(entry.started()),
     ));
+
+    if !entry.live {
+        let report = directory.join(docker::ANALYSIS_FILE);
+        let analysis = read_json(&report);
+        let failed = analysis
+            .as_ref()
+            .is_some_and(|analysis| analysis.get(docker::ANALYSIS_ERROR).is_some());
+        let analyzed = match modified_seconds(&report) {
+            Some(written) if failed => format!("failed {} ago", usage::age(written)),
+            Some(written) => format!("analyzed {} ago", usage::age(written)),
+            None => "not analyzed yet".to_string(),
+        };
+        body.push_str(&format!(
+            "<p class=\"{TITLE_CLASSES}\">analysis <span class=\"{NOTE_CLASSES} font-normal\">{analyzed}</span></p>"
+        ));
+        if let Some(analysis) = analysis {
+            if failed {
+                body.push_str(&format!(
+                    "<p class=\"mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p>",
+                    escape(text(&analysis, docker::ANALYSIS_ERROR))
+                ));
+            } else {
+                body.push_str(&format!(
+                    "<div class=\"{CARD_CLASSES} px-4 py-3 mb-4\"><p class=\"max-w-prose leading-relaxed text-neutral-200\">{}</p>\
+                     <details class=\"mt-3\"><summary class=\"{SUMMARY_CLASSES}\">the full analysis</summary><div class=\"mt-2\">{}</div></details></div>",
+                    escape(text(&analysis, "analysis_summary")),
+                    crate::markdown::render(text(&analysis, "analysis"))
+                ));
+            }
+        }
+        if !analyzing {
+            body.push_str(&analysis_panel(name)?);
+        }
+    }
 
     let solved_at = match (entry.live, best_push(&entry.attempts)) {
         (true, Some(push)) => format!("{}s", number(push, "seconds")),
@@ -1056,6 +1181,13 @@ pub(crate) fn run_directory(name: &str) -> std::io::Result<std::path::PathBuf> {
     Ok(directory)
 }
 
+/// Whether an analyst is up for the named run.
+pub(crate) fn analyzing(name: &str) -> bool {
+    live_runs()
+        .iter()
+        .any(|container| container == &docker::analyst_container(name))
+}
+
 /// The names of the containers running right now.
 fn live_runs() -> Vec<String> {
     process::run_and_assume_success("docker", &["ps", "--format", "{{.Names}}"])
@@ -1089,6 +1221,9 @@ fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
             wall: wall_seconds(&directory, number(&metadata, "started_seconds")),
             monitor: read_json(&directory.join(docker::MONITOR_FILE)),
             attempts: attempts_of(&directory, name, live),
+            analyzing: running
+                .iter()
+                .any(|container| container == &docker::analyst_container(name)),
             metadata,
             name: name.to_string(),
         });
@@ -1246,19 +1381,20 @@ fn console_tail(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 fn wall_seconds(directory: &std::path::Path, started: u64) -> Option<u64> {
     let finished = [docker::SCORE_FILE, docker::AGENT_LOG]
         .iter()
-        .find_map(|file| {
-            std::fs::metadata(directory.join(file))
-                .ok()?
-                .modified()
-                .ok()
-        })?;
-
-    let finished = finished
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+        .find_map(|file| modified_seconds(&directory.join(file)))?;
 
     Some(finished.saturating_sub(started))
+}
+
+/// The epoch second the file at `path` was last written, if it is there.
+fn modified_seconds(path: &std::path::Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
 }
 
 /// The limit rows of one backend out of its `name=value` pairs.
