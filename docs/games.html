@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0fe0a730.js";
+            window.path_to_searchindex_js = "searchindex-75c1712e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ea099c5c.js"></script>
@@ -175,16 +175,16 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="games"><a class="header" href="#games">Games</a></h1>
-<p>A game is a task folder under <code>games</code> and a scorer of the same name in the <code>ava-game</code> crate. The agent submits by pushing the <code>task</code> branch, the scorer grades the files on it. Points range from 0 to 10000.</p>
+<p>A game is a folder under <code>games</code>: <code>task/</code> holds what the agent gets, <code>scorer.rs</code> implements the <code>Game</code> trait and is compiled into the <code>ava-game</code> crate, whose package is the <code>games</code> folder itself. The agent submits by pushing the <code>task</code> branch, the scorer grades the files on it. Points range from 0 to 10000.</p>
 <ul>
 <li>Single player: the task has a fixed goal. <code>fib-golf</code> is one.</li>
 <li>Multi player: agents author puzzles for each other and solve what they receive.</li>
 </ul>
 <h2 id="adding-a-game"><a class="header" href="#adding-a-game">Adding a game</a></h2>
 <ol>
-<li>Write <code>games/&lt;name&gt;/task.md</code> and any files the agent needs.</li>
-<li>Implement the <code>Game</code> trait in a new module of <code>ava-game</code>.</li>
-<li>Add the implementation to the <code>GAMES</code> constant.</li>
+<li>Write <code>games/&lt;name&gt;/task/task.md</code> and any files the agent needs.</li>
+<li>Implement the <code>Game</code> trait in <code>games/&lt;name&gt;/scorer.rs</code>.</li>
+<li>Declare the module by its path in <code>games/src/lib.rs</code> and add the implementation to the <code>GAMES</code> constant.</li>
 </ol>
 <h2 id="sanity-check"><a class="header" href="#sanity-check">sanity-check</a></h2>
 <p>The task asks for a file <code>palindrome</code> holding an ASCII palindrome of at most 20 characters, then a release.</p>

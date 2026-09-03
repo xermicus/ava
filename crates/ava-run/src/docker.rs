@@ -258,6 +258,7 @@ const SCORER_IMAGE: &str = "ava/scorer";
 const SCORER_DOCKERFILE: &str = "scorer/Dockerfile";
 const REPOSITORY_CONTEXT: &str = ".";
 const GAMES_DIRECTORY: &str = "games";
+const TASK_DIRECTORY: &str = "task";
 const TASK_INSTRUCTIONS: &str = "README.md";
 
 const TASK_MOUNT: &str = "/home/agent/task";
@@ -617,7 +618,10 @@ fn start_score_server(run: &str, game: &str) -> std::io::Result<()> {
     let container = scorer_container(run);
     log::info!("starting the scoring server {container}");
 
-    let task = read_only_mount(&format!("{GAMES_DIRECTORY}/{game}"), TASK_MOUNT)?;
+    let task = read_only_mount(
+        &format!("{GAMES_DIRECTORY}/{game}/{TASK_DIRECTORY}"),
+        TASK_MOUNT,
+    )?;
     let readme = read_only_mount(
         &format!("{GAMES_DIRECTORY}/{TASK_INSTRUCTIONS}"),
         README_MOUNT,
@@ -1099,7 +1103,9 @@ fn require_game(game: &str) -> std::io::Result<()> {
         ));
     }
 
-    let task = std::path::Path::new(GAMES_DIRECTORY).join(game);
+    let task = std::path::Path::new(GAMES_DIRECTORY)
+        .join(game)
+        .join(TASK_DIRECTORY);
     if !task.is_dir() {
         return Err(std::io::Error::other(format!(
             "the task folder {} does not exist",

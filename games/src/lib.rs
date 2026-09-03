@@ -1,6 +1,8 @@
 //! The games scoring benchmark submissions.
 
+#[path = "../fib-golf/scorer.rs"]
 pub mod fib_golf;
+#[path = "../sanity-check/scorer.rs"]
 pub mod sanity_check;
 pub mod scoring;
 

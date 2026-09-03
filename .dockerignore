@@ -2,5 +2,8 @@
 !Cargo.toml
 !Cargo.lock
 !crates
+!games/Cargo.toml
+!games/src
+!games/*/scorer.rs
 !scorer/entry.sh
 !scorer/hooks

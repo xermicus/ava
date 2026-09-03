@@ -1,6 +1,6 @@
 # Developer guide
 
-The codebase is a cargo workspace under `crates/` with a minimal dependency budget. The `ava` binary is the CLI plumbing over the library crates: `ava-run` orchestrates runs and images, `ava-scorer` serves and scores submissions, `ava-web` renders the web interface, `ava-game` defines the games.
+The codebase is a cargo workspace under `crates/` and `games/` with a minimal dependency budget. The `ava` binary is the CLI plumbing over the library crates: `ava-run` orchestrates runs and images, `ava-scorer` serves and scores submissions, `ava-web` renders the web interface, `ava-game`, the `games` folder, defines the games.
 
 Engineering principles: this is a suckless codebase. NPM and PIP and other stuff that just sucks are FORBIDDEN! 
 Because dependencies are for suckers.

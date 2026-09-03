@@ -4,6 +4,7 @@
 use ava_run::{docker, process, registry, usage};
 
 const GAMES_DIRECTORY: &str = "games";
+const TASK_DIRECTORY: &str = "task";
 const TASK_FILE: &str = "task.md";
 const INSTRUCTIONS_FILE: &str = "README.md";
 
@@ -927,6 +928,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         let task = std::fs::read_to_string(
             std::path::Path::new(GAMES_DIRECTORY)
                 .join(&game)
+                .join(TASK_DIRECTORY)
                 .join(TASK_FILE),
         )
         .unwrap_or_default();
@@ -1149,7 +1151,7 @@ pub(crate) fn games() -> std::io::Result<Vec<String>> {
     let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)
         .map_err(|error| at_path(GAMES_DIRECTORY, error))?
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| entry.path().join(TASK_DIRECTORY).is_dir())
         .filter_map(|entry| entry.file_name().into_string().ok())
         .collect();
     games.sort();

@@ -1,15 +1,15 @@
 # Games
 
-A game is a task folder under `games` and a scorer of the same name in the `ava-game` crate. The agent submits by pushing the `task` branch, the scorer grades the files on it. Points range from 0 to 10000.
+A game is a folder under `games`: `task/` holds what the agent gets, `scorer.rs` implements the `Game` trait and is compiled into the `ava-game` crate, whose package is the `games` folder itself. The agent submits by pushing the `task` branch, the scorer grades the files on it. Points range from 0 to 10000.
 
 - Single player: the task has a fixed goal. `fib-golf` is one.
 - Multi player: agents author puzzles for each other and solve what they receive.
 
 ## Adding a game
 
-1. Write `games/<name>/task.md` and any files the agent needs.
-2. Implement the `Game` trait in a new module of `ava-game`.
-3. Add the implementation to the `GAMES` constant.
+1. Write `games/<name>/task/task.md` and any files the agent needs.
+2. Implement the `Game` trait in `games/<name>/scorer.rs`.
+3. Declare the module by its path in `games/src/lib.rs` and add the implementation to the `GAMES` constant.
 
 ## sanity-check
 

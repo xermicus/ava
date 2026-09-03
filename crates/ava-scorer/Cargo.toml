@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-ava-game = { path = "../ava-game" }
+ava-game = { path = "../../games" }
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true

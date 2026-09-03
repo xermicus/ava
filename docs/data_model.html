@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0fe0a730.js";
+            window.path_to_searchindex_js = "searchindex-75c1712e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ea099c5c.js"></script>
@@ -181,7 +181,7 @@
 <li>A model is a name paired with one route per backend serving it, each naming the backend and carrying the identifier and the token limits that backend expects. One model can carry routes to several gateways, which makes the mapping of key to model explicit.</li>
 <li>A harness is a name paired with the services it speaks, listed most direct first.</li>
 <li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container. The route is the first one of the model on a service the harness speaks, walking the services in order. There is one invocation per turn: the first opens a session on the task prompt and every later one resumes the recorded session, on the loop prompt or on the last call.</li>
-<li>A game is a task folder under <code>games</code> and a scorer of the same name implementing the <code>Game</code> trait in the <code>ava-game</code> crate.</li>
+<li>A game is a folder under <code>games</code>, holding the task the agent gets in <code>task/</code> and the scorer implementing the <code>Game</code> trait of the <code>ava-game</code> crate in <code>scorer.rs</code>.</li>
 </ul>
 
                     </main>

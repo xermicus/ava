@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0fe0a730.js";
+            window.path_to_searchindex_js = "searchindex-75c1712e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ea099c5c.js"></script>
@@ -175,7 +175,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="developer-guide"><a class="header" href="#developer-guide">Developer guide</a></h1>
-<p>The codebase is a cargo workspace under <code>crates/</code> with a minimal dependency budget. The <code>ava</code> binary is the CLI plumbing over the library crates: <code>ava-run</code> orchestrates runs and images, <code>ava-scorer</code> serves and scores submissions, <code>ava-web</code> renders the web interface, <code>ava-game</code> defines the games.</p>
+<p>The codebase is a cargo workspace under <code>crates/</code> and <code>games/</code> with a minimal dependency budget. The <code>ava</code> binary is the CLI plumbing over the library crates: <code>ava-run</code> orchestrates runs and images, <code>ava-scorer</code> serves and scores submissions, <code>ava-web</code> renders the web interface, <code>ava-game</code>, the <code>games</code> folder, defines the games.</p>
 <p>Engineering principles: this is a suckless codebase. NPM and PIP and other stuff that just sucks are FORBIDDEN!
 Because dependencies are for suckers.
 Frontend assets are vendored.</p>

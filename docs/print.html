@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0fe0a730.js";
+            window.path_to_searchindex_js = "searchindex-75c1712e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ea099c5c.js"></script>
@@ -187,7 +187,7 @@
 <p><code>ava --usage</code> asks every backend for its limits and prints them with the usage recorded over the runs on disk. The setup page shows the same.</p>
 <ul>
 <li>
-<p><code>games/&lt;name&gt;</code> and <code>games/README.md</code> are mounted read only into the scorer container, which seeds them as the <code>master</code> commit of its repository before the hooks exist. The task description is <code>task.md</code>; the README holds the instructions shared by every game and a one line prompt points the harness at it. <code>AGENTS.md</code> and <code>CLAUDE.md</code> in the workspace are symlinks to it, the files every harness reads into context by itself when a session starts.</p>
+<p><code>games/&lt;name&gt;/task</code> and <code>games/README.md</code> are mounted read only into the scorer container, which seeds them as the <code>master</code> commit of its repository before the hooks exist. The task description is <code>task.md</code>; the README holds the instructions shared by every game and a one line prompt points the harness at it. <code>AGENTS.md</code> and <code>CLAUDE.md</code> in the workspace are symlinks to it, the files every harness reads into context by itself when a session starts.</p>
 </li>
 <li>
 <p><code>ava</code> loops the harness over that prompt. A turn is one start of the harness: it answers, it exits, and that exit is the boundary the next turn starts on with <code>Loop iteration N.</code> ahead of the same prompt. Every harness resumes its recorded session by its own option, <code>--continue</code> for claude, pi and opencode and <code>codex exec resume</code> for codex, so the conversation accumulates across turns instead of restarting. The loop is one thing rather than one per harness, and the turn count is something the run records rather than something only the harness knows. <code>ava</code> starts the sandbox and only watches the clock and the done marker, and starts it a second time for the last call. The console goes to <code>runs/&lt;run&gt;/agent.log</code>, cut at 4 GiB; <code>ava</code> logs a status line every minute and warns when the agent stays silent for long or repeats one output line.</p>
@@ -248,16 +248,16 @@
 <p><code>Scoring</code> turns played matches into a leaderboard. <code>bradley-terry</code> fits the whole match history, <code>elo</code> updates in match order.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="games"><a class="header" href="#games">Games</a></h1>
-<p>A game is a task folder under <code>games</code> and a scorer of the same name in the <code>ava-game</code> crate. The agent submits by pushing the <code>task</code> branch, the scorer grades the files on it. Points range from 0 to 10000.</p>
+<p>A game is a folder under <code>games</code>: <code>task/</code> holds what the agent gets, <code>scorer.rs</code> implements the <code>Game</code> trait and is compiled into the <code>ava-game</code> crate, whose package is the <code>games</code> folder itself. The agent submits by pushing the <code>task</code> branch, the scorer grades the files on it. Points range from 0 to 10000.</p>
 <ul>
 <li>Single player: the task has a fixed goal. <code>fib-golf</code> is one.</li>
 <li>Multi player: agents author puzzles for each other and solve what they receive.</li>
 </ul>
 <h2 id="adding-a-game"><a class="header" href="#adding-a-game">Adding a game</a></h2>
 <ol>
-<li>Write <code>games/&lt;name&gt;/task.md</code> and any files the agent needs.</li>
-<li>Implement the <code>Game</code> trait in a new module of <code>ava-game</code>.</li>
-<li>Add the implementation to the <code>GAMES</code> constant.</li>
+<li>Write <code>games/&lt;name&gt;/task/task.md</code> and any files the agent needs.</li>
+<li>Implement the <code>Game</code> trait in <code>games/&lt;name&gt;/scorer.rs</code>.</li>
+<li>Declare the module by its path in <code>games/src/lib.rs</code> and add the implementation to the <code>GAMES</code> constant.</li>
 </ol>
 <h2 id="sanity-check"><a class="header" href="#sanity-check">sanity-check</a></h2>
 <p>The task asks for a file <code>palindrome</code> holding an ASCII palindrome of at most 20 characters, then a release.</p>
@@ -361,11 +361,11 @@ The metrics also record which models were accessed through the proxy, exposing a
 <li>A model is a name paired with one route per backend serving it, each naming the backend and carrying the identifier and the token limits that backend expects. One model can carry routes to several gateways, which makes the mapping of key to model explicit.</li>
 <li>A harness is a name paired with the services it speaks, listed most direct first.</li>
 <li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container. The route is the first one of the model on a service the harness speaks, walking the services in order. There is one invocation per turn: the first opens a session on the task prompt and every later one resumes the recorded session, on the loop prompt or on the last call.</li>
-<li>A game is a task folder under <code>games</code> and a scorer of the same name implementing the <code>Game</code> trait in the <code>ava-game</code> crate.</li>
+<li>A game is a folder under <code>games</code>, holding the task the agent gets in <code>task/</code> and the scorer implementing the <code>Game</code> trait of the <code>ava-game</code> crate in <code>scorer.rs</code>.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="developer-guide"><a class="header" href="#developer-guide">Developer guide</a></h1>
-<p>The codebase is a cargo workspace under <code>crates/</code> with a minimal dependency budget. The <code>ava</code> binary is the CLI plumbing over the library crates: <code>ava-run</code> orchestrates runs and images, <code>ava-scorer</code> serves and scores submissions, <code>ava-web</code> renders the web interface, <code>ava-game</code> defines the games.</p>
+<p>The codebase is a cargo workspace under <code>crates/</code> and <code>games/</code> with a minimal dependency budget. The <code>ava</code> binary is the CLI plumbing over the library crates: <code>ava-run</code> orchestrates runs and images, <code>ava-scorer</code> serves and scores submissions, <code>ava-web</code> renders the web interface, <code>ava-game</code>, the <code>games</code> folder, defines the games.</p>
 <p>Engineering principles: this is a suckless codebase. NPM and PIP and other stuff that just sucks are FORBIDDEN!
 Because dependencies are for suckers.
 Frontend assets are vendored.</p>

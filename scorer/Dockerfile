@@ -2,6 +2,7 @@ FROM ava/host-env AS builder
 
 COPY --chown=1000:1000 Cargo.toml Cargo.lock /home/agent/scorer/
 COPY --chown=1000:1000 crates /home/agent/scorer/crates
+COPY --chown=1000:1000 games /home/agent/scorer/games
 
 RUN cargo install --path /home/agent/scorer/crates/ava --locked
 
