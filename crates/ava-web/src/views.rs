@@ -44,9 +44,23 @@ const NUMERIC_MARKER: char = '#';
 /// A `*` prefix on a header marks the column taking the slack of the row.
 const SLACK_MARKER: char = '*';
 
+/// Whatever follows a `|` in a header is the tooltip explaining that column
+/// rather than part of its title.
+const TOOLTIP_SEPARATOR: char = '|';
+
 /// The unified runs table, holding pending, live and finished runs alike.
 const RUN_HEADERS: [&str; 10] = [
-    "RUN", "STATE", "GAME", "MODEL", "HARNESS", "*TIME", "#PUSHES", "#CUT", "*POINTS", "",
+    "RUN|the run directory under runs/, and how long ago it started",
+    "STATE|live or the last call while the run goes, the verdict of its best push once it is over",
+    "GAME|the game that was played, and the scorer that graded it",
+    "MODEL|the model under test",
+    "HARNESS|the harness driving the model, with the thinking level it was asked for",
+    "*TIME|seconds spent of the time budget, red once the whole budget is gone",
+    "#PUSHES|the pushes to the task branch the scorer graded",
+    "#CUT|requests a model answered without ever reporting usage, so the stream was cut short \
+     upstream",
+    "*POINTS|the best solving push, on the 0 to 10000 scale every game scores within",
+    "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
 const NO_LIMITS_NOTE: &str = "no limits reported yet, the first run of a backend brings them";
@@ -82,6 +96,10 @@ const TABLE_CLASSES: &str = "w-full border-collapse";
 const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap px-3 first:pl-4 last:pr-4";
 const SLACK_COLUMN_CLASSES: &str = "w-full px-3 first:pl-4 last:pr-4";
 const HEADER_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500 py-2.5";
+
+/// A title with a tooltip behind it.
+const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoration-neutral-700 \
+     underline-offset-4 hover:text-neutral-300 hover:decoration-neutral-500 transition-colors";
 const CELL_CLASSES: &str = "py-2.5 border-t border-neutral-800 align-middle";
 const ROW_CLASSES: &str = "hover:bg-neutral-800/40 transition-colors";
 const NUMERIC_CLASSES: &str = "text-right font-mono tabular-nums";
@@ -117,9 +135,10 @@ const PILL_CLASSES: &str =
     "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium";
 const LIVE_PILL: &str = "bg-emerald-500/10 text-emerald-400";
 const SOLVED_PILL: &str = "bg-emerald-500/10 text-emerald-400";
-const UNSOLVED_PILL: &str = "bg-neutral-800 text-neutral-400";
+const UNSOLVED_PILL: &str = "bg-orange-500/10 text-orange-400";
 const FAILED_PILL: &str = "bg-red-500/10 text-red-400";
 const STARTING_PILL: &str = "bg-amber-500/10 text-amber-400";
+const NEUTRAL_PILL: &str = "bg-neutral-800 text-neutral-400";
 
 /// The meters: a track, a fill and a mono label.
 const METER_TRACK_CLASSES: &str =
@@ -131,9 +150,11 @@ const POINTS_LABEL_WIDTH: &str = "w-12";
 const ELAPSED_LABEL_WIDTH: &str = "w-24";
 const USAGE_LABEL_WIDTH: &str = "w-16";
 const USAGE_FILL: &str = "bg-amber-500";
-const POINTS_FILL: &str = "bg-emerald-500";
-const ELAPSED_FILL: &str = "bg-indigo-500";
-const FINISHED_FILL: &str = "bg-neutral-600";
+const POINTS_FILL: &str = "bg-amber-500";
+
+/// The time meter, tinted by whether the budget held.
+const TIME_SPENT_FILL: &str = "bg-red-500";
+const TIME_LEFT_FILL: &str = "bg-emerald-500";
 
 /// The tiles summarizing a run, one figure each.
 const TILE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3";
@@ -365,14 +386,14 @@ impl RunEntry {
         meter(
             elapsed,
             self.limit(),
-            ELAPSED_FILL,
+            time_fill(elapsed, self.limit()),
             &format!("{elapsed}/{}s", self.limit()),
             ELAPSED_LABEL_WIDTH,
         )
     }
 
-    /// The time cell of the runs table: the same meter against the budget
-    /// for every run, filling while live and grey once the run took its time.
+    /// The time cell of the runs table: the same meter against the budget for
+    /// every run.
     fn time_cell(&self) -> String {
         if self.live {
             return self.elapsed_meter();
@@ -382,7 +403,7 @@ impl RunEntry {
         meter(
             wall,
             self.limit(),
-            FINISHED_FILL,
+            time_fill(wall, self.limit()),
             &format!("{wall}/{}s", self.limit()),
             ELAPSED_LABEL_WIDTH,
         )
@@ -1417,7 +1438,7 @@ fn status_pill(status: Option<&str>) -> String {
         "allowed" => SOLVED_PILL,
         "allowed_warning" => STARTING_PILL,
         "rejected" => FAILED_PILL,
-        _ => UNSOLVED_PILL,
+        _ => NEUTRAL_PILL,
     };
 
     pill(tint, false, &escape(status))
@@ -1480,6 +1501,27 @@ fn pill(tint: &str, pulsing: bool, label: &str) -> String {
     format!("<span class=\"{PILL_CLASSES} {tint}\">{dot}{label}</span>")
 }
 
+/// A column title, carrying its tooltip when the header named one.
+fn heading(title: &str, tooltip: &str) -> String {
+    if tooltip.is_empty() {
+        return title.to_string();
+    }
+
+    format!(
+        "<span class=\"{TOOLTIP_CLASSES}\" title=\"{}\">{title}</span>",
+        escape(tooltip)
+    )
+}
+
+/// The fill of a time meter.
+fn time_fill(spent: u64, limit: u64) -> &'static str {
+    if spent >= limit {
+        TIME_SPENT_FILL
+    } else {
+        TIME_LEFT_FILL
+    }
+}
+
 /// A points value behind its meter on the shared 0 to 10000 scale.
 fn points_meter(points: u64) -> String {
     meter(
@@ -1539,9 +1581,13 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
     for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
         let align = if *numeric { "text-right" } else { "text-left" };
         let (classes, style) = column(index);
+        let (title, tooltip) = header.split_once(TOOLTIP_SEPARATOR).unwrap_or((header, ""));
         html.push_str(&format!(
             "<th class=\"{classes} {HEADER_CLASSES} {align}\"{style}>{}</th>",
-            header.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER])
+            heading(
+                title.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER]),
+                tooltip
+            )
         ));
     }
     html.push_str("</tr></thead><tbody>");
