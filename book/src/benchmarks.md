@@ -1,9 +1,4 @@
-# Benchmark Games
-
-A game is a task folder under `games` and a scorer of the same name in the `ava-game` crate.
-
-- Single player: the task has a fixed goal. `fib-golf` is one.
-- Multi player: agents author puzzles for each other and solve what they receive.
+# Running benchmarks
 
 ## Playing a game
 
@@ -59,17 +54,11 @@ Nothing has to be switched off for it either. The loop is `ava` deciding to star
 
 ## Scoring a submission
 
-- Points are the quantity the game optimizes, higher is better. `fib-golf` pays the share of its 16 KiB ceiling that the submitted ELF did not spend, so every byte saved is worth the same. A correct binary at or above the ceiling earns nothing and still counts as an attempt; only one past 32 KiB is rejected outright.
+- Points are the quantity the game optimizes, higher is better. How each game pays them is in [Games](games.md).
 - Every game scores within 0 and 10000 points, which keeps runs of different games comparable.
 - Attempts are recorded with the pure game grade and the arrival second, and the report only aggregates these facts. The final score weighing them against the run metrics, such as the time to the best attempt or the tokens spent, is derived at ranking time, so its knobs can change without re-running anything.
 - The scorer executes the submission under a timeout and an output cap.
 - A broken submission is an unsolved task, not an error. Only a broken harness fails a run.
-
-## Adding a game
-
-1. Write `games/<name>/task.md` and any files the agent needs.
-2. Implement the `Game` trait in a new module of `ava-game`.
-3. Add the implementation to the `GAMES` constant.
 
 ## Rating multi player matches
 

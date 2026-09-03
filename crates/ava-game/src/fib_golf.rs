@@ -17,9 +17,14 @@ const FIBONACCI: [u64; 47] = [
     267914296, 433494437, 701408733, 1134903170, 1836311903,
 ];
 
-/// The size a solving ELF is scored against, earning the share of it left
-/// unspent.
+/// The size a solving ELF earns nothing at.
 const SCORE_CEILING: u64 = 1 << 14;
+
+/// The size a solving ELF earns everything at.
+const SCORE_FLOOR: u64 = 1 << 7;
+
+/// The points decay exponentially with the size, by e over this many bytes.
+const SCORE_DECAY_BYTES: f64 = 1500.0;
 
 /// The size a submission is rejected at. Between the ceiling and this it
 /// scores nothing and still reports whether the output was right.
@@ -146,9 +151,11 @@ fn difference(output: &[u8], expected: &[u8]) -> usize {
 
 /// The points for a solving ELF of `bytes`.
 fn earned_points(bytes: u64) -> u64 {
-    let saved = SCORE_CEILING.saturating_sub(bytes);
+    let decay = |bytes: u64| (-((bytes - SCORE_FLOOR) as f64) / SCORE_DECAY_BYTES).exp();
+    let at_ceiling = decay(SCORE_CEILING);
+    let share = (decay(bytes.clamp(SCORE_FLOOR, SCORE_CEILING)) - at_ceiling) / (1.0 - at_ceiling);
 
-    (saved * crate::MAXIMUM_POINTS + SCORE_CEILING / 2) / SCORE_CEILING
+    (crate::MAXIMUM_POINTS as f64 * share).round() as u64
 }
 
 /// The score of a submission which does not solve the task.
