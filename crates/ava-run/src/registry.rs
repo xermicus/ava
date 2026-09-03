@@ -45,10 +45,12 @@ pub enum Start {
 /// The options resuming the recorded session of each harness.
 const CLAUDE_CONTINUE: &str = "--continue";
 const PI_CONTINUE: &str = "--continue";
-const OPENCODE_RUN: [&str; 2] = ["run", "--auto"];
 const OPENCODE_CONTINUE: &str = "--continue";
 const CODEX_EXEC: [&str; 2] = ["exec", "--json"];
 const CODEX_RESUME: [&str; 4] = ["exec", "resume", "--last", "--json"];
+
+/// The arguments printing every event of an unattended opencode run as a JSON line.
+const OPENCODE_RUN: [&str; 4] = ["run", "--auto", "--format", "json"];
 
 /// How much thinking a run asks for, weakest first.
 ///
