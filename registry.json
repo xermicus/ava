@@ -49,6 +49,23 @@
    ]
   },
   {
+   "name": "claude-haiku-4-5",
+   "routes": [
+    {
+     "backend": "anthropic",
+     "id": "claude-haiku-4-5",
+     "context_window": 200000,
+     "max_output": 64000
+    },
+    {
+     "backend": "substrate",
+     "id": "openrouter/anthropic/claude-haiku-4.5",
+     "context_window": 200000,
+     "max_output": 64000
+    }
+   ]
+  },
+  {
    "name": "kimi-k3",
    "routes": [
     {
