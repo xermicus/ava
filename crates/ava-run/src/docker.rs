@@ -868,7 +868,8 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
     let agent = command.name.as_str();
     require_game(&command.game)?;
 
-    let invocation = crate::registry::load()?.invocation(
+    let registry = crate::registry::load()?;
+    let invocation = registry.invocation(
         agent,
         &command.model,
         TASK_PROMPT,
@@ -885,7 +886,7 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
 
     build_scorer_image(force)?;
 
-    std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map())?;
+    std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
     build_image(PROXY_IMAGE, PROXY_CONTEXT, force)?;
     ensure_egress_network()?;
 
@@ -1029,9 +1030,9 @@ fn score_run(run: &str, command: &Agent, harness_version: &str) -> std::io::Resu
 /// Run the sandbox itself, without a network, and report its status.
 ///
 /// The sandbox gets no network interface beyond loopback, so the socket volume
-/// is its only way out and no two runs can see each other. Every upstream is
-/// pinned to loopback in the container host file, where the bridge started by
-/// the image entrypoint forwards to the proxy socket.
+/// is its only way out and no two runs can see each other. Every backend host
+/// is pinned to loopback in the container host file, where the bridge started
+/// by the image entrypoint forwards to the proxy socket.
 ///
 /// Nothing survives the run: submissions leave through the scoring server and
 /// the home is a volume of the run's own, removed with it, so no harness can
@@ -1201,8 +1202,8 @@ fn start_sandbox(
     sandbox.args(["--hostname", agent]);
     sandbox.args(["--add-host", &format!("{agent}:{SANDBOX_LOOPBACK}")]);
 
-    for upstream in crate::upstreams::UPSTREAMS {
-        sandbox.args(["--add-host", &format!("{upstream}:{SANDBOX_LOOPBACK}")]);
+    for host in &invocation.hosts {
+        sandbox.args(["--add-host", &format!("{host}:{SANDBOX_LOOPBACK}")]);
     }
 
     sandbox.args(["--add-host", &format!("{SCORE_HOST}:{SANDBOX_LOOPBACK}")]);

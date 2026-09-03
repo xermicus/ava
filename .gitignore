@@ -2,3 +2,4 @@
 /runs
 /openapi-proxy/hosts.conf
 __pycache__
+/.env

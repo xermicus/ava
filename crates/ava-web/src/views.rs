@@ -49,7 +49,7 @@ const RUN_HEADERS: [&str; 10] = [
     "RUN", "STATE", "GAME", "MODEL", "HARNESS", "*TIME", "#PUSHES", "#CUT", "*POINTS", "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
-const NO_LIMITS_NOTE: &str = "no limits reported yet, the first run of a key brings them";
+const NO_LIMITS_NOTE: &str = "no limits reported yet, the first run of a backend brings them";
 
 /// The rolling windows the Anthropic subscription reports, by the header
 /// infix naming them.
@@ -249,11 +249,12 @@ impl RunEntry {
         pointer(self.score.as_ref(), "/attempts/first_solved_seconds")
     }
 
-    /// The names of the variables the sandbox was given, attributing the
-    /// run to the credential feeding it.
-    fn variables(&self) -> Vec<&str> {
-        self.metadata
-            .get("variables")
+    /// Every host the run requested through its proxy, attributing the run to
+    /// the backend that served it.
+    fn hosts(&self) -> Vec<&str> {
+        self.score
+            .as_ref()
+            .and_then(|score| score.pointer("/metrics/hosts"))
             .and_then(serde_json::Value::as_array)
             .map(|items| items.iter().filter_map(serde_json::Value::as_str).collect())
             .unwrap_or_default()
@@ -867,42 +868,38 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     let registry = registry::load()?;
     let runs = collect_runs()?;
 
-    let mut key_rows = Vec::new();
+    let mut backend_rows = Vec::new();
     let mut limit_rows = Vec::new();
     let mut raw_limits = String::new();
     let mut reported: Vec<String> = Vec::new();
-    for (backend, variable, sandbox_variable) in [
-        (
-            "anthropic",
-            registry::SUBSCRIPTION_TOKEN,
-            registry::SUBSCRIPTION_TOKEN,
-        ),
-        ("openapi", registry::GATEWAY_KEY, registry::GATEWAY_TOKEN),
-    ] {
-        let state = if std::env::var(variable).is_ok() {
+    for backend in &registry.backends {
+        let state = if std::env::var(&backend.key).is_ok() {
             pill(SOLVED_PILL, false, "set")
         } else {
             pill(FAILED_PILL, false, "missing")
         };
 
-        // A subscription run carries its token under the same name, so the
-        // gateway row only counts runs without one.
+        // The proxy metrics name every host a run requested, which is what
+        // attributes the run to the backend that served it.
         let fed: Vec<&RunEntry> = runs
             .iter()
-            .filter(|run| {
-                let variables = run.variables();
-                variables.contains(&sandbox_variable)
-                    && (variable == registry::SUBSCRIPTION_TOKEN
-                        || !variables.contains(&registry::SUBSCRIPTION_TOKEN))
-            })
+            .filter(|run| run.hosts().contains(&backend.host.as_str()))
             .collect();
 
         let mut row = vec![
-            format!("<span class=\"{MONO_CLASSES}\">{variable}</span>"),
-            backend.to_string(),
+            escape(&backend.name),
+            backend.service.name().to_string(),
+            format!(
+                "<span class=\"{MONO_CLASSES}\">{}</span>",
+                escape(&backend.host)
+            ),
+            format!(
+                "<span class=\"{MONO_CLASSES}\">{}</span>",
+                escape(&backend.key)
+            ),
             state,
+            fed.len().to_string(),
         ];
-        row.push(fed.len().to_string());
         for metric in [
             "requests",
             "input_tokens",
@@ -920,7 +917,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         row.push(money(
             fed.iter().map(|run| run.metric_float("gateway_cost")).sum(),
         ));
-        key_rows.push(row);
+        backend_rows.push(row);
 
         // The runs are newest first, so the first captured set is the
         // freshest view of the account.
@@ -929,10 +926,15 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             .find(|run| !run.metric_text("ratelimits").is_empty())
         {
             let captured = run.metric_text("ratelimits");
-            limit_rows.extend(limit_rows_of(variable, captured));
-            reported.push(format!("{backend} {} ago", age(run.started())));
+            limit_rows.extend(limit_rows_of(&backend.name, captured));
+            reported.push(format!(
+                "{} {} ago",
+                escape(&backend.name),
+                age(run.started())
+            ));
             raw_limits.push_str(&format!(
-                "<p class=\"mt-2\"><span class=\"{NOTE_CLASSES}\">{variable}, {} ago:</span> <span class=\"{MONO_CLASSES} text-xs text-neutral-300 break-all\">{}</span></p>",
+                "<p class=\"mt-2\"><span class=\"{NOTE_CLASSES}\">{}, {} ago:</span> <span class=\"{MONO_CLASSES} text-xs text-neutral-300 break-all\">{}</span></p>",
+                escape(&backend.name),
                 age(run.started()),
                 escape(captured)
             ));
@@ -944,7 +946,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         for route in &model.routes {
             model_rows.push(vec![
                 escape(&model.name),
-                route.backend.name().to_string(),
+                escape(&route.backend),
                 format!(
                     "<span class=\"{MONO_CLASSES}\">{}</span>",
                     escape(&route.id)
@@ -962,9 +964,9 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             vec![
                 escape(&harness.name),
                 harness
-                    .backends
+                    .services
                     .iter()
-                    .map(|backend| backend.name())
+                    .map(|service| service.name())
                     .collect::<Vec<_>>()
                     .join(", "),
             ]
@@ -972,12 +974,14 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         .collect();
 
     let mut body = format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">keys <span class=\"{NOTE_CLASSES} font-normal\">with the usage recorded over every run on disk</span></p>"
+        "<p class=\"{FIRST_TITLE_CLASSES}\">backends <span class=\"{NOTE_CLASSES} font-normal\">with the key of each and the usage recorded over every run on disk</span></p>"
     );
     body.push_str(&table(
         &[
-            "KEY",
             "BACKEND",
+            "SERVICE",
+            "HOST",
+            "KEY",
             "*STATE",
             "#RUNS",
             "#REQUESTS",
@@ -987,11 +991,11 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             "#CACHE WRITE",
             "#COST",
         ],
-        key_rows,
+        backend_rows,
         None,
     ));
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as the newest answer of each key reported them{}</span></p>",
+        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as the newest answer of each backend reported them{}</span></p>",
         if reported.is_empty() {
             String::new()
         } else {
@@ -999,7 +1003,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         }
     ));
     body.push_str(&table(
-        &["KEY", "WINDOW", "*USED", "LEFT", "STATUS", "RESETS"],
+        &["BACKEND", "WINDOW", "*USED", "LEFT", "STATUS", "RESETS"],
         limit_rows,
         Some(NO_LIMITS_NOTE),
     ));
@@ -1015,7 +1019,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         None,
     ));
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">harnesses</p>"));
-    body.push_str(&table(&["HARNESS", "BACKENDS"], harness_rows, None));
+    body.push_str(&table(&["HARNESS", "SERVICES"], harness_rows, None));
 
     if let Ok(listing) = process::run_and_assume_success(
         "docker",
@@ -1301,15 +1305,15 @@ fn age(started: u64) -> String {
     }
 }
 
-/// The limit rows of one key, read out of the headers `captured` from its
+/// The limit rows of one backend, read out of the headers `captured` from its
 /// newest answer.
-fn limit_rows_of(key: &str, captured: &str) -> Vec<Vec<String>> {
+fn limit_rows_of(backend: &str, captured: &str) -> Vec<Vec<String>> {
     let headers: std::collections::BTreeMap<&str, &str> = captured
         .split_whitespace()
         .filter_map(|pair| pair.split_once('='))
         .collect();
     let header = |name: String| headers.get(name.as_str()).copied();
-    let key_cell = format!("<span class=\"{MONO_CLASSES}\">{key}</span>");
+    let backend_cell = format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(backend));
     let mut rows = Vec::new();
 
     for (window, label) in ANTHROPIC_WINDOWS {
@@ -1319,7 +1323,7 @@ fn limit_rows_of(key: &str, captured: &str) -> Vec<Vec<String>> {
         };
         let used = (utilization.parse::<f64>().unwrap_or(0.0) * 100.0).round() as u64;
         rows.push(vec![
-            key_cell.clone(),
+            backend_cell.clone(),
             label.to_string(),
             meter(
                 used,
@@ -1342,7 +1346,7 @@ fn limit_rows_of(key: &str, captured: &str) -> Vec<Vec<String>> {
             .map(|reason| format!(" <span class=\"{MUTED_CLASSES}\">{}</span>", escape(reason)))
             .unwrap_or_default();
         rows.push(vec![
-            key_cell.clone(),
+            backend_cell.clone(),
             "overage".to_string(),
             String::new(),
             String::new(),
@@ -1356,7 +1360,7 @@ fn limit_rows_of(key: &str, captured: &str) -> Vec<Vec<String>> {
         header(GATEWAY_BUDGET_HEADER.to_string()).and_then(|value| value.parse::<f64>().ok()),
     ) {
         rows.push(vec![
-            key_cell.clone(),
+            backend_cell.clone(),
             "budget".to_string(),
             meter(
                 (spend * 100.0) as u64,
@@ -1382,7 +1386,7 @@ fn limit_rows_of(key: &str, captured: &str) -> Vec<Vec<String>> {
         };
         let used = limit.saturating_sub(remaining);
         rows.push(vec![
-            key_cell.clone(),
+            backend_cell.clone(),
             window.to_string(),
             meter(
                 used,

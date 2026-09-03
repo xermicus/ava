@@ -1,4 +1,18 @@
 {
+ "backends": [
+  {
+   "name": "anthropic",
+   "service": "anthropic",
+   "host": "api.anthropic.com",
+   "key": "CLAUDE_CODE_OAUTH_TOKEN"
+  },
+  {
+   "name": "substrate",
+   "service": "openapi",
+   "host": "llm.substrate.dev",
+   "key": "LLM_SUBSTRATE_DEV_KEY"
+  }
+ ],
  "models": [
   {
    "name": "claude-opus-5",
@@ -10,7 +24,7 @@
      "max_output": 128000
     },
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "openrouter/anthropic/claude-opus-5",
      "context_window": 1000000,
      "max_output": 128000
@@ -27,7 +41,7 @@
      "max_output": 128000
     },
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "openrouter/anthropic/claude-sonnet-5",
      "context_window": 1000000,
      "max_output": 128000
@@ -38,7 +52,7 @@
    "name": "kimi-k3",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "kimi-k3",
      "context_window": 1048576,
      "max_output": 943718
@@ -49,7 +63,7 @@
    "name": "qwen3.8-max",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "openrouter/qwen/qwen3.8-max",
      "context_window": 1000000,
      "max_output": 131072
@@ -60,7 +74,7 @@
    "name": "qwen3.8-flash-next",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "Qwen/Qwen3.8-Flash-Next",
      "context_window": 1000000,
      "max_output": 131072
@@ -71,7 +85,7 @@
    "name": "glm-5.3",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "openrouter/z-ai/glm-5.3",
      "context_window": 1310720,
      "max_output": 131072
@@ -82,7 +96,7 @@
    "name": "glm-5.3-flash",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "openrouter/z-ai/glm-5.3-flash",
      "context_window": 1048576,
      "max_output": 131072
@@ -93,7 +107,7 @@
    "name": "deepseek-v4-pro",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "deepseek-v4-pro",
      "context_window": 1048576,
      "max_output": 384000
@@ -104,7 +118,7 @@
    "name": "deepseek-v4-flash",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "openrouter/deepseek/deepseek-v4-flash",
      "context_window": 1048576,
      "max_output": 384000
@@ -115,7 +129,7 @@
    "name": "deepseek-v4-flash-hosted",
    "routes": [
     {
-     "backend": "openapi",
+     "backend": "substrate",
      "id": "deepseek-flash-parity",
      "context_window": 1048576,
      "max_output": 384000
@@ -126,26 +140,26 @@
  "harnesses": [
   {
    "name": "claude",
-   "backends": [
+   "services": [
     "anthropic",
     "openapi"
    ]
   },
   {
    "name": "pi",
-   "backends": [
+   "services": [
     "openapi"
    ]
   },
   {
    "name": "opencode",
-   "backends": [
+   "services": [
     "openapi"
    ]
   },
   {
    "name": "codex",
-   "backends": [
+   "services": [
     "openapi"
    ]
   }

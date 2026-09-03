@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a019e7f0.js";
+            window.path_to_searchindex_js = "searchindex-f01aa115.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -343,11 +343,12 @@ The metrics also record which models were accessed through the proxy, exposing a
 <p>The verifier is <code>ava score</code>, running in the scoring container without network access: <code>--game</code> scores the submission left in <code>submission/</code> with the named game. <code>--metrics</code> and <code>--attempts</code> aggregate the collected logs after the run. The reports are printed as one JSON document, which <code>ava</code> stores as <code>runs/&lt;run&gt;/score.json</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="data-model"><a class="header" href="#data-model">Data Model</a></h1>
-<p>Models and harnesses are declared in <code>registry.json</code> at the repository root. A harness additionally needs an image directory under <code>agents</code> and an adapter in the <code>registry</code> module.</p>
+<p>Backends, models and harnesses are declared in <code>registry.json</code> at the repository root. A harness additionally needs an image directory under <code>agents</code> and an adapter in the <code>registry</code> module.</p>
 <ul>
-<li>A model is a name paired with one route per backend, each carrying the identifier and the token limits that backend expects.</li>
-<li>A harness is a name paired with the backends it can reach, listed most direct first.</li>
-<li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container. There is one per turn: the first opens a session on the task prompt and every later one resumes the recorded session, on the loop prompt or on the last call.</li>
+<li>A backend is a name paired with the service answering at it, <code>anthropic</code> or <code>openapi</code>, the host the proxy forwards to and the environment variable holding its key. The values of the keys live in <code>.env</code> at the repository root, one <code>NAME=value</code> line each, which <code>ava</code> reads at startup underneath the process environment. The hosts of the backends are the proxy allowlist and the host entries of the sandbox, so a new endpoint is one backend entry and one line in <code>.env</code>.</li>
+<li>A model is a name paired with one route per backend serving it, each naming the backend and carrying the identifier and the token limits that backend expects. One model can carry routes to several gateways, which makes the mapping of key to model explicit.</li>
+<li>A harness is a name paired with the services it speaks, listed most direct first.</li>
+<li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container. The route is the first one of the model on a service the harness speaks, walking the services in order. There is one invocation per turn: the first opens a session on the task prompt and every later one resumes the recorded session, on the loop prompt or on the last call.</li>
 <li>A game is a task folder under <code>games</code> and a scorer of the same name implementing the <code>Game</code> trait in the <code>ava-game</code> crate.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>

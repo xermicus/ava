@@ -11,10 +11,12 @@ This is an AI agent benchmarking project. TL;DR: Agents play optimization games 
 Tested on linux and MacOS. You need docker and a Rust toolchain.
 
 ```bash
-# export API keys for llm.substrate.dev and claude subscription account
+# put the keys of the backends in registry.json into .env
 
-export LLM_SUBSTRATE_DEV_KEY=skXXX
-export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-XXX
+cat > .env <<KEYS
+LLM_SUBSTRATE_DEV_KEY=skXXX
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-XXX
+KEYS
 
 # start the web ui
 

@@ -1,9 +1,11 @@
-//! The models and harnesses a benchmark run can pair into an agent.
+//! The backends, models and harnesses a benchmark run can pair into an agent.
 
 const REGISTRY_FILE: &str = "registry.json";
 
-const ANTHROPIC_URL: &str = "http://api.anthropic.com:8080";
-const OPENAPI_URL: &str = "http://llm.substrate.dev:8080";
+/// The port the bridge listens on inside the sandbox, forwarding every host
+/// pinned to loopback onto the proxy socket.
+const PROXY_PORT: u16 = 8080;
+
 const CLAUDE_HARNESS: &str = "claude";
 const PI_HARNESS: &str = "pi";
 const OPENCODE_HARNESS: &str = "opencode";
@@ -85,15 +87,13 @@ const PI_PROTOCOL: &str = "anthropic-messages";
 const PI_MODE_JSON: [&str; 2] = ["--mode", "json"];
 
 const MODEL_OPTION: &str = "--model";
-/// The variable holding the subscription of the anthropic backend, under the
-/// same name on the host and in the sandbox.
-pub const SUBSCRIPTION_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
-/// The variable `ava` reads the gateway key from, which is not an Anthropic key.
-pub const GATEWAY_KEY: &str = "LLM_SUBSTRATE_DEV_KEY";
+/// The variable claude reads a subscription from inside the sandbox.
+const SUBSCRIPTION_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
-/// The variable a harness reads the same key from, named the way it expects.
-pub const GATEWAY_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
+/// The variable a harness reads a gateway key from inside the sandbox, named
+/// the way it expects.
+const GATEWAY_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
 const BASE_URL: &str = "ANTHROPIC_BASE_URL";
 
 const CLAUDE_SETTINGS: [(&str, &str); 8] = [
@@ -118,49 +118,69 @@ const CLAUDE_TIER_SETTINGS: [&str; 3] = [
 const MODEL_HEADER: &str = "MODEL";
 const AGENT_HEADER: &str = "AGENT";
 const BACKENDS_HEADER: &str = "BACKENDS";
+const SERVICES_HEADER: &str = "SERVICES";
 
 /// A service answering the Anthropic API for one or more models.
 #[derive(Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Backend {
+pub enum Service {
     /// Anthropic itself, reached with subscription credentials.
     Anthropic,
-    /// The openapi gateway, reached with a gateway key.
+    /// An openapi gateway, reached with a gateway key.
     OpenApi,
 }
 
-impl Backend {
-    /// The name identifying this backend in listings and the registry file.
+impl Service {
+    /// The name identifying this service in listings and the registry file.
     pub fn name(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenApi => "openapi",
         }
     }
+}
 
-    /// The endpoint a harness must be pointed at.
+/// A backend declared in the registry, named by the routes it serves.
+#[derive(serde::Deserialize)]
+pub struct Backend {
+    /// The name a route refers to the backend by.
+    pub name: String,
+    /// The service answering at the host.
+    pub service: Service,
+    /// The host the proxy forwards to, which the sandbox resolves to loopback.
+    pub host: String,
+    /// The environment variable holding the credential of the backend.
+    pub key: String,
+}
+
+impl Backend {
+    /// The endpoint a harness is pointed at.
     ///
     /// Every backend is reached in plain HTTP through the proxy, which
     /// terminates the request and connects onward with TLS. Nothing a sandbox
     /// sends leaves it as ciphertext, so every request stays inspectable.
-    fn base_url(self) -> &'static str {
-        match self {
-            Self::Anthropic => ANTHROPIC_URL,
-            Self::OpenApi => OPENAPI_URL,
-        }
+    fn url(&self) -> String {
+        format!("http://{}:{PROXY_PORT}", self.host)
+    }
+
+    /// The credential of the backend, read from the environment of this
+    /// process rather than stored, so nothing secret reaches an image layer or
+    /// the repository.
+    fn credential(&self) -> std::io::Result<String> {
+        credential(&self.key)
     }
 }
 
 /// The id and limits a single backend uses for a model.
 #[derive(serde::Deserialize)]
 pub struct Route {
-    /// The service reached by this route.
-    pub backend: Backend,
-    /// The model id that service expects.
+    /// The name of the backend serving this route.
+    pub backend: String,
+    /// The model id that backend expects.
     pub id: String,
-    /// The largest prompt the service accepts, in tokens.
+    /// The largest prompt the backend accepts, in tokens.
     pub context_window: u32,
-    /// The largest completion the service accepts, in tokens.
+    /// The largest completion the backend accepts, in tokens.
     ///
     /// A harness left to guess this picks a number small enough that a thinking
     /// model spends the whole allowance before it answers, which ends the turn
@@ -182,13 +202,15 @@ pub struct Model {
 pub struct Harness {
     /// The name of the directory under `agents` holding its image.
     pub name: String,
-    /// The backends this harness can be pointed at.
-    pub backends: Vec<Backend>,
+    /// The services this harness can be pointed at, most direct first.
+    pub services: Vec<Service>,
 }
 
-/// Every model and harness a benchmark run may pair.
+/// Every backend, model and harness a benchmark run may pair.
 #[derive(serde::Deserialize)]
 pub struct Registry {
+    /// The backends the routes of the models name.
+    pub backends: Vec<Backend>,
     /// The models a run may use.
     pub models: Vec<Model>,
     /// The harnesses a run may use.
@@ -198,14 +220,14 @@ pub struct Registry {
 impl Registry {
     /// Resolve `harness` and `model` into the invocation running that pairing.
     ///
-    /// The route is chosen by walking the backends the harness supports in order,
-    /// so a harness that can reach a model directly is not sent through a gateway.
+    /// The route is chosen by walking the services the harness speaks in order
+    /// and taking the first route of the model on such a service, so a harness
+    /// that can reach a model directly is not sent through a gateway.
     /// Credentials are read from the environment of this process rather than
     /// stored, so nothing secret reaches an image layer or the repository.
     ///
-    /// The harness is started on `prompt` unattended and keeps itself working
-    /// on it through its own loop plugin or built in equivalent, so ava never
-    /// drives turns.
+    /// Every turn of a run is one invocation: the first opens the session on
+    /// `prompt` and every later one resumes the recorded session on it.
     pub fn invocation(
         &self,
         harness: &str,
@@ -228,10 +250,20 @@ impl Registry {
 
         let harness = self.harness(harness)?;
 
-        let route = harness
-            .backends
+        let mut served: Vec<(&Route, &Backend)> = Vec::new();
+        for route in &model.routes {
+            served.push((route, self.backend(&route.backend)?));
+        }
+
+        let (route, backend) = harness
+            .services
             .iter()
-            .find_map(|backend| model.routes.iter().find(|route| route.backend == *backend))
+            .find_map(|service| {
+                served
+                    .iter()
+                    .find(|(_, backend)| backend.service == *service)
+            })
+            .copied()
             .ok_or_else(|| {
                 std::io::Error::other(format!(
                     "the {} harness cannot serve {}",
@@ -244,18 +276,22 @@ impl Registry {
             harness.name,
             model.name,
             route.id,
-            route.backend.name()
+            backend.name
         );
 
-        match harness.name.as_str() {
-            CLAUDE_HARNESS => claude_invocation(route, prompt, thinking, start),
-            PI_HARNESS => pi_invocation(route, prompt, thinking, start),
-            OPENCODE_HARNESS => opencode_invocation(route, prompt, thinking, start),
-            CODEX_HARNESS => codex_invocation(route, prompt, thinking, start),
+        let mut invocation = match harness.name.as_str() {
+            CLAUDE_HARNESS => claude_invocation(route, backend, prompt, thinking, start),
+            PI_HARNESS => pi_invocation(route, backend, prompt, thinking, start),
+            OPENCODE_HARNESS => opencode_invocation(route, backend, prompt, thinking, start),
+            CODEX_HARNESS => codex_invocation(route, backend, prompt, thinking, start),
             name => Err(std::io::Error::other(format!(
                 "no adapter is defined for the {name} harness"
             ))),
-        }
+        }?;
+
+        invocation.hosts = self.hosts();
+
+        Ok(invocation)
     }
 
     /// The harness registered under `name`.
@@ -271,15 +307,57 @@ impl Registry {
                 )
             })
     }
+
+    /// The backend registered under `name`.
+    fn backend(&self, name: &str) -> std::io::Result<&Backend> {
+        self.backends
+            .iter()
+            .find(|candidate| candidate.name == name)
+            .ok_or_else(|| {
+                unknown(
+                    name,
+                    "backend",
+                    self.backends.iter().map(|entry| entry.name.as_str()),
+                )
+            })
+    }
+
+    /// Every distinct host a registered backend is reached at, in registry
+    /// order.
+    ///
+    /// This is the single source for the nginx allowlist and the sandbox host
+    /// entries.
+    pub fn hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = Vec::new();
+
+        for backend in &self.backends {
+            if !hosts.contains(&backend.host) {
+                hosts.push(backend.host.clone());
+            }
+        }
+
+        hosts
+    }
 }
 
-/// Load the registry from `registry.json` in the working directory.
+/// Load the registry from `registry.json` in the working directory, checking
+/// that every route names a registered backend.
 pub fn load() -> std::io::Result<Registry> {
     let contents = std::fs::read_to_string(REGISTRY_FILE)
         .map_err(|error| std::io::Error::other(format!("{REGISTRY_FILE}: {error}")))?;
 
-    serde_json::from_str(&contents)
-        .map_err(|error| std::io::Error::other(format!("{REGISTRY_FILE}: {error}")))
+    let registry: Registry = serde_json::from_str(&contents)
+        .map_err(|error| std::io::Error::other(format!("{REGISTRY_FILE}: {error}")))?;
+
+    for model in &registry.models {
+        for route in &model.routes {
+            registry.backend(&route.backend).map_err(|error| {
+                std::io::Error::other(format!("{REGISTRY_FILE}: {}: {error}", model.name))
+            })?;
+        }
+    }
+
+    Ok(registry)
 }
 
 /// How a harness is told which model to use and how to authenticate.
@@ -291,6 +369,9 @@ pub struct Invocation {
     pub arguments: Vec<String>,
     /// Configuration written into the container, by path and contents.
     pub files: Vec<(String, String)>,
+    /// The hosts the sandbox resolves to loopback, where the bridge forwards
+    /// them onto the proxy: every host a registered backend is reached at.
+    pub hosts: Vec<String>,
 }
 
 /// `value` as a JSON string, quotes and escapes included.
@@ -318,12 +399,13 @@ fn template(asset: &str, values: &[(&str, &str)]) -> String {
 /// gateway does not carry.
 fn opencode_invocation(
     route: &Route,
+    backend: &Backend,
     prompt: &str,
     thinking: Option<&str>,
     start: Start,
 ) -> std::io::Result<Invocation> {
-    let mut invocation = gateway_invocation(OPENCODE_HARNESS, route)?;
-    let url = gateway_url(OPENCODE_HARNESS, route)?;
+    let mut invocation = gateway_invocation(OPENCODE_HARNESS, route, backend)?;
+    let url = gateway_url(OPENCODE_HARNESS, backend)?;
     let model = format!("{GATEWAY_PROVIDER}/{}", route.id);
 
     let configuration = template(
@@ -384,16 +466,17 @@ fn think(arguments: &mut Vec<String>, option: &str, thinking: Option<&str>) {
 /// whatever pi treats as the default Anthropic model.
 fn pi_invocation(
     route: &Route,
+    backend: &Backend,
     prompt: &str,
     thinking: Option<&str>,
     start: Start,
 ) -> std::io::Result<Invocation> {
-    let url = gateway_url(PI_HARNESS, route)?;
+    let url = gateway_url(PI_HARNESS, backend)?;
     let models = template(
         PI_MODELS_TEMPLATE,
         &[
             ("__AVA_PROVIDER__", PI_PROVIDER),
-            ("__AVA_BASE_URL__", url),
+            ("__AVA_BASE_URL__", url.as_str()),
             ("__AVA_PROTOCOL__", PI_PROTOCOL),
             ("__AVA_TOKEN__", GATEWAY_TOKEN),
             ("\"__AVA_MODEL_ID__\"", quoted(&route.id).as_str()),
@@ -420,25 +503,26 @@ fn pi_invocation(
     arguments.push(prompt.to_string());
 
     Ok(Invocation {
-        variables: vec![(GATEWAY_TOKEN.to_string(), credential(GATEWAY_KEY)?)],
+        variables: vec![(GATEWAY_TOKEN.to_string(), backend.credential()?)],
         arguments,
         files: vec![(PI_MODELS_FILE.to_string(), models)],
+        hosts: Vec::new(),
     })
 }
 
-/// Point codex at the gateway, looped from the outside.
+/// Point codex at the gateway.
 ///
-/// Codex has no hook able to re-prompt a session, so the image wraps it in
-/// `codex-loop`, which resumes the recorded session between turns. The
-/// reasoning effort travels in the configuration; codex has no per turn
-/// output knob, so the turn cap goes unenforced here.
+/// Codex resumes its recorded session through `exec resume`. The reasoning
+/// effort travels in the configuration; codex has no per turn output knob, so
+/// the turn cap goes unenforced here.
 fn codex_invocation(
     route: &Route,
+    backend: &Backend,
     prompt: &str,
     thinking: Option<&str>,
     start: Start,
 ) -> std::io::Result<Invocation> {
-    let url = gateway_url(CODEX_HARNESS, route)?;
+    let url = gateway_url(CODEX_HARNESS, backend)?;
     let effort = match thinking {
         Some("max") => "xhigh",
         Some(level) => level,
@@ -462,7 +546,7 @@ fn codex_invocation(
     );
 
     Ok(Invocation {
-        variables: vec![(GATEWAY_TOKEN.to_string(), credential(GATEWAY_KEY)?)],
+        variables: vec![(GATEWAY_TOKEN.to_string(), backend.credential()?)],
         arguments: match start {
             Start::Task => CODEX_EXEC
                 .iter()
@@ -476,41 +560,49 @@ fn codex_invocation(
                 .collect(),
         },
         files: vec![(CODEX_CONFIG_FILE.to_string(), configuration)],
+        hosts: Vec::new(),
     })
 }
 
-/// Point a harness at the gateway and name the model the way it expects.
+/// The endpoint of `backend` as the gateway a third party harness is pointed
+/// at.
 ///
-/// Both third party harnesses take the Anthropic provider slot and accept an
+/// The third party harnesses take the Anthropic provider slot and accept an
 /// unknown model id under it, which is how a gateway model reaches them.
-fn gateway_url(harness: &str, route: &Route) -> std::io::Result<&'static str> {
-    if route.backend != Backend::OpenApi {
+fn gateway_url(harness: &str, backend: &Backend) -> std::io::Result<String> {
+    if backend.service != Service::OpenApi {
         return Err(std::io::Error::other(format!(
-            "the {harness} harness reaches models only through the gateway"
+            "the {harness} harness reaches models only through an openapi gateway"
         )));
     }
 
-    Ok(route.backend.base_url())
+    Ok(backend.url())
 }
 
-fn gateway_invocation(harness: &str, route: &Route) -> std::io::Result<Invocation> {
-    let url = gateway_url(harness, route)?;
+fn gateway_invocation(
+    harness: &str,
+    route: &Route,
+    backend: &Backend,
+) -> std::io::Result<Invocation> {
+    let url = gateway_url(harness, backend)?;
 
     Ok(Invocation {
         variables: vec![
-            (BASE_URL.to_string(), url.to_string()),
-            (GATEWAY_TOKEN.to_string(), credential(GATEWAY_KEY)?),
+            (BASE_URL.to_string(), url),
+            (GATEWAY_TOKEN.to_string(), backend.credential()?),
         ],
         arguments: vec![
             MODEL_OPTION.to_string(),
             format!("{GATEWAY_PROVIDER}/{}", route.id),
         ],
         files: Vec::new(),
+        hosts: Vec::new(),
     })
 }
 
 fn claude_invocation(
     route: &Route,
+    backend: &Backend,
     prompt: &str,
     thinking: Option<&str>,
     start: Start,
@@ -520,21 +612,18 @@ fn claude_invocation(
         .map(|(name, value)| (name.to_string(), value.to_string()))
         .collect();
 
-    environment.push((BASE_URL.to_string(), route.backend.base_url().to_string()));
+    environment.push((BASE_URL.to_string(), backend.url()));
 
-    match route.backend {
-        Backend::Anthropic => {
+    match backend.service {
+        Service::Anthropic => {
             environment.push((CLAUDE_MODEL.to_string(), route.id.clone()));
-            environment.push((
-                SUBSCRIPTION_TOKEN.to_string(),
-                credential(SUBSCRIPTION_TOKEN)?,
-            ));
+            environment.push((SUBSCRIPTION_TOKEN.to_string(), backend.credential()?));
         }
-        Backend::OpenApi => {
+        Service::OpenApi => {
             for name in CLAUDE_TIER_SETTINGS {
                 environment.push((name.to_string(), route.id.clone()));
             }
-            environment.push((GATEWAY_TOKEN.to_string(), credential(GATEWAY_KEY)?));
+            environment.push((GATEWAY_TOKEN.to_string(), backend.credential()?));
         }
     }
 
@@ -550,6 +639,7 @@ fn claude_invocation(
         variables: environment,
         arguments,
         files: Vec::new(),
+        hosts: Vec::new(),
     })
 }
 
@@ -591,7 +681,7 @@ fn load_or_exit() -> Registry {
     })
 }
 
-/// Print every known model with the backend serving it, then exit.
+/// Print every known model with the backends serving it, then exit.
 pub fn list_models() -> ! {
     let registry = load_or_exit();
     let names = registry.models.iter().map(|model| model.name.as_str());
@@ -602,27 +692,27 @@ pub fn list_models() -> ! {
         let backends: Vec<&str> = model
             .routes
             .iter()
-            .map(|route| route.backend.name())
+            .map(|route| route.backend.as_str())
             .collect();
         println!("{:<width$}  {}", model.name, backends.join(", "));
     }
     std::process::exit(0);
 }
 
-/// Print every known agent with the backends it can be paired with, then exit.
+/// Print every known agent with the services it speaks, then exit.
 pub fn list_agents() -> ! {
     let registry = load_or_exit();
     let names = registry.harnesses.iter().map(|agent| agent.name.as_str());
     let width = column_width(AGENT_HEADER, names);
 
-    println!("{AGENT_HEADER:<width$}  {BACKENDS_HEADER}");
+    println!("{AGENT_HEADER:<width$}  {SERVICES_HEADER}");
     for agent in &registry.harnesses {
-        let backends: Vec<&str> = agent
-            .backends
+        let services: Vec<&str> = agent
+            .services
             .iter()
-            .map(|backend| backend.name())
+            .map(|service| service.name())
             .collect();
-        println!("{:<width$}  {}", agent.name, backends.join(", "));
+        println!("{:<width$}  {}", agent.name, services.join(", "));
     }
     std::process::exit(0);
 }

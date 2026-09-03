@@ -1,9 +1,15 @@
 mod arguments;
+mod environment;
 
 /// The level logged unless `RUST_LOG` asks for another one.
 const DEFAULT_LOG_LEVEL: &str = "info";
 
 fn main() {
+    if let Err(error) = environment::load() {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+
     env_logger::Builder::new()
         .parse_env(env_logger::Env::default().default_filter_or(DEFAULT_LOG_LEVEL))
         .init();
@@ -18,16 +24,7 @@ fn main() {
         Some(arguments::SubCommand::Score(ref command)) => ava_scorer::score::run(command),
         Some(arguments::SubCommand::Serve(ref command)) => ava_web::serve::run(command),
         Some(arguments::SubCommand::Remote(ref command)) => ava_scorer::remote::run(command),
-        Some(arguments::SubCommand::Upstreams(ref command)) => {
-            if command.nginx_map {
-                print!("{}", ava_run::upstreams::nginx_map());
-            } else {
-                for host in ava_run::upstreams::UPSTREAMS {
-                    println!("{host}");
-                }
-            }
-            Ok(0)
-        }
+        Some(arguments::SubCommand::Upstreams(ref command)) => ava_run::upstreams::run(command),
         None => arguments::help(),
     };
 
