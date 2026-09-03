@@ -1,7 +1,7 @@
 //! The pages of the web interface, rendered from the run artifacts on disk,
 //! the registry and the games folder.
 
-use ava_run::{docker, process, registry};
+use ava_run::{docker, process, registry, usage};
 
 const GAMES_DIRECTORY: &str = "games";
 const TASK_FILE: &str = "task.md";
@@ -63,25 +63,9 @@ const RUN_HEADERS: [&str; 10] = [
     "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
-const NO_LIMITS_NOTE: &str = "no limits reported yet, the first run of a backend brings them";
-
-/// The rolling windows the Anthropic subscription reports, by the header
-/// infix naming them.
-const ANTHROPIC_WINDOWS: [(&str, &str); 2] = [("5h", "session, 5 hours"), ("7d", "week, 7 days")];
-const ANTHROPIC_LIMIT_PREFIX: &str = "anthropic-ratelimit-unified-";
-
-/// The budget of a gateway key, as the gateway names it in its headers.
-const GATEWAY_SPEND_HEADER: &str = "x-litellm-key-spend";
-const GATEWAY_BUDGET_HEADER: &str = "x-litellm-key-max-budget";
-
-/// The request and token windows a gateway reports, by the header suffix
-/// naming them.
-const GATEWAY_WINDOWS: [&str; 2] = ["requests", "tokens"];
-const GATEWAY_LIMIT_PREFIX: &str = "x-ratelimit-";
-
-const SECONDS_PER_DAY: u64 = 86_400;
-const SECONDS_PER_HOUR: u64 = 3_600;
-const SECONDS_PER_MINUTE: u64 = 60;
+const NO_LIMITS_NOTE: &str = "no backend reported its limits";
+const IMAGE_FORMAT: &str = "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
+const IMAGE_PREFIX: &str = "ava/";
 
 /// A card holds one table or one form, so every block on a page shares the
 /// same edges and corners.
@@ -270,38 +254,9 @@ impl RunEntry {
         pointer(self.score.as_ref(), "/attempts/first_solved_seconds")
     }
 
-    /// Every host the run requested through its proxy, attributing the run to
-    /// the backend that served it.
-    fn hosts(&self) -> Vec<&str> {
-        self.score
-            .as_ref()
-            .and_then(|score| score.pointer("/metrics/hosts"))
-            .and_then(serde_json::Value::as_array)
-            .map(|items| items.iter().filter_map(serde_json::Value::as_str).collect())
-            .unwrap_or_default()
-    }
-
     /// One aggregated number out of the proxy metrics of the run.
     fn metric(&self, key: &str) -> u64 {
         pointer(self.score.as_ref(), &format!("/metrics/{key}"))
-    }
-
-    /// One aggregated fraction out of the proxy metrics of the run.
-    fn metric_float(&self, key: &str) -> f64 {
-        self.score
-            .as_ref()
-            .and_then(|score| score.pointer(&format!("/metrics/{key}")))
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0)
-    }
-
-    /// One aggregated text out of the proxy metrics of the run.
-    fn metric_text(&self, key: &str) -> &str {
-        self.score
-            .as_ref()
-            .and_then(|score| score.pointer(&format!("/metrics/{key}")))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
     }
 
     fn solved(&self) -> bool {
@@ -331,7 +286,7 @@ impl RunEntry {
         format!(
             "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} ago</div>",
             self.link(),
-            age(self.started())
+            usage::age(self.started())
         )
     }
 
@@ -375,7 +330,7 @@ impl RunEntry {
     fn elapsed(&self) -> u64 {
         match &self.monitor {
             Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
-            None => epoch_now().saturating_sub(self.started()),
+            None => usage::epoch_now().saturating_sub(self.started()),
         }
         .min(self.limit())
     }
@@ -505,7 +460,7 @@ pub(crate) fn runs_page(
             rows.push(vec![
                 format!(
                     "<span class=\"{MUTED_CLASSES}\">pending</span><div class=\"text-xs {MUTED_CLASSES} mt-0.5\">asked {} ago</div>",
-                    age(start.started)
+                    usage::age(start.started)
                 ),
                 pill(STARTING_PILL, true, "starting"),
                 escape(&start.game),
@@ -655,7 +610,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         escape(entry.game()),
         escape(entry.model()),
         entry.agent(),
-        age(entry.started()),
+        usage::age(entry.started()),
     ));
 
     let solved_at = match (entry.live, best_push(&entry.attempts)) {
@@ -891,27 +846,28 @@ pub(crate) fn games_page() -> std::io::Result<String> {
 /// The registry, the credentials and the docker images runs are built from.
 pub(crate) fn setup_page() -> std::io::Result<String> {
     let registry = registry::load()?;
-    let runs = collect_runs()?;
+    let (usage, images) = std::thread::scope(|scope| {
+        let images = scope.spawn(image_rows);
+        (
+            usage::report(&registry),
+            images.join().expect("listing the images does not panic"),
+        )
+    });
+    let usage = usage?;
 
     let mut backend_rows = Vec::new();
     let mut limit_rows = Vec::new();
     let mut raw_limits = String::new();
-    let mut reported: Vec<String> = Vec::new();
-    for backend in &registry.backends {
+    let mut sources: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for (backend, usage) in registry.backends.iter().zip(&usage) {
         let state = if std::env::var(&backend.key).is_ok() {
             pill(SOLVED_PILL, false, "set")
         } else {
             pill(FAILED_PILL, false, "missing")
         };
-
-        // The proxy metrics name every host a run requested, which is what
-        // attributes the run to the backend that served it.
-        let fed: Vec<&RunEntry> = runs
-            .iter()
-            .filter(|run| run.hosts().contains(&backend.host.as_str()))
-            .collect();
-
-        let mut row = vec![
+        let recorded = &usage.recorded;
+        backend_rows.push(vec![
             escape(&backend.name),
             backend.service.name().to_string(),
             format!(
@@ -923,45 +879,30 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
                 escape(&backend.key)
             ),
             state,
-            fed.len().to_string(),
-        ];
-        for metric in [
-            "requests",
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-        ] {
-            row.push(
-                fed.iter()
-                    .map(|run| run.metric(metric))
-                    .sum::<u64>()
-                    .to_string(),
-            );
-        }
-        row.push(money(
-            fed.iter().map(|run| run.metric_float("gateway_cost")).sum(),
-        ));
-        backend_rows.push(row);
+            recorded.runs.to_string(),
+            recorded.requests.to_string(),
+            recorded.input_tokens.to_string(),
+            recorded.output_tokens.to_string(),
+            recorded.cache_read_tokens.to_string(),
+            recorded.cache_write_tokens.to_string(),
+            usage::money(recorded.gateway_cost),
+        ]);
 
-        // The runs are newest first, so the first captured set is the
-        // freshest view of the account.
-        if let Some(run) = fed
-            .iter()
-            .find(|run| !run.metric_text("ratelimits").is_empty())
-        {
-            let captured = run.metric_text("ratelimits");
-            limit_rows.extend(limit_rows_of(&backend.name, captured));
-            reported.push(format!(
-                "{} {} ago",
-                escape(&backend.name),
-                age(run.started())
-            ));
+        limit_rows.extend(limit_rows_of(&backend.name, &usage.limits));
+        sources.push(format!(
+            "{} {}",
+            escape(&backend.name),
+            escape(&usage.source)
+        ));
+        if let Some(failure) = &usage.failure {
+            failures.push(format!("{}: {}", escape(&backend.name), escape(failure)));
+        }
+        if !usage.limits.is_empty() {
             raw_limits.push_str(&format!(
-                "<p class=\"mt-2\"><span class=\"{NOTE_CLASSES}\">{}, {} ago:</span> <span class=\"{MONO_CLASSES} text-xs text-neutral-300 break-all\">{}</span></p>",
+                "<p class=\"mt-2\"><span class=\"{NOTE_CLASSES}\">{}, {}:</span> <span class=\"{MONO_CLASSES} text-xs text-neutral-300 break-all\">{}</span></p>",
                 escape(&backend.name),
-                age(run.started()),
-                escape(captured)
+                escape(&usage.source),
+                escape(&usage.limits)
             ));
         }
     }
@@ -1020,18 +961,17 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         None,
     ));
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as the newest answer of each backend reported them{}</span></p>",
-        if reported.is_empty() {
-            String::new()
-        } else {
-            format!(", {}", reported.join(", "))
-        }
+        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as each backend reports them when asked: {}</span></p>",
+        sources.join(", ")
     ));
     body.push_str(&table(
         &["BACKEND", "WINDOW", "*USED", "LEFT", "STATUS", "RESETS"],
         limit_rows,
         Some(NO_LIMITS_NOTE),
     ));
+    for failure in failures {
+        body.push_str(&format!("<p class=\"mt-2 {NOTE_CLASSES}\">{failure}</p>"));
+    }
     if !raw_limits.is_empty() {
         body.push_str(&format!(
             "<details class=\"mt-3\"><summary class=\"{SUMMARY_CLASSES}\">the raw limit headers</summary>{raw_limits}</details>"
@@ -1046,25 +986,27 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">harnesses</p>"));
     body.push_str(&table(&["HARNESS", "SERVICES"], harness_rows, None));
 
-    if let Ok(listing) = process::run_and_assume_success(
-        "docker",
-        &[
-            "image",
-            "ls",
-            "--format",
-            "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
-        ],
-    ) {
-        let rows = listing
-            .lines()
-            .filter(|line| line.starts_with("ava/"))
-            .map(|line| line.split('\t').map(escape).collect())
-            .collect();
+    if let Some(rows) = images {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">images</p>"));
         body.push_str(&table(&["IMAGE", "TAG", "SIZE", "CREATED"], rows, None));
     }
 
     Ok(page("setup", &body))
+}
+
+/// The images of ava as table rows, or nothing when docker does not answer.
+fn image_rows() -> Option<Vec<Vec<String>>> {
+    let listing =
+        process::run_and_assume_success("docker", &["image", "ls", "--format", IMAGE_FORMAT])
+            .ok()?;
+
+    Some(
+        listing
+            .lines()
+            .filter(|line| line.starts_with(IMAGE_PREFIX))
+            .map(|line| line.split('\t').map(escape).collect())
+            .collect(),
+    )
 }
 
 /// A page carrying one failure, for the errors of the reading views.
@@ -1130,31 +1072,25 @@ fn live_runs() -> Vec<String> {
 fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
     let running = live_runs();
 
-    let played = match std::fs::read_dir(docker::RUN_DIRECTORY) {
-        Ok(played) => played,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(at_path(docker::RUN_DIRECTORY, error)),
-    };
-
     let mut runs = Vec::new();
-    for entry in played.filter_map(Result::ok) {
-        let Ok(name) = entry.file_name().into_string() else {
+    for directory in docker::run_directories()? {
+        let Some(name) = directory.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let Some(metadata) = read_json(&entry.path().join(docker::METADATA_FILE)) else {
+        let Some(metadata) = read_json(&directory.join(docker::METADATA_FILE)) else {
             continue;
         };
 
-        let sandbox = docker::sandbox_container(&name);
+        let sandbox = docker::sandbox_container(name);
         let live = running.iter().any(|container| container == &sandbox);
         runs.push(RunEntry {
             live,
-            score: read_json(&entry.path().join(docker::SCORE_FILE)),
-            wall: wall_seconds(&entry.path(), number(&metadata, "started_seconds")),
-            monitor: read_json(&entry.path().join(docker::MONITOR_FILE)),
-            attempts: attempts_of(&entry.path(), &name, live),
+            score: read_json(&directory.join(docker::SCORE_FILE)),
+            wall: wall_seconds(&directory, number(&metadata, "started_seconds")),
+            monitor: read_json(&directory.join(docker::MONITOR_FILE)),
+            attempts: attempts_of(&directory, name, live),
             metadata,
-            name,
+            name: name.to_string(),
         });
     }
 
@@ -1325,132 +1261,42 @@ fn wall_seconds(directory: &std::path::Path, started: u64) -> Option<u64> {
     Some(finished.saturating_sub(started))
 }
 
-fn epoch_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
-}
-
-/// How long ago the epoch second `started` was, in the largest two units.
-fn age(started: u64) -> String {
-    let elapsed = epoch_now().saturating_sub(started);
-
-    match elapsed {
-        seconds if seconds < 60 => format!("{seconds}s"),
-        seconds if seconds < 3600 => format!("{}m", seconds / 60),
-        seconds if seconds < 86400 => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
-        seconds => format!("{}d {}h", seconds / 86400, seconds % 86400 / 3600),
-    }
-}
-
-/// The limit rows of one backend, read out of the headers `captured` from its
-/// newest answer.
-fn limit_rows_of(backend: &str, captured: &str) -> Vec<Vec<String>> {
-    let headers: std::collections::BTreeMap<&str, &str> = captured
-        .split_whitespace()
-        .filter_map(|pair| pair.split_once('='))
-        .collect();
-    let header = |name: String| headers.get(name.as_str()).copied();
+/// The limit rows of one backend out of its `name=value` pairs.
+fn limit_rows_of(backend: &str, limits: &str) -> Vec<Vec<String>> {
     let backend_cell = format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(backend));
-    let mut rows = Vec::new();
 
-    for (window, label) in ANTHROPIC_WINDOWS {
-        let Some(utilization) = header(format!("{ANTHROPIC_LIMIT_PREFIX}{window}-utilization"))
-        else {
-            continue;
-        };
-        let used = (utilization.parse::<f64>().unwrap_or(0.0) * 100.0).round() as u64;
-        rows.push(vec![
-            backend_cell.clone(),
-            label.to_string(),
-            meter(
+    usage::lines(limits)
+        .into_iter()
+        .map(|line| {
+            let used = match line.used {
+                Some((used, ceiling)) => meter(
+                    used,
+                    ceiling,
+                    USAGE_FILL,
+                    &escape(&line.used_label),
+                    USAGE_LABEL_WIDTH,
+                ),
+                None => String::new(),
+            };
+            vec![
+                backend_cell.clone(),
+                escape(&line.window),
                 used,
-                100,
-                USAGE_FILL,
-                &format!("{used}%"),
-                USAGE_LABEL_WIDTH,
-            ),
-            format!("{}%", 100u64.saturating_sub(used)),
-            status_pill(header(format!("{ANTHROPIC_LIMIT_PREFIX}{window}-status"))),
-            header(format!("{ANTHROPIC_LIMIT_PREFIX}{window}-reset"))
-                .and_then(|epoch| epoch.parse().ok())
-                .map(utc_date)
-                .unwrap_or_default(),
-        ]);
-    }
-
-    if let Some(status) = header(format!("{ANTHROPIC_LIMIT_PREFIX}overage-status")) {
-        let reason = header(format!("{ANTHROPIC_LIMIT_PREFIX}overage-disabled-reason"))
-            .map(|reason| format!(" <span class=\"{MUTED_CLASSES}\">{}</span>", escape(reason)))
-            .unwrap_or_default();
-        rows.push(vec![
-            backend_cell.clone(),
-            "overage".to_string(),
-            String::new(),
-            String::new(),
-            format!("{}{reason}", status_pill(Some(status))),
-            String::new(),
-        ]);
-    }
-
-    if let (Some(spend), Some(budget)) = (
-        header(GATEWAY_SPEND_HEADER.to_string()).and_then(|value| value.parse::<f64>().ok()),
-        header(GATEWAY_BUDGET_HEADER.to_string()).and_then(|value| value.parse::<f64>().ok()),
-    ) {
-        rows.push(vec![
-            backend_cell.clone(),
-            "budget".to_string(),
-            meter(
-                (spend * 100.0) as u64,
-                (budget * 100.0) as u64,
-                USAGE_FILL,
-                &money(spend),
-                USAGE_LABEL_WIDTH,
-            ),
-            format!("{} of {}", money((budget - spend).max(0.0)), money(budget)),
-            String::new(),
-            String::new(),
-        ]);
-    }
-
-    for window in GATEWAY_WINDOWS {
-        let (Some(limit), Some(remaining)) = (
-            header(format!("{GATEWAY_LIMIT_PREFIX}limit-{window}"))
-                .and_then(|value| value.parse::<u64>().ok()),
-            header(format!("{GATEWAY_LIMIT_PREFIX}remaining-{window}"))
-                .and_then(|value| value.parse::<u64>().ok()),
-        ) else {
-            continue;
-        };
-        let used = limit.saturating_sub(remaining);
-        rows.push(vec![
-            backend_cell.clone(),
-            window.to_string(),
-            meter(
-                used,
-                limit,
-                USAGE_FILL,
-                &used.to_string(),
-                USAGE_LABEL_WIDTH,
-            ),
-            format!("{remaining} of {limit}"),
-            String::new(),
-            header(format!("{GATEWAY_LIMIT_PREFIX}reset-{window}"))
-                .map(escape)
-                .unwrap_or_default(),
-        ]);
-    }
-
-    rows
+                escape(&line.left),
+                status_pill(&line.status),
+                escape(&line.resets),
+            ]
+        })
+        .collect()
 }
 
-/// A limit status as a pill: allowed is fine, a warning is amber, a
-/// rejection is red, anything else is neutral.
-fn status_pill(status: Option<&str>) -> String {
-    let Some(status) = status else {
+/// A limit status as a pill, with what qualifies it muted behind: allowed is
+/// fine, a warning is amber, a rejection is red, anything else is neutral.
+fn status_pill(status: &str) -> String {
+    let (status, note) = status.split_once(' ').unwrap_or((status, ""));
+    if status.is_empty() {
         return String::new();
-    };
+    }
 
     let tint = match status {
         "allowed" => SOLVED_PILL,
@@ -1458,41 +1304,13 @@ fn status_pill(status: Option<&str>) -> String {
         "rejected" => FAILED_PILL,
         _ => NEUTRAL_PILL,
     };
-
-    pill(tint, false, &escape(status))
-}
-
-/// A dollar amount with cents.
-fn money(amount: f64) -> String {
-    format!("${amount:.2}")
-}
-
-/// The epoch second `epoch` as a UTC date and time, to the minute.
-fn utc_date(epoch: u64) -> String {
-    let days = (epoch / SECONDS_PER_DAY) as i64;
-    let seconds = epoch % SECONDS_PER_DAY;
-
-    // Civil date from days since the epoch, after Howard Hinnant.
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
+    let note = if note.is_empty() {
+        String::new()
     } else {
-        shifted_month - 9
+        format!(" <span class=\"{MUTED_CLASSES}\">{}</span>", escape(note))
     };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
 
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
-        seconds / SECONDS_PER_HOUR,
-        seconds % SECONDS_PER_HOUR / SECONDS_PER_MINUTE
-    )
+    format!("{}{note}", pill(tint, false, &escape(status)))
 }
 
 /// The harness with its thinking level, the way an agent is referred to.

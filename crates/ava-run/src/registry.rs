@@ -168,7 +168,7 @@ impl Backend {
     /// The credential of the backend, read from the environment of this
     /// process rather than stored, so nothing secret reaches an image layer or
     /// the repository.
-    fn credential(&self) -> std::io::Result<String> {
+    pub(crate) fn credential(&self) -> std::io::Result<String> {
         credential(&self.key)
     }
 }
@@ -676,7 +676,7 @@ pub(crate) fn unknown<'a>(
 }
 
 /// Load the registry, or report the failure and exit(1).
-fn load_or_exit() -> Registry {
+pub(crate) fn load_or_exit() -> Registry {
     load().unwrap_or_else(|error| {
         eprintln!("error: {error}");
         std::process::exit(1);

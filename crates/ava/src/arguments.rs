@@ -10,6 +10,7 @@ pub(crate) struct Arguments;
 impl Arguments {
     const LIST_MODELS: &str = "list-models";
     const LIST_AGENTS: &str = "list-agents";
+    const USAGE: &str = "usage";
 
     /// Prints the help message to stdout.
     fn help() {
@@ -20,6 +21,10 @@ impl Arguments {
         arg_help_str(
             &format!("--{}", Self::LIST_AGENTS),
             "print the known agents and exit",
+        );
+        arg_help_str(
+            &format!("--{}", Self::USAGE),
+            "print the limits of every backend and the recorded usage, then exit",
         );
     }
 }
@@ -440,6 +445,7 @@ impl Parser {
         match next {
             Arguments::LIST_MODELS => ava_run::registry::list_models(),
             Arguments::LIST_AGENTS => ava_run::registry::list_agents(),
+            Arguments::USAGE => ava_run::usage::print(),
             AgentCli::FORCE_BUILD_LONG => {
                 let Some(SubCommand::Agent(ref mut command)) = self.command else {
                     bail(

@@ -228,6 +228,24 @@ fn run_base(agent: &str) -> String {
     }
 }
 
+/// Every run directory on disk, in no particular order.
+///
+/// A run directory that is not there holds no runs, which is what a fresh
+/// checkout looks like until the first run creates it.
+pub fn run_directories() -> std::io::Result<Vec<std::path::PathBuf>> {
+    match std::fs::read_dir(RUN_DIRECTORY) {
+        Ok(entries) => Ok(entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(std::io::Error::new(
+            error.kind(),
+            format!("{RUN_DIRECTORY}: {error}"),
+        )),
+    }
+}
+
 /// The proxy container serving one run.
 fn proxy_container(run: &str) -> String {
     format!("{PROXY_CONTAINER_PREFIX}{run}")

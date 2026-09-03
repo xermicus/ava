@@ -7,3 +7,4 @@ mod monitor;
 pub mod process;
 pub mod registry;
 pub mod upstreams;
+pub mod usage;

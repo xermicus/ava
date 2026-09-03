@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3f16fef4.js";
+            window.path_to_searchindex_js = "searchindex-11aef428.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -189,6 +189,7 @@
 <p>Run <code>ava agent -a &lt;agent&gt; -m &lt;model&gt; -g &lt;name&gt;</code>, where <code>-t</code> sets the seconds the agent is given, the last call included, and <code>-j</code> starts that many runs in parallel. Existing docker images are reused; <code>--force-build-images</code> rebuilds them.</p>
 <p><code>ava image</code> rebuilds every docker image ahead of runs; <code>-a &lt;agent&gt;</code>, <code>-p</code> (proxy) and <code>-s</code> (scorer) select single images.</p>
 <p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings and the setup, rendered from the run artifacts on disk.</p>
+<p><code>ava --usage</code> asks every backend for its limits and prints them with the usage recorded over the runs on disk. The setup page shows the same.</p>
 <ul>
 <li>
 <p><code>games/&lt;name&gt;</code> and <code>games/README.md</code> are mounted read only into the scorer container, which seeds them as the <code>master</code> commit of its repository before the hooks exist. The task description is <code>task.md</code>; the README holds the instructions shared by every game and a one line prompt points the harness at it. <code>AGENTS.md</code> and <code>CLAUDE.md</code> in the workspace are symlinks to it, the files every harness reads into context by itself when a session starts.</p>
