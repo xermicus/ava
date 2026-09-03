@@ -144,6 +144,10 @@ pub const SCORE_ERROR_LOG: &str = "score.error.log";
 pub const AGENT_LOG: &str = "agent.log";
 const RECORD_BUFFER_BYTES: usize = 8 * 1024;
 
+/// The bytes `agent.log` may reach, ended by a line saying it was cut.
+const AGENT_LOG_CEILING: u64 = 4 * 1024 * 1024 * 1024;
+const AGENT_LOG_CUT: &str = "\n[ava] the console reached its ceiling, the rest is not recorded\n";
+
 const KIBIBYTE: u64 = 1024;
 
 /// How often the run loop reports the state of the run.
@@ -1263,20 +1267,55 @@ fn start_sandbox(
     Ok(ending)
 }
 
-/// The file keeping what the agent printed.
-///
-/// Appended rather than truncated, so the last call adds to the console of the
-/// run instead of replacing what the task start wrote.
-fn agent_log(run: &str) -> std::io::Result<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
-    let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
-    std::fs::create_dir_all(&directory)?;
+/// The file keeping what the agent printed, cut at the ceiling.
+struct Console {
+    run: String,
+    file: std::fs::File,
+    bytes: u64,
+}
 
-    Ok(std::sync::Arc::new(std::sync::Mutex::new(
-        std::fs::OpenOptions::new()
+impl Console {
+    /// Appended rather than truncated, so the last call adds to the console of
+    /// the run instead of replacing what the task start wrote.
+    fn open(run: &str) -> std::io::Result<Self> {
+        let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
+        std::fs::create_dir_all(&directory)?;
+
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(directory.join(AGENT_LOG))?,
-    )))
+            .open(directory.join(AGENT_LOG))?;
+        let bytes = file.metadata()?.len();
+
+        Ok(Self {
+            run: run.to_string(),
+            file,
+            bytes,
+        })
+    }
+
+    fn append(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        if self.bytes > AGENT_LOG_CEILING {
+            return Ok(());
+        }
+
+        let room = (AGENT_LOG_CEILING - self.bytes) as usize;
+        if chunk.len() <= room {
+            std::io::Write::write_all(&mut self.file, chunk)?;
+            self.bytes += chunk.len() as u64;
+            return Ok(());
+        }
+
+        std::io::Write::write_all(&mut self.file, &chunk[..room])?;
+        std::io::Write::write_all(&mut self.file, AGENT_LOG_CUT.as_bytes())?;
+        self.bytes = AGENT_LOG_CEILING + AGENT_LOG_CUT.len() as u64;
+        log::warn!(
+            "{}: the console reached {AGENT_LOG_CEILING} bytes, cutting it",
+            self.run
+        );
+
+        Ok(())
+    }
 }
 
 /// Keep what the agent printed in `runs/<run>/agent.log`.
@@ -1291,19 +1330,19 @@ fn record_output(
     let stdout = child.stdout.take().expect("the sandbox output is piped");
     let stderr = child.stderr.take().expect("the sandbox output is piped");
 
-    let log = agent_log(run)?;
+    let console = std::sync::Arc::new(std::sync::Mutex::new(Console::open(run)?));
 
     Ok(vec![
-        record(stdout, log.clone(), monitor.clone(), true),
-        record(stderr, log, monitor.clone(), false),
+        record(stdout, console.clone(), monitor.clone(), true),
+        record(stderr, console, monitor.clone(), false),
     ])
 }
 
-/// Copy `source` into `log` until it ends, reporting every chunk to the
+/// Copy `source` into `console` until it ends, reporting every chunk to the
 /// monitor.
 fn record(
     mut source: impl std::io::Read + Send + 'static,
-    log: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    console: std::sync::Arc<std::sync::Mutex<Console>>,
     monitor: std::sync::Arc<crate::monitor::Monitor>,
     scan_lines: bool,
 ) -> std::thread::JoinHandle<std::io::Result<()>> {
@@ -1317,10 +1356,10 @@ fn record(
             }
 
             monitor.observe(&buffer[..read], scan_lines);
-            std::io::Write::write_all(
-                &mut *log.lock().expect("the agent log is not poisoned"),
-                &buffer[..read],
-            )?;
+            console
+                .lock()
+                .expect("the console is not poisoned")
+                .append(&buffer[..read])?;
         }
     })
 }

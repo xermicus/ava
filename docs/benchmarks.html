@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1732c82c.js";
+            window.path_to_searchindex_js = "searchindex-3f16fef4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f6dfd26f.js"></script>
@@ -189,7 +189,7 @@
 <p><code>games/&lt;name&gt;</code> and <code>games/README.md</code> are mounted read only into the scorer container, which seeds them as the <code>master</code> commit of its repository before the hooks exist. The task description is <code>task.md</code>; the README holds the instructions shared by every game and a one line prompt points the harness at it. <code>AGENTS.md</code> and <code>CLAUDE.md</code> in the workspace are symlinks to it, the files every harness reads into context by itself when a session starts.</p>
 </li>
 <li>
-<p><code>ava</code> loops the harness over that prompt. A turn is one start of the harness: it answers, it exits, and that exit is the boundary the next turn starts on with <code>Loop iteration N.</code> ahead of the same prompt. Every harness resumes its recorded session by its own option, <code>--continue</code> for claude, pi and opencode and <code>codex exec resume</code> for codex, so the conversation accumulates across turns instead of restarting. The loop is one thing rather than one per harness, and the turn count is something the run records rather than something only the harness knows. <code>ava</code> starts the sandbox and only watches the clock and the done marker, and starts it a second time for the last call. The console goes to <code>runs/&lt;run&gt;/agent.log</code>; <code>ava</code> logs a status line every minute and warns when the agent stays silent for long or repeats one output line.</p>
+<p><code>ava</code> loops the harness over that prompt. A turn is one start of the harness: it answers, it exits, and that exit is the boundary the next turn starts on with <code>Loop iteration N.</code> ahead of the same prompt. Every harness resumes its recorded session by its own option, <code>--continue</code> for claude, pi and opencode and <code>codex exec resume</code> for codex, so the conversation accumulates across turns instead of restarting. The loop is one thing rather than one per harness, and the turn count is something the run records rather than something only the harness knows. <code>ava</code> starts the sandbox and only watches the clock and the done marker, and starts it a second time for the last call. The console goes to <code>runs/&lt;run&gt;/agent.log</code>, cut at 4 GiB; <code>ava</code> logs a status line every minute and warns when the agent stays silent for long or repeats one output line.</p>
 </li>
 <li>
 <p>The output tokens of a single turn are capped to the ceiling claude code uses for its own requests, 32000, or 64000 at the highest thinking levels. Codex has no per turn output knob, so the cap goes unenforced there. It bounds what a turn spends and not how long it takes: a model streaming at 20 tokens a second reaches the cap after 1600 seconds, so a single turn can and does outlast a phase.</p>

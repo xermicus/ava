@@ -698,12 +698,11 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         body.push_str(&object_table(metrics));
     }
 
-    if let Ok(console) = std::fs::read(directory.join(docker::AGENT_LOG)) {
-        let tail = console.len().saturating_sub(CONSOLE_TAIL_BYTES);
+    if let Ok(tail) = console_tail(&directory.join(docker::AGENT_LOG)) {
         body.push_str(&format!(
             "<p class=\"{TITLE_CLASSES}\">console <span class=\"{NOTE_CLASSES} font-normal\">the last {} bytes</span></p><pre class=\"{CONSOLE_CLASSES}\">{}</pre>",
-            console.len() - tail,
-            escape(&strip_ansi(&String::from_utf8_lossy(&console[tail..])))
+            tail.len(),
+            escape(&strip_ansi(&String::from_utf8_lossy(&tail)))
         ));
     }
 
@@ -1290,6 +1289,20 @@ fn pointer(value: Option<&serde_json::Value>, path: &str) -> u64 {
         .and_then(|value| value.pointer(path))
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0)
+}
+
+/// The last `CONSOLE_TAIL_BYTES` of the file at `path`, read without the rest.
+fn console_tail(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let start = file
+        .metadata()?
+        .len()
+        .saturating_sub(CONSOLE_TAIL_BYTES as u64);
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(start))?;
+
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut tail)?;
+    Ok(tail)
 }
 
 /// The wall clock seconds a finished run took, from its start to the moment
