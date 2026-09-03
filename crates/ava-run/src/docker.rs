@@ -159,7 +159,7 @@ pub const DONE_MARKER: &str = "/home/agent/done";
 pub const LAST_CALL_SECONDS: u64 = 120;
 
 /// The seconds the turn loop may spend of a `total` budget.
-pub fn loop_seconds(total: u64) -> u64 {
+fn loop_seconds(total: u64) -> u64 {
     total.saturating_sub(LAST_CALL_SECONDS)
 }
 

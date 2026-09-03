@@ -18,6 +18,10 @@ LLM_SUBSTRATE_DEV_KEY=skXXX
 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-XXX
 KEYS
 
+# use the example registry config providing anthropic and llm.substrate.dev backends
+
+cp registry.json.example registry.json
+
 # start the web ui
 
 make serve
