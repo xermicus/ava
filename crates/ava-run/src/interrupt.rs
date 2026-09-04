@@ -15,20 +15,32 @@ const SIGHUP: i32 = 1;
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
 
-/// Set by the handler, polled through [`interrupted`].
-static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The signal received, set by the handler and polled through [`interrupted`].
+static SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+const STDERR: i32 = 2;
+const SIGINT_MESSAGE: &str = "received SIGINT, shutting down\n";
+const SIGTERM_MESSAGE: &str = "received SIGTERM, shutting down\n";
 
 unsafe extern "C" {
     fn signal(number: i32, handler: usize) -> usize;
+    fn write(descriptor: i32, buffer: *const u8, count: usize) -> isize;
     fn _exit(code: i32) -> !;
 }
 
-/// Note the interrupt for the polling loop, and get out hard when the user
-/// insists with a second one.
-extern "C" fn on_interrupt(_: i32) {
-    if INTERRUPTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+/// Say so on stderr, note the interrupt for the polling loop, and get out hard
+/// when the user insists with a second one.
+extern "C" fn on_interrupt(number: i32) {
+    if SIGNAL.swap(number, std::sync::atomic::Ordering::Relaxed) != 0 {
         unsafe { _exit(INTERRUPT_EXIT_CODE) }
     }
+
+    let message = if number == SIGINT {
+        SIGINT_MESSAGE
+    } else {
+        SIGTERM_MESSAGE
+    };
+    unsafe { write(STDERR, message.as_ptr(), message.len()) };
 }
 
 /// Install the signal dispositions.
@@ -42,5 +54,5 @@ pub fn install() {
 
 /// Whether the process was asked to stop.
 pub fn interrupted() -> bool {
-    INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed)
+    SIGNAL.load(std::sync::atomic::Ordering::Relaxed) != 0
 }

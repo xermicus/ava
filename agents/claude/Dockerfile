@@ -1,4 +1,4 @@
-FROM ava/host-env
+FROM ava/base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

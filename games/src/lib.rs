@@ -2,12 +2,19 @@
 
 #[path = "../fib-golf/scorer.rs"]
 pub mod fib_golf;
+#[path = "../r2wars-x86-32/scorer.rs"]
+pub mod r2wars;
 #[path = "../sanity-check/scorer.rs"]
 pub mod sanity_check;
 pub mod scoring;
 
 /// Every game a benchmark run can play.
-pub const GAMES: [&dyn Game; 2] = [&fib_golf::FibGolf, &sanity_check::SanityCheck];
+pub const GAMES: [&dyn Game; 4] = [
+    &fib_golf::FibGolf,
+    &r2wars::GAMES[0],
+    &r2wars::GAMES[1],
+    &sanity_check::SanityCheck,
+];
 
 /// The points scale every game scores in.
 ///
@@ -34,6 +41,13 @@ pub struct Score {
 pub trait Game {
     /// The name identifying the game on the command line and under the games directory.
     fn name(&self) -> &'static str;
+
+    /// The folder under the games directory whose Dockerfile layers the software
+    /// of the game over the harness image and the scorer image, if the game needs
+    /// any beyond the base.
+    fn image(&self) -> Option<&'static str> {
+        None
+    }
 
     /// Score the contents of the `submission` directory.
     fn score(&self, submission: &std::path::Path) -> std::io::Result<Score>;

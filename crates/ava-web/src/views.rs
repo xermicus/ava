@@ -87,8 +87,8 @@ const CARD_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900"
 /// gap stays the same width. Without a marked column the last one takes the
 /// slack.
 const TABLE_CLASSES: &str = "w-full border-collapse";
-const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap px-3 first:pl-4 last:pr-4";
-const SLACK_COLUMN_CLASSES: &str = "w-full px-3 first:pl-4 last:pr-4";
+const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap px-2 first:pl-4 last:pr-4";
+const SLACK_COLUMN_CLASSES: &str = "px-2 first:pl-4 last:pr-4";
 const HEADER_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500 py-2.5";
 
 /// A title with a tooltip behind it.
@@ -136,7 +136,7 @@ const NEUTRAL_PILL: &str = "bg-neutral-800 text-neutral-400";
 
 /// The meters: a track, a fill and a mono label.
 const METER_TRACK_CLASSES: &str =
-    "h-1.5 flex-1 min-w-16 rounded-full bg-neutral-800 overflow-hidden";
+    "h-1.5 flex-1 min-w-12 rounded-full bg-neutral-800 overflow-hidden";
 
 /// The labels beside the meters have one width per kind, so the tracks of
 /// one column start and end on the same lines.
@@ -144,6 +144,8 @@ const POINTS_LABEL_WIDTH: &str = "w-12";
 const ELAPSED_LABEL_WIDTH: &str = "w-24";
 const USAGE_LABEL_WIDTH: &str = "w-16";
 const USAGE_FILL: &str = "bg-amber-500";
+const WAIT_FILL: &str = "bg-sky-500";
+const RESET_LABEL_WIDTH: &str = "w-44";
 const POINTS_FILL: &str = "bg-amber-500";
 
 /// The time meter, tinted by whether the budget held.
@@ -673,7 +675,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     let running = live_runs();
     let live = running
         .iter()
-        .any(|container| container == &docker::sandbox_container(name));
+        .any(|container| container == &docker::scorer_container(name));
     let analyzing = running
         .iter()
         .any(|container| container == &docker::analyst_container(name));
@@ -792,13 +794,13 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         .filter(|file| directory.join(file).exists())
         .map(|file| {
             format!(
-                "<a class=\"{LINK_CLASSES} mr-4\" href=\"/run/{}/{file}\">{file}</a>",
+                "<a class=\"{LINK_CLASSES}\" href=\"/run/{}/{file}\">{file}</a>",
                 escape(name)
             )
         })
         .collect::<String>();
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">files</p><p>{files}</p>"
+        "<p class=\"{TITLE_CLASSES}\">files</p><p class=\"flex flex-wrap gap-x-4 gap-y-1\">{files}</p>"
     ));
 
     body.push_str(&format!(
@@ -1092,7 +1094,14 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         sources.join(", ")
     ));
     body.push_str(&table(
-        &["BACKEND", "WINDOW", "*USED", "LEFT", "STATUS", "RESETS"],
+        &[
+            "BACKEND",
+            "WINDOW",
+            "*USED",
+            "LEFT",
+            "STATUS",
+            "*RESETS|how far the window has run towards its reset, and when it resets",
+        ],
         limit_rows,
         Some(NO_LIMITS_NOTE),
     ));
@@ -1190,16 +1199,74 @@ pub(crate) fn analyzing(name: &str) -> bool {
         .any(|container| container == &docker::analyst_container(name))
 }
 
-/// The names of the containers running right now.
-fn live_runs() -> Vec<String> {
-    process::run_and_assume_success("docker", &["ps", "--format", "{{.Names}}"])
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect()
+/// What the watcher last saw of docker: the running containers and the output
+/// of every live scoring container, which holds the pushes graded so far.
+struct Snapshot {
+    containers: Vec<String>,
+    scorer_logs: Vec<(String, String)>,
 }
 
-/// Every run on disk, newest first, marked live while its sandbox is up.
+static SNAPSHOT: std::sync::Mutex<Snapshot> = std::sync::Mutex::new(Snapshot {
+    containers: Vec::new(),
+    scorer_logs: Vec::new(),
+});
+
+/// How long the watcher rests between two looks at docker.
+const CONTAINER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Keep the snapshot fresh from a thread, so no page waits on docker.
+pub(crate) fn watch_containers() {
+    std::thread::spawn(|| {
+        loop {
+            refresh_snapshot();
+            std::thread::sleep(CONTAINER_POLL_INTERVAL);
+        }
+    });
+}
+
+fn refresh_snapshot() {
+    let containers: Vec<String> =
+        process::run_and_assume_success("docker", &["ps", "--format", "{{.Names}}"])
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+    let scorer_logs = containers
+        .iter()
+        .filter_map(|container| container.strip_prefix(docker::SCORER_CONTAINER_PREFIX))
+        .map(|run| {
+            (
+                run.to_string(),
+                container_logs(&docker::scorer_container(run)),
+            )
+        })
+        .collect();
+
+    *SNAPSHOT.lock().expect("the snapshot is never poisoned") = Snapshot {
+        containers,
+        scorer_logs,
+    };
+}
+
+fn container_logs(container: &str) -> String {
+    std::process::Command::new("docker")
+        .args(["logs", container])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The names of the running containers.
+fn live_runs() -> Vec<String> {
+    SNAPSHOT
+        .lock()
+        .expect("the snapshot is never poisoned")
+        .containers
+        .clone()
+}
+
+/// Every run on disk, newest first, marked live while its scoring container is up,
+/// which outlives the agent container restarting between turns.
 ///
 /// A run directory that is not there holds no runs, which is what a fresh
 /// checkout looks like until the first run creates it.
@@ -1215,8 +1282,8 @@ fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
             continue;
         };
 
-        let sandbox = docker::sandbox_container(name);
-        let live = running.iter().any(|container| container == &sandbox);
+        let scorer = docker::scorer_container(name);
+        let live = running.iter().any(|container| container == &scorer);
         runs.push(RunEntry {
             live,
             score: read_json(&directory.join(docker::SCORE_FILE)),
@@ -1241,10 +1308,13 @@ fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
 /// output is the very log collected at the end.
 fn attempts_of(directory: &std::path::Path, name: &str, live: bool) -> Vec<serde_json::Value> {
     let contents = if live {
-        std::process::Command::new("docker")
-            .args(["logs", &docker::scorer_container(name)])
-            .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        SNAPSHOT
+            .lock()
+            .expect("the snapshot is never poisoned")
+            .scorer_logs
+            .iter()
+            .find(|(run, _)| run == name)
+            .map(|(_, logs)| logs.clone())
             .unwrap_or_default()
     } else {
         std::fs::read_to_string(directory.join(docker::SCORE_LOG)).unwrap_or_default()
@@ -1422,7 +1492,16 @@ fn limit_rows_of(backend: &str, limits: &str) -> Vec<Vec<String>> {
                 used,
                 escape(&line.left),
                 status_pill(&line.status),
-                escape(&line.resets),
+                match line.wait {
+                    Some((left, window)) => meter(
+                        window.saturating_sub(left),
+                        window,
+                        WAIT_FILL,
+                        &escape(&line.resets),
+                        RESET_LABEL_WIDTH,
+                    ),
+                    None => escape(&line.resets),
+                },
             ]
         })
         .collect()
@@ -1540,12 +1619,11 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
     if slack.is_empty() {
         slack.push(headers.len().saturating_sub(1));
     }
-    let share = 100 / slack.len();
     let column = |index: usize| {
         if slack.contains(&index) {
-            (SLACK_COLUMN_CLASSES, format!(" style=\"width:{share}%\""))
+            SLACK_COLUMN_CLASSES
         } else {
-            (PACKED_COLUMN_CLASSES, String::new())
+            PACKED_COLUMN_CLASSES
         }
     };
 
@@ -1554,10 +1632,10 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
     );
     for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
         let align = if *numeric { "text-right" } else { "text-left" };
-        let (classes, style) = column(index);
+        let classes = column(index);
         let (title, tooltip) = header.split_once(TOOLTIP_SEPARATOR).unwrap_or((header, ""));
         html.push_str(&format!(
-            "<th class=\"{classes} {HEADER_CLASSES} {align}\"{style}>{}</th>",
+            "<th class=\"{classes} {HEADER_CLASSES} {align}\">{}</th>",
             explained(
                 title.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER]),
                 tooltip
@@ -1578,9 +1656,9 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
         for (index, (cell, numeric)) in row.iter().zip(&numeric).enumerate() {
             let align = if *numeric { NUMERIC_CLASSES } else { "" };
-            let (classes, style) = column(index);
+            let classes = column(index);
             html.push_str(&format!(
-                "<td class=\"{classes} {CELL_CLASSES} {align}\"{style}>{cell}</td>"
+                "<td class=\"{classes} {CELL_CLASSES} {align}\">{cell}</td>"
             ));
         }
         html.push_str("</tr>");

@@ -13,6 +13,9 @@ use crate::views;
 
 const BIND_ADDRESS: &str = "127.0.0.1";
 
+/// How long a wait for a request is before the interrupt flag is polled.
+const INTERRUPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The port `serve` binds unless the command names another one.
 pub const DEFAULT_PORT: u16 = 2828;
 
@@ -74,19 +77,24 @@ pub fn run(command: &Serve) -> std::io::Result<i32> {
     let server = tiny_http::Server::http(&address)
         .map_err(|error| std::io::Error::other(format!("{address}: {error}")))?;
 
+    views::watch_containers();
     log::info!("serving http://{address}");
 
     loop {
-        let mut request = server.recv()?;
-
         if ava_run::interrupt::interrupted() {
             return Ok(0);
         }
 
-        let response = respond(&mut request);
-        if let Err(error) = request.respond(response) {
-            log::warn!("answering the browser failed: {error}");
-        }
+        let Some(mut request) = server.recv_timeout(INTERRUPT_POLL_INTERVAL)? else {
+            continue;
+        };
+
+        std::thread::spawn(move || {
+            let response = respond(&mut request);
+            if let Err(error) = request.respond(response) {
+                log::warn!("answering the browser failed: {error}");
+            }
+        });
     }
 }
 

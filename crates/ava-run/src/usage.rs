@@ -26,10 +26,12 @@ const ANTHROPIC_WINDOWS: [(&str, &str); 2] = [("5h", "session, 5 hours"), ("7d",
 const GATEWAY_SPEND_HEADER: &str = "x-litellm-key-spend";
 const GATEWAY_BUDGET_HEADER: &str = "x-litellm-key-max-budget";
 const GATEWAY_RESET_HEADER: &str = "x-litellm-key-budget-reset-at";
-const GATEWAY_INFO_FIELDS: [(&str, &str); 3] = [
+const GATEWAY_DURATION_HEADER: &str = "x-litellm-key-budget-duration";
+const GATEWAY_INFO_FIELDS: [(&str, &str); 4] = [
     ("spend", GATEWAY_SPEND_HEADER),
     ("max_budget", GATEWAY_BUDGET_HEADER),
     ("budget_reset_at", GATEWAY_RESET_HEADER),
+    ("budget_duration", GATEWAY_DURATION_HEADER),
 ];
 const GATEWAY_LIMIT_PREFIX: &str = "x-ratelimit-";
 const GATEWAY_WINDOWS: [&str; 2] = ["requests", "tokens"];
@@ -298,6 +300,8 @@ pub struct Line {
     pub left: String,
     pub status: String,
     pub resets: String,
+    /// The seconds left until the reset and the length of the window, for a meter.
+    pub wait: Option<(u64, u64)>,
 }
 
 type Pairs<'a> = std::collections::BTreeMap<&'a str, &'a str>;
@@ -329,20 +333,29 @@ fn window_lines(pairs: &Pairs) -> Vec<Line> {
             continue;
         };
         let used = (utilization * 100.0).round() as u64;
+        let reset = value(pairs, &format!("{prefix}reset")).parse::<u64>().ok();
         lines.push(Line {
             window: label.to_string(),
             used: Some((used, 100)),
             used_label: format!("{used}%"),
             left: format!("{}%", 100u64.saturating_sub(used)),
             status: value(pairs, &format!("{prefix}status")).to_string(),
-            resets: value(pairs, &format!("{prefix}reset"))
-                .parse()
-                .map(utc_date)
-                .unwrap_or_default(),
+            resets: reset.map(utc_date).unwrap_or_default(),
+            wait: reset.map(|reset| (reset.saturating_sub(epoch_now()), window_seconds(window))),
         });
     }
 
     lines
+}
+
+/// The length of an Anthropic window such as `5h` or `7d`, in seconds.
+fn window_seconds(window: &str) -> u64 {
+    let (count, unit) = window.split_at(window.len() - 1);
+    let count: u64 = count.parse().unwrap_or(0);
+    match unit {
+        "d" => count * SECONDS_PER_DAY,
+        _ => count * SECONDS_PER_HOUR,
+    }
 }
 
 fn overage_line(pairs: &Pairs) -> Option<Line> {
@@ -370,12 +383,18 @@ fn budget_line(pairs: &Pairs) -> Option<Line> {
         None => UNBUDGETED_LABEL.to_string(),
     };
 
+    let reset = epoch_of(value(pairs, GATEWAY_RESET_HEADER));
+    let duration = value(pairs, GATEWAY_DURATION_HEADER);
+
     Some(Line {
         window: BUDGET_LABEL.to_string(),
         used: budget.map(|budget| ((spend * 100.0) as u64, (budget * 100.0) as u64)),
         used_label: money(spend),
         left,
-        resets: value(pairs, GATEWAY_RESET_HEADER).to_string(),
+        resets: reset.map(utc_date).unwrap_or_default(),
+        wait: reset
+            .filter(|_| !duration.is_empty())
+            .map(|reset| (reset.saturating_sub(epoch_now()), window_seconds(duration))),
         ..Line::default()
     })
 }
@@ -592,6 +611,32 @@ pub fn epoch_now() -> u64 {
 }
 
 /// The epoch second `epoch` as a UTC date and time, to the minute.
+/// The epoch of an ISO 8601 UTC date such as `2026-10-01T00:00:00+00:00`.
+fn epoch_of(date: &str) -> Option<u64> {
+    let mut fields = date
+        .split(['-', 'T', ':', '+', 'Z'])
+        .filter(|field| !field.is_empty())
+        .map(|field| field.parse::<i64>().ok());
+    let (year, month, day, hour, minute) = (
+        fields.next()??,
+        fields.next()??,
+        fields.next()??,
+        fields.next()??,
+        fields.next()??,
+    );
+
+    // Days since the epoch from the civil date, after Howard Hinnant.
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400);
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+
+    u64::try_from(days * SECONDS_PER_DAY as i64 + hour * SECONDS_PER_HOUR as i64 + minute * 60).ok()
+}
+
 pub fn utc_date(epoch: u64) -> String {
     let days = (epoch / SECONDS_PER_DAY) as i64;
     let seconds = epoch % SECONDS_PER_DAY;

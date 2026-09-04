@@ -100,12 +100,15 @@ const SOCKET_DIRECTORY: &str = "/run/ava";
 const SOCKET_PATH: &str = "/run/ava/proxy.sock";
 const SCORE_SOCKET_PATH: &str = "/run/ava/score.sock";
 const PROXY_CONTAINER_PREFIX: &str = "ava-proxy-";
-const SCORER_CONTAINER_PREFIX: &str = "ava-scorer-";
+pub const SCORER_CONTAINER_PREFIX: &str = "ava-scorer-";
 const SANDBOX_CONTAINER_PREFIX: &str = "ava-agent-";
 const ANALYST_CONTAINER_PREFIX: &str = "ava-analyst-";
 
 const ANALYSIS_SUFFIX: &str = "-analysis";
 const RUN_MOUNT: &str = "/home/agent/run";
+
+/// The files the analysis writes into the run directory.
+const ANALYSIS_PREFIX: &str = "analysis";
 const BOOK_DIRECTORY: &str = "book/src";
 const BOOK_MOUNT: &str = "/home/agent/ava-book";
 
@@ -120,8 +123,16 @@ const PROXY_CONTEXT: &str = "openapi-proxy";
 const PROXY_HOSTS: &str = "openapi-proxy/hosts.conf";
 const CONTAINER_HOSTS: &str = "/etc/nginx/conf.d/hosts.conf";
 const READ_ONLY: &str = ":ro";
-const BASE_IMAGE: &str = "ava/host-env";
-const BASE_CONTEXT: &str = "host-env";
+const BASE_IMAGE: &str = "ava/base";
+const BASE_CONTEXT: &str = "agents";
+
+/// The build context of every game image, so a Dockerfile reaches the
+/// material games share.
+const GAME_CONTEXT: &str = "games";
+const GAME_DOCKERFILE: &str = "Dockerfile";
+
+/// The build argument naming the image a game Dockerfile layers on.
+const BASE_ARGUMENT: &str = "BASE";
 const AGENT_IMAGE_PREFIX: &str = "ava/agent-";
 const AGENT_CONTEXT: &str = "agents";
 const SANDBOX_WORKSPACE: &str = "/home/agent/workspace";
@@ -614,7 +625,7 @@ fn start_proxy(run: &str) -> std::io::Result<()> {
 /// scoring.
 ///
 /// The proxy routes requests for the score host onto its socket.
-fn start_score_server(run: &str, game: &str) -> std::io::Result<()> {
+fn start_score_server(run: &str, game: &str, image: &str) -> std::io::Result<()> {
     let container = scorer_container(run);
     log::info!("starting the scoring server {container}");
 
@@ -648,7 +659,7 @@ fn start_score_server(run: &str, game: &str) -> std::io::Result<()> {
             &readme,
             "--entrypoint",
             BASH,
-            SCORER_IMAGE,
+            image,
             SCORE_ENTRY,
             game,
         ],
@@ -935,16 +946,93 @@ pub fn build_images(command: &Image) -> std::io::Result<i32> {
     if let [(tag, arguments)] = builds.as_slice() {
         let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
         docker_build(tag, &arguments)?;
-        return Ok(0);
+    } else {
+        let failures: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = builds
+                .iter()
+                .map(|(tag, arguments)| {
+                    scope.spawn(move || {
+                        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+                        docker_build_captured(tag, &arguments).map_err(|error| error.to_string())
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().expect("the build threads do not panic").err())
+                .collect()
+        });
+
+        if !failures.is_empty() {
+            return Err(std::io::Error::other(failures.join(", ")));
+        }
     }
 
+    let mut layers: Vec<(String, String, &str)> = Vec::new();
+    for layer in game_layers() {
+        for harness in &harnesses {
+            let base = format!("{AGENT_IMAGE_PREFIX}{harness}");
+            layers.push((format!("{base}-{layer}"), base, layer));
+        }
+        if everything || command.scorer {
+            layers.push((
+                format!("{SCORER_IMAGE}-{layer}"),
+                SCORER_IMAGE.to_string(),
+                layer,
+            ));
+        }
+    }
+    build_game_images(&layers)
+}
+
+/// The scorer image of the named game: the scorer with the game's layer, if it has one.
+fn scorer_image(game: &str) -> String {
+    match game_layer(game) {
+        Some(layer) => format!("{SCORER_IMAGE}-{layer}"),
+        None => SCORER_IMAGE.to_string(),
+    }
+}
+
+/// The folder whose Dockerfile the named game plays on, if it needs one.
+fn game_layer(game: &str) -> Option<&'static str> {
+    ava_game::find(game).and_then(|game| game.image())
+}
+
+/// Every folder a game layers its software from, each once.
+fn game_layers() -> Vec<&'static str> {
+    let mut layers: Vec<&str> = ava_game::GAMES
+        .iter()
+        .filter_map(|game| game.image())
+        .collect();
+    layers.sort_unstable();
+    layers.dedup();
+    layers
+}
+
+/// Build every `(tag, base, layer)` game image in parallel.
+fn build_game_images(layers: &[(String, String, &str)]) -> std::io::Result<i32> {
     let failures: Vec<String> = std::thread::scope(|scope| {
-        let handles: Vec<_> = builds
+        let handles: Vec<_> = layers
             .iter()
-            .map(|(tag, arguments)| {
+            .map(|(tag, base, layer)| {
                 scope.spawn(move || {
-                    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-                    docker_build_captured(tag, &arguments).map_err(|error| error.to_string())
+                    let file = format!("{GAME_CONTEXT}/{layer}/{GAME_DOCKERFILE}");
+                    let argument = format!("{BASE_ARGUMENT}={base}");
+                    docker_build_captured(
+                        tag,
+                        &[
+                            "build",
+                            "--tag",
+                            tag,
+                            "--file",
+                            &file,
+                            "--build-arg",
+                            &argument,
+                            GAME_CONTEXT,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())
                 })
             })
             .collect();
@@ -960,6 +1048,29 @@ pub fn build_images(command: &Image) -> std::io::Result<i32> {
     }
 
     Ok(0)
+}
+
+/// Build the Dockerfile of the `layer` folder over `base` as `tag`, or keep it
+/// when it already exists and the build is not forced.
+fn build_game_image(tag: &str, base: &str, layer: &str, force: bool) -> std::io::Result<()> {
+    if !force && exists(&["image", "inspect", tag])? {
+        log::info!("{tag} exists, keeping it");
+        return Ok(());
+    }
+
+    docker_build(
+        tag,
+        &[
+            "build",
+            "--tag",
+            tag,
+            "--file",
+            &format!("{GAME_CONTEXT}/{layer}/{GAME_DOCKERFILE}"),
+            "--build-arg",
+            &format!("{BASE_ARGUMENT}={base}"),
+            GAME_CONTEXT,
+        ],
+    )
 }
 
 /// Run the named agent, one run per requested parallel slot, and report the
@@ -984,11 +1095,20 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
     let force = command.force_build_images;
     build_image(BASE_IMAGE, BASE_CONTEXT, force)?;
 
-    let tag = format!("{AGENT_IMAGE_PREFIX}{agent}");
-    build_image(&tag, &format!("{AGENT_CONTEXT}/{agent}"), force)?;
-    let identity = image_id(&tag)?;
-
+    let harness = format!("{AGENT_IMAGE_PREFIX}{agent}");
+    build_image(&harness, &format!("{AGENT_CONTEXT}/{agent}"), force)?;
     build_scorer_image(force)?;
+
+    let played = match game_layer(&command.game) {
+        Some(layer) => {
+            let played = format!("{harness}-{layer}");
+            build_game_image(&played, &harness, layer, force)?;
+            build_game_image(&scorer_image(&command.game), SCORER_IMAGE, layer, force)?;
+            played
+        }
+        None => harness,
+    };
+    let identity = image_id(&played)?;
 
     std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
     build_image(PROXY_IMAGE, PROXY_CONTEXT, force)?;
@@ -1053,7 +1173,7 @@ fn play_run(
     // ones already started leak, so the whole startup lands in one status.
     let status = record_metadata(run, command, identity, TASK_PROMPT, &invocation)
         .and_then(|()| start_proxy(run))
-        .and_then(|()| start_score_server(run, &command.game))
+        .and_then(|()| start_score_server(run, &command.game, &scorer_image(&command.game)))
         .and_then(|()| prepare_agent_home(run, &image))
         .and_then(|()| run_sandbox(command, &image, run, &staging, invocation));
 
@@ -1111,6 +1231,18 @@ fn require_game(game: &str) -> std::io::Result<()> {
             "the task folder {} does not exist",
             task.display()
         )));
+    }
+
+    if let Some(layer) = game_layer(game) {
+        let dockerfile = std::path::Path::new(GAMES_DIRECTORY)
+            .join(layer)
+            .join(GAME_DOCKERFILE);
+        if !dockerfile.is_file() {
+            return Err(std::io::Error::other(format!(
+                "the game image {} does not exist",
+                dockerfile.display()
+            )));
+        }
     }
 
     Ok(())
@@ -1731,6 +1863,22 @@ fn docker_build_captured(tag: &str, arguments: &[&str]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Mount a read only copy of the run's files without what the analysis writes.
+fn staged_run_mount(run: &str, staging: &std::path::Path) -> std::io::Result<String> {
+    let copy = staging.join(RUN_DIRECTORY);
+    std::fs::create_dir_all(&copy)?;
+
+    for entry in std::fs::read_dir(std::path::Path::new(RUN_DIRECTORY).join(run))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if entry.file_type()?.is_file() && !name.to_string_lossy().starts_with(ANALYSIS_PREFIX) {
+            std::fs::copy(entry.path(), copy.join(&name))?;
+        }
+    }
+
+    Ok(format!("{}:{RUN_MOUNT}{READ_ONLY}", copy.display()))
+}
+
 fn read_only_mount(source: &str, target: &str) -> std::io::Result<String> {
     let source = std::env::current_dir()?.join(source);
     Ok(format!("{}:{target}{READ_ONLY}", source.display()))
@@ -1922,7 +2070,7 @@ fn run_analyst(
         "--volume",
         &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(sidecar)),
         "--volume",
-        &read_only_mount(&format!("{RUN_DIRECTORY}/{run}"), RUN_MOUNT)?,
+        &staged_run_mount(run, staging)?,
         "--volume",
         &read_only_mount(BOOK_DIRECTORY, BOOK_MOUNT)?,
         "--hostname",

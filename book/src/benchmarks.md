@@ -32,7 +32,7 @@ The home outlives the sandbox, which is what makes the last call possible.
 
 It is also the portable way to get all three. The volume and its tmpfs are created by the docker daemon, so on macOS this happens inside its linux virtual machine and behaves exactly as it does on linux. Nothing here needs a host ramdisk, a loop device, a filesystem quota or root on the host.
 
-The cost is that the home is memory. A run holds the copied home for its whole length, 622 MiB for the shared base image with each harness adding its own install on top, so `-j` multiplies it and the ceiling of 4 GiB of home plus 4 GiB of workspace plus 2 GiB of scratch is per run.
+The cost is that the home is memory. A run holds the copied home for its whole length, the base image with the harness and the toolchains of the game on top, so `-j` multiplies it and the ceiling of 4 GiB of home plus 4 GiB of workspace plus 2 GiB of scratch is per run.
 
 The workspace is split off because the two sides fail differently. A tool call whose output never ends is what fills a filesystem here, and the harness writes that output into its own session store under the home. With one volume that took the workspace with it, and the last chance could not commit, so the run recorded nothing at all. With two, a full home costs the harness its session and leaves the submission untouched. The workspace is the side that has to keep working, since git writes to commit, so it is not sized to absorb anything beyond the task. For the same reason the git identity travels in the environment instead of `$HOME/.gitconfig`: writing that file is the first thing the bridge does, and on a full home it aborts before reaching git at all.
 

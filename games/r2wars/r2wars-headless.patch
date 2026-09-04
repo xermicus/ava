@@ -1,0 +1,197 @@
+diff --git a/README.md b/README.md
+index aacbfdf..531e5ad 100644
+--- a/README.md
++++ b/README.md
+@@ -59,6 +59,18 @@ Windows, put `radare2.exe` and `rasm2.exe` in `PATH` or alongside the published
+ r2wars application. The native interface uses the same bot manager and editor
+ as the WebAssembly build; live previews are assembled by native `rasm2`.
+ 
++## Headless fights
++
++The native build also runs one combat on the console, without the web server:
++
++```sh
++dotnet run --project csharp/r2wars.csproj -- --fight examples/pancake.x86-32.asm examples/jordi.x86-32.asm
++```
++
++It prints every round with the winner, the cycles and how the loser died, then
++the winner of the combat or `draw`. The exit code is 0 for a played combat, 1
++when a warrior does not assemble or exceeds the size limit, 2 for bad usage.
++
+ ## WebAssembly version
+ 
+ The browser version runs the tournament controller and radare2 ESIL locally in
+diff --git a/csharp/Headless.cs b/csharp/Headless.cs
+new file mode 100644
+index 0000000..d3d7ab5
+--- /dev/null
++++ b/csharp/Headless.cs
+@@ -0,0 +1,76 @@
++using System;
++using System.IO;
++using System.Threading;
++
++namespace r2warsTorneo
++{
++    // A combat on the console, without the web server.
++    public static class Headless
++    {
++        public const string Usage = "usage: r2wars --fight <warrior.asm> <warrior.asm>";
++
++        public static int Fight(string first, string second)
++        {
++            TextWriter console = Console.Out;
++            Console.SetOut(TextWriter.Null);
++
++            foreach (string path in new[] { first, second })
++            {
++                string problem = Check(path);
++                if (problem != null)
++                {
++                    Console.Error.WriteLine(problem);
++                    return 1;
++                }
++            }
++
++            r2wars game = new r2wars();
++            ManualResetEventSlim finished = new ManualResetEventSlim();
++            game.Event_roundEnd += (sender, e) => console.WriteLine(
++                "round " + (e.round + 1) + ": " + e.winnername + " wins after " + e.ciclos + " cycles, " +
++                e.losername + " died: " + e.loserreason + " " + Squeeze(e.loserins));
++            game.Event_roundExhausted += (sender, e) => console.WriteLine(
++                "round " + (e.round + 1) + ": timeout after " + e.ciclos + " cycles");
++            game.Event_combatEnd += (sender, e) =>
++            {
++                console.WriteLine(e.winnername == "Draw" ? "draw" : "winner: " + e.winnername);
++                finished.Set();
++            };
++
++            if (!game.playcombat(first, second, Name(first), Name(second), false, true))
++            {
++                Console.Error.WriteLine("the combat could not be initialized");
++                return 1;
++            }
++            finished.Wait();
++            return 0;
++        }
++
++        static string Check(string path)
++        {
++            if (!File.Exists(path))
++                return path + ": no such file";
++            WarriorAssemblyResult result = WarriorCompiler.Assemble(new BrowserWarriorSource
++            {
++                Name = Path.GetFileName(path),
++                Source = File.ReadAllText(path)
++            });
++            if (!result.Ok)
++                return path + ": " + result.Message;
++            return null;
++        }
++
++        static string Squeeze(string text)
++        {
++            return string.Join(" ", text.Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
++        }
++
++        static string Name(string path)
++        {
++            string filename = Path.GetFileName(path);
++            return filename.EndsWith(".asm", StringComparison.OrdinalIgnoreCase)
++                ? filename.Substring(0, filename.Length - ".asm".Length)
++                : filename;
++        }
++    }
++}
+diff --git a/csharp/Program.cs b/csharp/Program.cs
+index e8526c0..945a312 100644
+--- a/csharp/Program.cs
++++ b/csharp/Program.cs
+@@ -18,8 +18,18 @@ namespace r2warsTorneo
+ 
+     class Program
+     {
+-        static async Task Main(string[] args)
++        static async Task<int> Main(string[] args)
+         {
++            if (args.Length > 0 && args[0] == "--fight")
++            {
++                if (args.Length != 3)
++                {
++                    Console.Error.WriteLine(Headless.Usage);
++                    return 2;
++                }
++                return Headless.Fight(args[1], args[2]);
++            }
++
+             string listenAddress = OperatingSystem.IsWindows() ? "127.0.0.1" : "0.0.0.0";
+             string httpUrl = Environment.GetEnvironmentVariable("R2WARS_HTTP_URL") ??
+                 "http://" + listenAddress + ":9664";
+@@ -70,6 +80,7 @@ namespace r2warsTorneo
+             }
+ 
+             await app.RunAsync();
++            return 0;
+         }
+     }
+ }
+diff --git a/csharp/clsEngine.cs b/csharp/clsEngine.cs
+index ac870b0..995da88 100644
+--- a/csharp/clsEngine.cs
++++ b/csharp/clsEngine.cs
+@@ -1039,6 +1039,7 @@ namespace r2warsTorneo
+                     razon = "Syscall/Int Instruction executed.";
+                 if (razon == "")
+                 {
++                        razon = "ESIL trap.";
+                         Console.WriteLine("dead by ESIL: " + PC[2] + " Ins = " + executedins + " PC = 0x{0:X} \nregs:\n" + regs1, pcactual);
+                         //5=escritura fuera de rango
+                         //4= syscall/int
+diff --git a/csharp/clsPipe.cs b/csharp/clsPipe.cs
+index 4ae7c22..9819c8c 100644
+--- a/csharp/clsPipe.cs
++++ b/csharp/clsPipe.cs
+@@ -61,12 +61,16 @@ public class R2Pipe : IR2Pipe, System.IDisposable
+             CreateNoWindow = true,
+             RedirectStandardOutput = true,
+             RedirectStandardInput = true,
++            RedirectStandardError = true,
+             UseShellExecute = false,
+             Arguments = "-q0 " + file,
+             FileName = r2executable
+         };
+ 
+         r2Process.Start();
++        // radare2 reports every ESIL stop on stderr; the engine reads the cause itself.
++        r2Process.ErrorDataReceived += (sender, e) => { };
++        r2Process.BeginErrorReadLine();
+         r2Process.StandardInput.AutoFlush = true;
+         r2Process.StandardInput.NewLine = "\n";
+         // ignore first run
+diff --git a/csharp/r2wars.cs b/csharp/r2wars.cs
+index ac35028..4f8197d 100644
+--- a/csharp/r2wars.cs
++++ b/csharp/r2wars.cs
+@@ -60,11 +60,11 @@ namespace r2warsTorneo
+             // this pause is magic
+             //  Firefox can free memory
+             //  chrome never consume memory and work smooth on drawing
+-            Thread.Sleep(5);
+-            MyEvent e1 = new MyEvent();
+-            e1.message = s;
+             if (Event_draw != null)
+             {
++                Thread.Sleep(5);
++                MyEvent e1 = new MyEvent();
++                e1.message = s;
+                 Event_draw(0, e1);
+                 /*
+                 Task t = Task.Factory.StartNew(() =>
+@@ -77,7 +77,6 @@ namespace r2warsTorneo
+                 t.Wait();
+                 */
+             }
+-            e1 = null;
+         }
+         string json_output(UiHistoryEntry historyEntry = null)
+         {

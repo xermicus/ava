@@ -1,0 +1,2 @@
+#!/bin/sh
+exec dotnet /opt/r2wars/bin/r2wars.dll "$@"

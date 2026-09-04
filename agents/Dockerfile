@@ -1,8 +1,6 @@
-# The build configuration
+# The base of every harness image: the sandbox user and the toolchains.
 
 FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
-
-ARG SANDBOX_USERNAME="agent"
 
 ENV DEBIAN_FRONTEND="noninteractive"
 ENV LANG=en_US.UTF-8
@@ -11,30 +9,27 @@ ENV LC_ALL=en_US.UTF-8
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-
-# The build dependencies
-
 RUN apt update && \
 	apt upgrade -y && \
 	apt install -y --no-install-recommends \
 	build-essential \
 	ca-certificates \
-	git \
-	python3 \
-	make \
-	cmake \
 	clang \
-	ripgrep \
-	wget \
-	npm \
+	cmake \
 	curl \
-	sudo \
-	less \
-	locales \
-	pkg-config \
+	git \
 	golang-go \
 	jq \
+	less \
+	locales \
+	make \
+	npm \
+	pkg-config \
+	python3 \
+	ripgrep \
 	socat \
+	sudo \
+	wget \
 	xxd && \
 	apt clean && \
 	rm -rf /var/lib/apt/lists/*
@@ -42,8 +37,8 @@ RUN apt update && \
 # The uid is pinned to what the workspace tmpfs is mounted with.
 RUN sed -i -E "s/ ALL$/ NOPASSWD: ALL/g" /etc/sudoers && \
 	userdel -r ubuntu 2>/dev/null || true && \
-	useradd --uid 1000 -m -s /bin/bash ${SANDBOX_USERNAME} && \
-	usermod -a -G sudo ${SANDBOX_USERNAME}
+	useradd --uid 1000 -m -s /bin/bash agent && \
+	usermod -a -G sudo agent
 
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
 	locale-gen
@@ -52,13 +47,11 @@ COPY ava-bridge ava-analyst /usr/local/bin/
 
 RUN chmod 755 /usr/local/bin/ava-bridge /usr/local/bin/ava-analyst
 
-# The toolchains shared by every agent
+USER agent
+WORKDIR /home/agent
 
-USER ${SANDBOX_USERNAME}
-WORKDIR /home/${SANDBOX_USERNAME}
-
-ENV AGENT_HOME="/home/${SANDBOX_USERNAME}"
-ENV PATH="${AGENT_HOME}/.local/bin:${AGENT_HOME}/.cargo/bin:${AGENT_HOME}/.foundry/bin:${PATH}"
+ENV AGENT_HOME="/home/agent"
+ENV PATH="${AGENT_HOME}/.local/bin:${AGENT_HOME}/.cargo/bin:${PATH}"
 
 # The minimal profile leaves out rust-docs, which is over half of the agent
 # home on its own and useless to a sandbox with no browser and no network. The
