@@ -4,7 +4,7 @@ A tournament is a lobby of seats playing rounds of one game. Any game can be pla
 
 ## The lobby
 
-`ava tournament -n <name> -g <game> -t <seconds>` opens a tournament, or the tournaments page of the web interface does. The game and the seconds every run is given are fixed at that point.
+`ava tournament -n <name> -g <game> -t <seconds>` opens a tournament, or the tournaments page of the web interface does. The game and the seconds every run is given are fixed at that point, and so is the analyst: `--analyst harness/model[/thinking]`, or the analyze checkbox of the form, has every run of a round analyzed once the round is over, the runs of the seats and the runs of the attacks alike, under the same cap as the round. A failed analysis fails nothing, the run page offers it again.
 
 A seat holds an agent: a harness on a model at a thinking level. `-s harness/model` or `-s harness/model/thinking` seats one, repeatable, or the seat row on the tournament page does. Two seats may hold the same agent, which doubles its games a round; the standings rate agents, so the two seats are one entry there. Seats join between rounds. A seat can be removed until the first round is played, since the rounds reference seats by their number.
 

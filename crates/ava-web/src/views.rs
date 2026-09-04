@@ -1048,6 +1048,11 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">open</button>\
+         <div class=\"w-full flex flex-wrap items-end gap-4\">\
+         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
+         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyze every run of a round</label>\
+         <div class=\"hidden peer-checked:contents\">{}</div>\
+         </div>\
          </form>",
         escape(selection.get("name", "")),
         select(
@@ -1060,6 +1065,19 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
             "seconds",
             &format!("the budget of every run, the {last_call} second last call included"),
         ),
+        agent_fields(
+            &registry::load()?,
+            crate::serve::ANALYST_PREFIX,
+            selection.agent(
+                crate::serve::ANALYST_PREFIX,
+                [
+                    DEFAULT_ANALYST,
+                    DEFAULT_ANALYST_MODEL,
+                    DEFAULT_ANALYST_THINKING
+                ]
+            )
+        ),
+        analyze = checked(selection.get("analyze", "") == "on"),
     );
 
     let tournaments = tournament::list()?;
@@ -1123,7 +1141,11 @@ fn tournament_state(record: &ava_wire::Tournament) -> String {
 }
 
 /// One tournament: its lobby, its standings and every round it played.
-pub(crate) fn tournament_page(name: &str, notice: &Notice) -> std::io::Result<String> {
+pub(crate) fn tournament_page(
+    name: &str,
+    notice: &Notice,
+    selection: &Selection,
+) -> std::io::Result<String> {
     let record = tournament::load(name)?;
     let playing = tournament::playing(name);
     let running = live_runs();
@@ -1149,19 +1171,26 @@ pub(crate) fn tournament_page(name: &str, notice: &Notice) -> std::io::Result<St
         )
     };
 
+    // The forms stay outside the refreshed regions, so what is chosen in them
+    // survives the refresh.
     let mut body = format!(
-        "<div data-refresh=\"tournament\"><div class=\"flex items-center gap-3\">\
-         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}<span class=\"grow\"></span>{play_form}</div>",
+        "<div class=\"flex items-center gap-3\">\
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span><span data-refresh=\"state\">{}</span><span class=\"grow\"></span>{play_form}</div>",
         escape(name),
         tournament_state(&record),
     );
     body.push_str(&notice.render());
     body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {}s a run \u{00b7} opened {} ago</p>",
+        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {}s a run{} \u{00b7} opened {} ago</p>",
         escape(&record.game),
         version_label(&record.game_version),
         escape(&record.pairing),
         record.limit_seconds,
+        record
+            .analyst
+            .as_ref()
+            .map(|analyst| format!(" \u{00b7} analyzed by {}", escape(&analyst.label())))
+            .unwrap_or_default(),
         usage::age(record.created_seconds),
     ));
 
@@ -1194,7 +1223,7 @@ pub(crate) fn tournament_page(name: &str, notice: &Notice) -> std::io::Result<St
         })
         .collect();
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">lobby <span class=\"{NOTE_CLASSES} font-normal\">{} seats{}</span></p>{}",
+        "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">lobby <span class=\"{NOTE_CLASSES} font-normal\">{} seats{}</span></p>{}</div>",
         record.seats.len(),
         if record.played() {
             ", fixed by the rounds played"
@@ -1212,9 +1241,11 @@ pub(crate) fn tournament_page(name: &str, notice: &Notice) -> std::io::Result<St
             "<form method=\"post\" action=\"/tournament/{}/seat\" class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
              {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
             escape(name),
-            agent_fields(&registry, "", ["", "", DEFAULT_THINKING]),
+            agent_fields(&registry, "", selection.agent("", ["", "", DEFAULT_THINKING])),
         ));
     }
+
+    body.push_str("<div data-refresh=\"rounds\">");
 
     // The standings.
     let standings = standings(&record)?;

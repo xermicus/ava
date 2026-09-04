@@ -51,6 +51,9 @@ pub struct Tournament {
     pub seats: Vec<String>,
     /// The seconds every run is given, taken when the tournament is created.
     pub limit: Option<u64>,
+    /// The agent analyzing every run, `harness/model` or
+    /// `harness/model/thinking`, taken when the tournament is created.
+    pub analyst: Option<String>,
     /// Whether the docker images are rebuilt instead of reused.
     pub force_build_images: bool,
     /// The most runs a round starts at once, all of them without a cap.
@@ -150,18 +153,28 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
                 "{name} exists, its seconds are fixed"
             )));
         }
+        if command.analyst.is_some() {
+            return Err(std::io::Error::other(format!(
+                "{name} exists, its analyst is fixed"
+            )));
+        }
     } else {
         if command.game.is_empty() {
             return Err(std::io::Error::other(format!(
                 "{name} does not exist, pass a game with -g to create it"
             )));
         }
+        let analyst = match &command.analyst {
+            Some(analyst) => Some(parse_seat(analyst)?),
+            None => None,
+        };
         create(
             name,
             &command.game,
             command
                 .limit
                 .unwrap_or(docker::Agent::DEFAULT_LIMIT_SECONDS),
+            analyst,
         )?;
     }
 
@@ -224,7 +237,12 @@ fn checked_name(name: &str) -> std::io::Result<()> {
 }
 
 /// Create the named tournament of `game`, every run given `limit` seconds.
-pub fn create(name: &str, game: &str, limit: u64) -> std::io::Result<ava_wire::Tournament> {
+pub fn create(
+    name: &str,
+    game: &str,
+    limit: u64,
+    analyst: Option<ava_wire::Agent>,
+) -> std::io::Result<ava_wire::Tournament> {
     checked_name(name)?;
 
     ava_game::find(game).ok_or_else(|| {
@@ -251,6 +269,7 @@ pub fn create(name: &str, game: &str, limit: u64) -> std::io::Result<ava_wire::T
         game_version: docker::game_version(game),
         pairing: ava_wire::ROUND_ROBIN.to_string(),
         limit_seconds: limit,
+        analyst,
         created_seconds: crate::usage::epoch_now(),
         seats: Vec::new(),
         rounds: Vec::new(),
@@ -572,7 +591,10 @@ pub fn play_round(
     );
 
     let seat_runs: Vec<(docker::Launch, String)> = launches.into_iter().zip(runs.clone()).collect();
-    let outcomes = play_bounded(&seat_runs, parallel, |_, _| Ok(()));
+    let outcomes = bounded(seat_runs.len(), parallel, |index| {
+        let (launch, run) = &seat_runs[index];
+        docker::play(launch, run)
+    });
 
     let mut code = 0;
     for (run, outcome) in runs.iter().zip(outcomes) {
@@ -639,19 +661,23 @@ pub fn play_round(
     })?;
     log::info!("{name}: round {round} is over");
 
+    if let Some(analyst) = &record.analyst {
+        analyze_round(name, analyst, parallel)?;
+    }
+
     Ok(code)
 }
 
 /// Play `runs` with at most `parallel` sandboxes at a time, or all at once
 /// without a cap, calling `finished` on each run as it ends. The outcomes come
 /// back in the order the runs were given.
-fn play_bounded(
-    runs: &[(docker::Launch, String)],
+fn bounded(
+    count: usize,
     parallel: Option<usize>,
-    finished: impl Fn(&str, &std::io::Result<i32>) -> std::io::Result<()> + Sync,
+    job: impl Fn(usize) -> std::io::Result<i32> + Sync,
 ) -> Vec<std::io::Result<i32>> {
-    let workers = parallel.unwrap_or(runs.len()).clamp(1, runs.len().max(1));
-    let queue = std::sync::Mutex::new((0..runs.len()).collect::<std::collections::VecDeque<_>>());
+    let workers = parallel.unwrap_or(count).clamp(1, count.max(1));
+    let queue = std::sync::Mutex::new((0..count).collect::<std::collections::VecDeque<_>>());
     let outcomes = std::sync::Mutex::new(Vec::new());
 
     std::thread::scope(|scope| {
@@ -662,12 +688,7 @@ fn play_bounded(
                     let Some(index) = next else {
                         return;
                     };
-                    let (launch, run) = &runs[index];
-                    let outcome = docker::play(launch, run);
-                    let outcome = match finished(run, &outcome) {
-                        Ok(()) => outcome,
-                        Err(error) => Err(error),
-                    };
+                    let outcome = job(index);
                     outcomes
                         .lock()
                         .expect("the outcomes are not poisoned")
@@ -856,8 +877,10 @@ fn attack_round(
         attacks.len()
     );
 
-    let outcomes = play_bounded(&attacks, parallel, |run, outcome| {
-        let (tally, reason) = match outcome {
+    let outcomes = bounded(attacks.len(), parallel, |index| {
+        let (launch, run) = &attacks[index];
+        let outcome = docker::play(launch, run);
+        let (tally, reason) = match &outcome {
             Ok(_) => {
                 match crate::runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(run)) {
                     Ok(played) if played.passed() => (ava_wire::Tally::FIRST_WON, None),
@@ -879,7 +902,8 @@ fn attack_round(
                 .map(|reason| format!(", {reason}"))
                 .unwrap_or_default()
         );
-        complete_pairing(name, run, tally, reason)
+        complete_pairing(name, run, tally, reason)?;
+        outcome
     });
 
     let mut code = 0;
@@ -895,4 +919,53 @@ fn attack_round(
     }
 
     Ok(code)
+}
+
+/// Analyze every run of the last round of the named tournament with
+/// `analyst`, the runs of the seats and the runs of the attacks alike, under
+/// the same cap as the round. A failed analysis is logged and fails nothing,
+/// the run page offers it again.
+fn analyze_round(
+    name: &str,
+    analyst: &ava_wire::Agent,
+    parallel: Option<usize>,
+) -> std::io::Result<()> {
+    let record = load(name)?;
+    let round = record.rounds.last().expect("the round was written");
+    let runs: Vec<&str> = round
+        .entries
+        .iter()
+        .map(|entry| entry.run.as_str())
+        .chain(
+            round
+                .pairings
+                .iter()
+                .filter_map(|pairing| pairing.run.as_deref()),
+        )
+        .collect();
+    log::info!(
+        "{name}: analyzing the {} runs of round {} with {}",
+        runs.len(),
+        record.rounds.len(),
+        analyst.label()
+    );
+
+    let outcomes = bounded(runs.len(), parallel, |index| {
+        docker::analyze(&docker::Analyze {
+            run: runs[index].to_string(),
+            analyst: docker::Analyst {
+                name: analyst.harness.clone(),
+                model: analyst.model.clone(),
+                thinking: analyst.thinking.clone(),
+            },
+            limit: docker::Analyze::DEFAULT_LIMIT_SECONDS,
+        })
+    });
+    for (run, outcome) in runs.iter().zip(outcomes) {
+        if let Err(error) = outcome {
+            log::error!("{name}: the analysis of {run} failed: {error}");
+        }
+    }
+
+    Ok(())
 }

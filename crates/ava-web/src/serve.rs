@@ -76,7 +76,15 @@ const START_FIELDS: [&str; 8] = [
 ];
 
 /// The tournament creation fields carried back to its form.
-const CREATE_FIELDS: [&str; 3] = ["name", "game", "limit"];
+const CREATE_FIELDS: [&str; 7] = [
+    "name",
+    "game",
+    "limit",
+    "analyze",
+    "analyst_agent",
+    "analyst_model",
+    "analyst_thinking",
+];
 
 /// The starts whose runs are not on disk yet, shown as starting rows.
 static PENDING: std::sync::Mutex<Vec<(u64, views::Pending)>> = std::sync::Mutex::new(Vec::new());
@@ -169,7 +177,7 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         ["scoreboard"] => views::scoreboard_page(),
         ["games"] => views::games_page(),
         ["tournaments"] => views::tournaments_page(&notice, &selection),
-        ["tournament", name] => views::tournament_page(name, &notice),
+        ["tournament", name] => views::tournament_page(name, &notice, &selection),
         ["tournament", name, file] => {
             return match views::tournament_file(name, file) {
                 Some(contents) => tiny_http::Response::from_data(contents)
@@ -561,8 +569,15 @@ fn create_tournament(form: &[(String, String)]) -> Result<Done, Refusal> {
     let name = value(form, "name");
     let game = value(form, "game");
     let limit = limit_choice(form)?;
+    let analyst = if value(form, "analyze") == "on" {
+        let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
+        Some(agent_choice(&registry, form, ANALYST_PREFIX)?)
+    } else {
+        None
+    };
 
-    tournament::create(name, game, limit).map_err(|error| Refusal::Rejected(error.to_string()))?;
+    tournament::create(name, game, limit, analyst)
+        .map_err(|error| Refusal::Rejected(error.to_string()))?;
 
     Ok(Done {
         note: format!("{name} is open, seat the agents"),

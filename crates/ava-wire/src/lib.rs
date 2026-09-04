@@ -250,6 +250,9 @@ pub struct Tournament {
     pub pairing: String,
     /// The seconds every run of the tournament is given.
     pub limit_seconds: u64,
+    /// The agent analyzing every run of a round once the round is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyst: Option<Agent>,
     pub created_seconds: u64,
     /// The lobby: the agent in every seat, by seat number. Two seats may hold
     /// the same agent.

@@ -158,6 +158,7 @@ impl TournamentCli {
 
     const NAME_SHORT: char = 'n';
     const SEAT_SHORT: char = 's';
+    const ANALYST_LONG: &str = "analyst";
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
@@ -180,6 +181,10 @@ impl TournamentCli {
         arg_help_chr(
             AgentCli::PARALLEL_SHORT,
             "the most runs a round starts at once, all of them by default",
+        );
+        arg_help_str(
+            &format!("--{}", Self::ANALYST_LONG),
+            "analyze every run of a round with this agent, harness/model or harness/model/thinking, fixed when the tournament is created",
         );
         arg_help_str(
             &format!("--{}", AgentCli::FORCE_BUILD_LONG),
@@ -689,6 +694,16 @@ impl Parser {
                     );
                 };
                 command.fight = Some(directory);
+            }
+            TournamentCli::ANALYST_LONG => {
+                let analyst = Self::long_value(args, next, "missing analyst");
+                let Some(SubCommand::Tournament(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", TournamentCli::NAME),
+                    );
+                };
+                command.analyst = Some(analyst);
             }
             ScoreCli::CHALLENGE_LONG => {
                 let directory = Self::long_value(args, next, "missing challenge directory");
