@@ -280,12 +280,11 @@ pub fn create(
     Ok(record)
 }
 
-/// Seat `agent` in the named tournament, checking that the pairing can play.
+/// Seat `agent` in the named tournament, which no round has fixed yet,
+/// checking that the pairing can play.
 pub fn add_seat(name: &str, agent: &ava_wire::Agent) -> std::io::Result<()> {
     if playing(name) {
-        return Err(std::io::Error::other(format!(
-            "{name} is playing a round, seats join between rounds"
-        )));
+        return Err(std::io::Error::other(format!("{name} is playing a round")));
     }
 
     crate::registry::load()?.invocation(
@@ -297,6 +296,11 @@ pub fn add_seat(name: &str, agent: &ava_wire::Agent) -> std::io::Result<()> {
     )?;
 
     modify(name, |record| {
+        if record.played() {
+            return Err(std::io::Error::other(format!(
+                "{name} played a round, its seats are fixed"
+            )));
+        }
         record.seats.push(agent.clone());
         log::info!("{name}: seat {} is {}", record.seats.len(), agent.label());
         Ok(())

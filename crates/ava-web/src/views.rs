@@ -1236,7 +1236,7 @@ pub(crate) fn tournament_page(
             Some(NO_SEATS_NOTE),
         )
     ));
-    if !playing {
+    if removable {
         body.push_str(&format!(
             "<form method=\"post\" action=\"/tournament/{}/seat\" class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
              {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
