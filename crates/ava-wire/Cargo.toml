@@ -1,9 +1,11 @@
 [package]
-name = "ava-game"
+name = "ava-wire"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-ava-wire = { path = "../crates/ava-wire" }
-log.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

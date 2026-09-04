@@ -3,7 +3,7 @@
 use crate::process;
 
 /// The agent sandbox command.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Agent {
     /// The agent to run, naming a directory under `agents`.
     pub name: String,
@@ -22,6 +22,8 @@ pub struct Agent {
     pub force_build_images: bool,
     /// The agent analyzing the run once it is over.
     pub analyst: Option<Analyst>,
+    /// The entry the run attacks, when it plays a pairing of a tournament.
+    pub challenge: Option<Challenge>,
 }
 
 impl Agent {
@@ -42,8 +44,16 @@ impl Default for Agent {
             thinking: None,
             force_build_images: false,
             analyst: None,
+            challenge: None,
         }
     }
+}
+
+/// The entry a run attacks: the file on disk, and the run and attempt it came from.
+#[derive(Debug, Clone)]
+pub struct Challenge {
+    pub path: std::path::PathBuf,
+    pub record: ava_wire::Challenge,
 }
 
 /// The image building command.
@@ -260,10 +270,13 @@ const LAST_CHANCE_MESSAGE: &str = "last chance";
 const PUSH_ATTEMPTS: u32 = 50;
 const PUSH_INTERVAL_SECONDS: &str = "0.2";
 
-pub const METADATA_FILE: &str = "run.json";
-pub const VERSION_FILE: &str = "harness.version";
+/// The record of one run, written when the run starts and completed when it is over.
+pub const RUN_FILE: &str = "run.json";
 const VERSION_OPTION: &str = "--version";
 const IMAGE_ID_FORMAT: &str = "{{.Id}}";
+
+/// What marks the version of a game whose folder differs from its last commit.
+const DIRTY_SUFFIX: &str = "-dirty";
 
 const SCORER_IMAGE: &str = "ava/scorer";
 const SCORER_DOCKERFILE: &str = "scorer/Dockerfile";
@@ -274,7 +287,29 @@ const TASK_INSTRUCTIONS: &str = "README.md";
 
 const TASK_MOUNT: &str = "/home/agent/task";
 const README_MOUNT: &str = "/home/agent/README.md";
-pub const SCORE_FILE: &str = "score.json";
+
+/// Where the scorer keeps the entry of every passing attempt, by the seconds
+/// of the attempt, and the folder of the run they are collected into.
+pub const ENTRIES_DIRECTORY: &str = "entries";
+const SCORER_ENTRIES: &str = "/home/agent/entries";
+
+/// Where the entry a run attacks is mounted into the scoring container, which
+/// seeds it into the workspace and verifies the pushes against it.
+const CHALLENGE_MOUNT: &str = "/home/agent/challenge";
+
+/// Where the two entries of a fight are mounted into the scorer image.
+const FIGHT_MOUNT: &str = "/home/agent/fight";
+const FIGHT_STAGING_PREFIX: &str = "ava-fight-";
+
+/// The seconds one fight may take, enforced by coreutils timeout in the scorer image.
+const FIGHT_TIMEOUT_SECONDS: &str = "600";
+const TIMEOUT: &str = "timeout";
+const AVA: &str = "ava";
+const SANDBOX_USER: &str = "1000";
+const HOME_VARIABLE: &str = "HOME";
+
+/// Tells apart the fights one process stages at the same time.
+static FIGHT_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The run loop clock as `runs/<run>/monitor.json`, freshened on every status
 /// tick. The loop clock is monotonic and pauses with the host, so wall clock
@@ -294,9 +329,9 @@ const ANALYSIS_PROMPT: &str = include_str!("../assets/analysis.md");
 /// process such as the web interface starts one after another.
 static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The unique name stem of one launch, extending the process id with the
+/// The unique name of one launch of `agent`, extending the process id with the
 /// launch count once the first launch took the plain name.
-fn run_base(agent: &str) -> String {
+pub fn run_name(agent: &str) -> String {
     let launch = RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     if launch == 0 {
@@ -394,8 +429,8 @@ fn loop_prompt(turn: u32) -> String {
 fn last_call_prompt() -> String {
     String::from(
         "Time is up. This is your final turn. Submit right now: commit and push what you have. \
-         Submitting is free: if the submission is invalid or scores less than your best score, \
-         your best score is still what counts.",
+         Submitting is free: a push that fails the verifier costs nothing, and every push that \
+         passed it keeps its entry.",
     )
 }
 
@@ -496,8 +531,8 @@ fn prepare_agent_home(run: &str, image: &str) -> std::io::Result<()> {
 ///
 /// The push is forced, because a task branch the agent left ahead of its own
 /// working tree would reject a plain one and the submission would be lost for
-/// nothing: attempts are recorded as they arrive, the score comes from that
-/// log rather than from the branch, and the repository goes with the scorer at
+/// nothing: attempts and their entries are recorded as they arrive, nothing
+/// reads the branch afterwards, and the repository goes with the scorer at
 /// teardown.
 fn last_chance_command() -> String {
     format!(
@@ -516,14 +551,15 @@ fn last_chance_command() -> String {
 /// Submit whatever the agent left behind, once it has had its last call.
 ///
 /// An agent can spend its last call reasoning about an optimisation and never
-/// commit the working one it already had. The best solving attempt is the
-/// submission of record, so a push worse than one already scored changes
-/// nothing, and a broken one is only an unsolved attempt. The single thing
-/// this can do is recover work that would otherwise go with the home.
+/// commit the working one it already had. Every passing attempt keeps its
+/// entry and the entry of record is picked among them, so a push worse than
+/// one already graded changes nothing, and a broken one is only a failed
+/// attempt. The single thing this can do is recover work that would otherwise
+/// go with the home.
 ///
 /// The sandbox is gone by now, so this runs in a container of its own on the
 /// same home, entered through the bridge so the git host resolves and the
-/// proxy socket carries the push. The sidecars are still up, since `play_run`
+/// proxy socket carries the push. The sidecars are still up, since `play`
 /// removes them only once the run is over.
 fn last_chance(run: &str, image: &str) {
     log::info!("{run}: submitting what the agent left, on its behalf");
@@ -622,10 +658,15 @@ fn start_proxy(run: &str) -> std::io::Result<()> {
 
 /// Start the scoring server of one run, sharing the socket volume and no
 /// network, so the submissions it executes stay as contained as the final
-/// scoring.
+/// scoring. The entry the run attacks, if any, is mounted in read only.
 ///
 /// The proxy routes requests for the score host onto its socket.
-fn start_score_server(run: &str, game: &str, image: &str) -> std::io::Result<()> {
+fn start_score_server(
+    run: &str,
+    game: &str,
+    image: &str,
+    challenge: Option<&Challenge>,
+) -> std::io::Result<()> {
     let container = scorer_container(run);
     log::info!("starting the scoring server {container}");
 
@@ -638,34 +679,56 @@ fn start_score_server(run: &str, game: &str, image: &str) -> std::io::Result<()>
         README_MOUNT,
     )?;
 
-    process::run_and_assume_success(
-        "docker",
-        &[
-            "run",
-            "--detach",
-            "--name",
-            &container,
-            "--network",
-            "none",
-            "--ulimit",
-            NO_CORE_DUMPS,
-            "--user",
-            ROOT_USER,
-            "--volume",
-            &format!("{}:{SOCKET_DIRECTORY}", socket_volume(run)),
-            "--volume",
-            &task,
-            "--volume",
-            &readme,
-            "--entrypoint",
-            BASH,
-            image,
-            SCORE_ENTRY,
-            game,
-        ],
-    )?;
+    let mut arguments: Vec<String> = [
+        "run",
+        "--detach",
+        "--name",
+        &container,
+        "--network",
+        "none",
+        "--ulimit",
+        NO_CORE_DUMPS,
+        "--user",
+        ROOT_USER,
+        "--volume",
+        &format!("{}:{SOCKET_DIRECTORY}", socket_volume(run)),
+        "--volume",
+        &task,
+        "--volume",
+        &readme,
+    ]
+    .iter()
+    .map(|argument| argument.to_string())
+    .collect();
+    if let Some(challenge) = challenge {
+        arguments.push("--volume".to_string());
+        arguments.push(challenge_mount(challenge)?);
+    }
+    arguments.extend(
+        ["--entrypoint", BASH, image, SCORE_ENTRY, game]
+            .iter()
+            .map(|argument| argument.to_string()),
+    );
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+    process::run_and_assume_success("docker", &arguments)?;
 
     await_socket(&container, SCORE_SOCKET_PATH)
+}
+
+/// The mount putting the entry a run attacks into the scoring container, under
+/// the name it was kept by.
+fn challenge_mount(challenge: &Challenge) -> std::io::Result<String> {
+    let name = challenge.path.file_name().ok_or_else(|| {
+        std::io::Error::other(format!("{} has no file name", challenge.path.display()))
+    })?;
+    let source = std::env::current_dir()?.join(&challenge.path);
+
+    Ok(format!(
+        "{}:{CHALLENGE_MOUNT}/{}{READ_ONLY}",
+        source.display(),
+        name.to_string_lossy()
+    ))
 }
 
 /// Wait until a sidecar has bound the socket the sandbox is about to connect
@@ -754,65 +817,84 @@ fn image_id(tag: &str) -> std::io::Result<String> {
     Ok(id)
 }
 
-/// What a run was started with, kept as `runs/<run>/run.json`.
+/// Write down what the run was started with, before anything runs.
 ///
-/// Credentials are named but never written, so the file says which variables
-/// the sandbox was given without carrying their values.
-#[derive(serde::Serialize)]
-struct Metadata<'a> {
-    run: &'a str,
-    agent: &'a str,
-    model: &'a str,
-    game: &'a str,
-    thinking: Option<&'a str>,
-    limit_seconds: u64,
-    image: &'a str,
-    /// What the agent was told to start on.
-    prompt: &'a str,
-    arguments: &'a [String],
-    variables: Vec<&'a str>,
-    started_seconds: u64,
+/// Credentials are named but never written, so the record says which
+/// variables the sandbox was given without carrying their values.
+fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Result<()> {
+    let command = &launch.command;
+    let record = ava_wire::Run {
+        version: ava_wire::VERSION,
+        run: run.to_string(),
+        harness: command.name.clone(),
+        harness_version: harness_version.to_string(),
+        model: command.model.clone(),
+        thinking: command.thinking.clone(),
+        game: command.game.clone(),
+        game_version: launch.game_version.clone(),
+        limit_seconds: command.limit,
+        started_seconds: crate::usage::epoch_now(),
+        image: launch.identity.clone(),
+        prompt: TASK_PROMPT.to_string(),
+        arguments: launch.invocation.arguments.clone(),
+        variables: launch
+            .invocation
+            .variables
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect(),
+        challenge: command
+            .challenge
+            .as_ref()
+            .map(|challenge| challenge.record.clone()),
+        finished_seconds: None,
+        attempts: Vec::new(),
+        metrics: None,
+    };
+
+    write_run(run, &record)
 }
 
-/// Write down what the run was started with, before anything runs.
-fn record_metadata(
-    run: &str,
-    command: &Agent,
-    image: &str,
-    prompt: &str,
-    invocation: &crate::registry::Invocation,
-) -> std::io::Result<()> {
+/// Write `record` as the record of `run`.
+pub fn write_run(run: &str, record: &ava_wire::Run) -> std::io::Result<()> {
     let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
     std::fs::create_dir_all(&directory)?;
 
-    let metadata = Metadata {
-        run,
-        agent: &command.name,
-        model: &command.model,
-        game: &command.game,
-        thinking: command.thinking.as_deref(),
-        limit_seconds: command.limit,
-        image,
-        prompt,
-        arguments: &invocation.arguments,
-        variables: invocation
-            .variables
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect(),
-        started_seconds: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_secs(),
-    };
-
     std::fs::write(
-        directory.join(METADATA_FILE),
+        directory.join(RUN_FILE),
         format!(
             "{}\n",
-            serde_json::to_string_pretty(&metadata).map_err(std::io::Error::other)?
+            serde_json::to_string_pretty(record).map_err(std::io::Error::other)?
         ),
     )
+}
+
+/// The commit the folder of `game`, and the folder of its image, was last
+/// changed in, marked when the working tree differs from it. Empty outside a
+/// repository.
+pub fn game_version(game: &str) -> String {
+    let mut folders = vec![format!("{GAMES_DIRECTORY}/{game}")];
+    if let Some(layer) = game_layer(game) {
+        folders.push(format!("{GAMES_DIRECTORY}/{layer}"));
+    }
+    let folders: Vec<&str> = folders.iter().map(String::as_str).collect();
+
+    let mut log = vec!["log", "-1", "--format=%h", "--"];
+    log.extend(&folders);
+    let Ok(commit) = process::run_and_assume_success("git", &log) else {
+        return String::new();
+    };
+
+    let mut status = vec!["status", "--porcelain", "--"];
+    status.extend(&folders);
+    let dirty =
+        process::run_and_assume_success("git", &status).is_ok_and(|changes| !changes.is_empty());
+
+    if dirty {
+        format!("{commit}{DIRTY_SUFFIX}")
+    } else {
+        commit
+    }
 }
 
 /// Tag the image for this run, and report the tag.
@@ -835,8 +917,8 @@ fn unpin_image(pinned: &str) {
         .output();
 }
 
-/// Record which harness version the run was played with, and report it.
-fn collect_version(run: &str, image: &str) -> std::io::Result<String> {
+/// What the harness in `image` reports as its version.
+fn harness_version(image: &str) -> std::io::Result<String> {
     let version = process::run_and_assume_success(
         "docker",
         &["run", "--rm", "--network", "none", image, VERSION_OPTION],
@@ -844,14 +926,27 @@ fn collect_version(run: &str, image: &str) -> std::io::Result<String> {
 
     log::info!("harness version: {version}");
 
-    std::fs::write(
-        std::path::Path::new(RUN_DIRECTORY)
-            .join(run)
-            .join(VERSION_FILE),
-        format!("{version}\n"),
+    Ok(version)
+}
+
+/// Copy the entries the scorer kept into `runs/<run>/entries` before the
+/// container is removed.
+fn collect_entries(run: &str) -> std::io::Result<()> {
+    let directory = std::path::Path::new(RUN_DIRECTORY)
+        .join(run)
+        .join(ENTRIES_DIRECTORY);
+    std::fs::create_dir_all(&directory)?;
+
+    process::run_and_assume_success(
+        "docker",
+        &[
+            "cp",
+            &format!("{}:{SCORER_ENTRIES}/.", scorer_container(run)),
+            &directory.display().to_string(),
+        ],
     )?;
 
-    Ok(version)
+    Ok(())
 }
 
 /// Remove the sidecars and the socket volume once the run is over.
@@ -987,7 +1082,7 @@ pub fn build_images(command: &Image) -> std::io::Result<i32> {
 }
 
 /// The scorer image of the named game: the scorer with the game's layer, if it has one.
-fn scorer_image(game: &str) -> String {
+pub fn scorer_image(game: &str) -> String {
     match game_layer(game) {
         Some(layer) => format!("{SCORER_IMAGE}-{layer}"),
         None => SCORER_IMAGE.to_string(),
@@ -1073,13 +1168,23 @@ fn build_game_image(tag: &str, base: &str, layer: &str, force: bool) -> std::io:
     )
 }
 
-/// Run the named agent, one run per requested parallel slot, and report the
-/// first failing status.
+/// What one run needs resolved before it plays: its command, the image it
+/// plays on, the invocation opening its session and the version of its game.
 ///
-/// The images, the proxy hosts file and the egress network are prepared once,
-/// so the runs cannot race each other rebuilding them. Every run then plays on
-/// the image id resolved here, whatever gets rebuilt in the meantime.
-pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
+/// Preparing builds what is missing once, so runs started together cannot
+/// race each other rebuilding, and every run then plays on the image id
+/// resolved here, whatever gets rebuilt in the meantime.
+pub struct Launch {
+    pub command: Agent,
+    /// The immutable id of the harness image, with the layer of the game when it has one.
+    pub identity: String,
+    invocation: crate::registry::Invocation,
+    pub game_version: String,
+}
+
+/// Resolve `command` into a launch, building the images, the proxy hosts file
+/// and the egress network it needs.
+pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
     let agent = command.name.as_str();
     require_game(&command.game)?;
 
@@ -1114,19 +1219,30 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
     build_image(PROXY_IMAGE, PROXY_CONTEXT, force)?;
     ensure_egress_network()?;
 
-    let base = run_base(agent);
+    Ok(Launch {
+        command: command.clone(),
+        identity,
+        invocation,
+        game_version: game_version(&command.game),
+    })
+}
+
+/// Run the named agent, one run per requested parallel slot, and report the
+/// first failing status.
+pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
+    let launch = prepare(command)?;
+    let base = run_name(&command.name);
 
     if command.parallel == 1 {
-        return play_run(command, &identity, &base, invocation);
+        return play(&launch, &base);
     }
 
     let outcomes: Vec<std::io::Result<i32>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (1..=command.parallel)
             .map(|index| {
                 let run = format!("{base}-{index}");
-                let invocation = invocation.clone();
-                let identity = identity.as_str();
-                scope.spawn(move || play_run(command, identity, &run, invocation))
+                let launch = &launch;
+                scope.spawn(move || play(launch, &run))
             })
             .collect();
 
@@ -1147,20 +1263,16 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
     Ok(code)
 }
 
-/// Play one run on the resolved image against a proxy of its own, and report
-/// its status.
+/// Play one prepared run under the name `run`, against a proxy of its own,
+/// and report its status.
 ///
 /// The sidecars live and die with the run: `ava` starts them, runs the sandbox
 /// against them and removes everything afterwards. Since the proxy serves one
 /// run, its access log describes that run alone.
-fn play_run(
-    command: &Agent,
-    identity: &str,
-    run: &str,
-    invocation: crate::registry::Invocation,
-) -> std::io::Result<i32> {
+pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
+    let command = &launch.command;
     let staging = std::env::temp_dir().join(STAGING_DIRECTORY).join(run);
-    let image = pin_image(identity, &command.name, run)?;
+    let image = pin_image(&launch.identity, &command.name, run)?;
 
     log::info!(
         "run {run}: {} on {} playing {}",
@@ -1171,20 +1283,28 @@ fn play_run(
 
     // A sidecar that fails to start must not skip the teardown below, or the
     // ones already started leak, so the whole startup lands in one status.
-    let status = record_metadata(run, command, identity, TASK_PROMPT, &invocation)
+    let status = harness_version(&image)
+        .and_then(|version| record_run(run, launch, &version))
         .and_then(|()| start_proxy(run))
-        .and_then(|()| start_score_server(run, &command.game, &scorer_image(&command.game)))
+        .and_then(|()| {
+            start_score_server(
+                run,
+                &command.game,
+                &scorer_image(&command.game),
+                command.challenge.as_ref(),
+            )
+        })
         .and_then(|()| prepare_agent_home(run, &image))
-        .and_then(|()| run_sandbox(command, &image, run, &staging, invocation));
+        .and_then(|()| run_sandbox(command, &image, run, &staging, launch.invocation.clone()));
 
     let collected = collect_logs(run, &proxy_container(run), ACCESS_LOG, ERROR_LOG);
     drain_scorer(run);
     let attempts = collect_logs(run, &scorer_container(run), SCORE_LOG, SCORE_ERROR_LOG);
-    let versioned = collect_version(run, &image);
+    let entries = collect_entries(run);
     remove_sidecars(run);
 
-    let scored = match (&status, &collected, &attempts, &versioned) {
-        (Ok(_), Ok(()), Ok(()), Ok(version)) => score_run(run, command, version),
+    let completed = match (&status, &collected, &attempts) {
+        (Ok(_), Ok(()), Ok(())) => complete_run(run),
         _ => Ok(()),
     };
 
@@ -1197,8 +1317,8 @@ fn play_run(
     let code = status?;
     collected?;
     attempts?;
-    versioned?;
-    scored?;
+    entries?;
+    completed?;
 
     if let Some(analyst) = &command.analyst
         && let Err(error) = analyze(&Analyze {
@@ -1248,32 +1368,118 @@ fn require_game(game: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Aggregate the run's logs into the report kept as `runs/<run>/score.json`.
+/// Complete the record of `run` with what it left behind: every attempt the
+/// scorer graded and the metrics of every request the proxy carried.
 ///
-/// Every submission was scored by the scoring server the moment it was
-/// posted, so this only reads logs and nothing executes here.
-fn score_run(run: &str, command: &Agent, harness_version: &str) -> std::io::Result<()> {
+/// Every submission was verified the moment it was pushed, so this only reads
+/// logs and nothing executes here.
+fn complete_run(run: &str) -> std::io::Result<()> {
     let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
-    log::info!("aggregating the {run} logs into the report");
+    log::info!("completing the record of {run}");
 
-    let report = ava_scorer::score::report(
-        &ava_scorer::score::Score {
-            game: None,
-            metrics: Some(directory.join(ACCESS_LOG).display().to_string()),
-            attempts: Some(directory.join(SCORE_LOG).display().to_string()),
-        },
-        Some(ava_scorer::score::Run {
-            harness: &command.name,
-            harness_version,
-            model: &command.model,
-            game: &command.game,
-            thinking: command.thinking.as_deref(),
-            limit_seconds: command.limit,
-        }),
+    let mut record = crate::runs::read(&directory)?;
+    record.attempts =
+        ava_scorer::score::read_attempts(&directory.join(SCORE_LOG).display().to_string())?;
+    record.metrics = Some(ava_scorer::score::aggregate_metrics(
+        &directory.join(ACCESS_LOG).display().to_string(),
+    )?);
+    record.finished_seconds = Some(crate::usage::epoch_now());
+
+    write_run(run, &record)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&record).map_err(std::io::Error::other)?
+    );
+
+    Ok(())
+}
+
+/// Fight the entry at `first` against the entry at `second` in the scorer
+/// image of `game`, with no network and the entries mounted read only, and
+/// report the rounds from the view of `first`. What the fight printed is
+/// appended to the file at `log`.
+pub fn fight(
+    game: &str,
+    first: &std::path::Path,
+    second: &std::path::Path,
+    log: &std::path::Path,
+) -> std::io::Result<ava_wire::Tally> {
+    let played = ava_game::find(game).ok_or_else(|| {
+        crate::registry::unknown(game, "game", ava_game::GAMES.iter().map(|game| game.name()))
+    })?;
+
+    let staging = std::env::temp_dir().join(format!(
+        "{FIGHT_STAGING_PREFIX}{}-{}",
+        std::process::id(),
+        FIGHT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    for (directory, entry) in [
+        (ava_scorer::score::FIRST_DIRECTORY, first),
+        (ava_scorer::score::SECOND_DIRECTORY, second),
+    ] {
+        let target = staging.join(directory);
+        std::fs::create_dir_all(&target)?;
+        std::fs::copy(entry, target.join(played.entry()))?;
+    }
+
+    let output = std::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--ulimit",
+            NO_CORE_DUMPS,
+            "--user",
+            SANDBOX_USER,
+            "--env",
+            &format!("{HOME_VARIABLE}={AGENT_HOME}"),
+            "--volume",
+            &format!("{}:{FIGHT_MOUNT}{READ_ONLY}", staging.display()),
+            "--workdir",
+            AGENT_HOME,
+            "--entrypoint",
+            TIMEOUT,
+            &scorer_image(game),
+            FIGHT_TIMEOUT_SECONDS,
+            AVA,
+            "score",
+            "--game",
+            game,
+            "--fight",
+            FIGHT_MOUNT,
+        ])
+        .output();
+    let _ = std::fs::remove_dir_all(&staging);
+    let output = output?;
+
+    let mut console = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)?;
+    std::io::Write::write_all(
+        &mut console,
+        format!("fight: {} against {}\n", first.display(), second.display()).as_bytes(),
     )?;
+    std::io::Write::write_all(&mut console, &output.stderr)?;
 
-    println!("{report}");
-    std::fs::write(directory.join(SCORE_FILE), format!("{report}\n"))
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr);
+        return Err(std::io::Error::other(format!(
+            "the fight failed: {}",
+            reason.lines().last().unwrap_or_default().trim()
+        )));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Fought {
+        fight: ava_wire::Tally,
+    }
+    let fought: Fought = serde_json::from_slice(&output.stdout).map_err(|error| {
+        std::io::Error::other(format!("the fight report does not parse: {error}"))
+    })?;
+
+    Ok(fought.fight)
 }
 
 /// Run the sandbox itself, without a network, and report its status.
@@ -1900,7 +2106,7 @@ fn exists(arguments: &[&str]) -> std::io::Result<bool> {
 pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
     let run = command.run.as_str();
     let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
-    if !directory.join(METADATA_FILE).is_file() {
+    if !directory.join(RUN_FILE).is_file() {
         return Err(std::io::Error::other(format!("{run}: no such run")));
     }
 

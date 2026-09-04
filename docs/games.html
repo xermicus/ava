@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cfbce5bf.js";
+            window.path_to_searchindex_js = "searchindex-0e843654.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-ea099c5c.js"></script>
+        <script src="toc-83b56119.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,28 +175,40 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="games"><a class="header" href="#games">Games</a></h1>
-<p>A game is a folder under <code>games</code>: <code>task/</code> holds what the agent gets, <code>scorer.rs</code> implements the <code>Game</code> trait and is compiled into the <code>ava-game</code> crate, whose package is the <code>games</code> folder itself. A game needing software beyond the base image names a folder under <code>games</code> in <code>image()</code>, whose <code>Dockerfile</code> layers that software over the harness image and the scorer image, taking the image it extends as the build argument <code>BASE</code>. The agent submits by pushing the <code>task</code> branch, the scorer grades the files on it. Points range from 0 to 10000.</p>
+<p>A game is a folder under <code>games</code>: <code>task/</code> holds what the agent gets, <code>scorer.rs</code> implements the <code>Game</code> trait and is compiled into the <code>ava-game</code> crate, whose package is the <code>games</code> folder itself. A game needing software beyond the base image names a folder under <code>games</code> in <code>image()</code>, whose <code>Dockerfile</code> layers that software over the harness image and the scorer image, taking the image it extends as the build argument <code>BASE</code>.</p>
+<p>The trait separates what is recorded from what is derived:</p>
 <ul>
-<li>Single player: the task has a fixed goal. <code>fib-golf</code> is one.</li>
-<li>Multi player: agents author puzzles for each other and solve what they receive.</li>
+<li><code>entry()</code> names the file the task asks for. It is what a passing push leaves behind as its entry.</li>
+<li><code>verify()</code> runs in the scoring container on every push and reaches a verdict, passed or failed with the reason. It records a fact and pays no points.</li>
+<li><code>points()</code> ranks an entry within 0 and 10000 from the file alone, without executing it, wherever standings are shown. A game with nothing to rank beyond passing pays the maximum for every passing entry.</li>
+<li><code>playout()</code> says how entries meet: alone against the ceiling of the game, where a tournament compares them by their points; automated, where the scorer fights two entries without an agent; or played, naming the game whose runs attack an entry.</li>
+<li><code>fight()</code> plays one pairing for an automated game and tallies the rounds from the view of the first entry.</li>
+<li><code>verify()</code> of a game that attacks an entry gets that entry as its challenge, the file mounted into the scoring container and seeded into the attacker’s workspace.</li>
 </ul>
+<p>The agent submits by pushing the <code>task</code> branch. The verifier grades the files on it, and the entry of a passing push is kept under <code>runs/&lt;run&gt;/entries/&lt;seconds&gt;/</code>.</p>
 <h2 id="adding-a-game"><a class="header" href="#adding-a-game">Adding a game</a></h2>
 <ol>
 <li>Write <code>games/&lt;name&gt;/task/task.md</code> and any files the agent needs.</li>
-<li>Implement the <code>Game</code> trait in <code>games/&lt;name&gt;/scorer.rs</code>.</li>
+<li>Implement the <code>Game</code> trait in <code>games/&lt;name&gt;/scorer.rs</code>: the entry file, the verifier, and the points curve when passing is not the whole story.</li>
 <li>Declare the module by its path in <code>games/src/lib.rs</code> and add the implementation to the <code>GAMES</code> constant.</li>
 <li>If the base image lacks software the game needs, return a folder under <code>games</code> from <code>image()</code> and write its <code>Dockerfile</code>, starting with <code>ARG BASE</code> and <code>FROM ${BASE}</code>. The build context is the <code>games</code> folder.</li>
+<li>For a game whose entries fight each other, return <code>Playout::Automated</code> and implement <code>fight()</code>. For a game whose entries are attacked by agents, write the attacking game as a second folder with its own <code>task/</code>, verify its submissions against the challenge, and name it in <code>Playout::Played</code>. The tournaments do the rest.</li>
 </ol>
+<h2 id="crackme"><a class="header" href="#crackme">crackme</a></h2>
+<p>Two games in one pair, <code>crackme</code> and <code>crackme-solve</code>, the first with a played playout naming the second.</p>
+<p>The authoring task asks for an x86-64 ELF <code>crackme</code> that prints <code>OK</code> and exits 0 when started with the secret key as its only argument and exits 1 for any other key, within 5 seconds and 1 MiB, plus <code>key</code>, the secret as one line of at most 256 printable ASCII characters without whitespace. The verifier runs the crackme with the key, then with an empty key, with <code>password</code> and with the key changed in its first character, and passes it when the key is the only one accepted. The entry is the binary alone: the key is never kept.</p>
+<p>The solving task starts with the crackme of another seat in the workspace and asks for <code>key</code>, a key it accepts. The verifier runs the original crackme, mounted as the challenge, with the submitted key. A passing entry ranks at the maximum in both games; the point of the pair is the tournament, where every seat’s crackme is attacked by every other seat.</p>
 <h2 id="sanity-check"><a class="header" href="#sanity-check">sanity-check</a></h2>
 <p>The task asks for a file <code>palindrome</code> holding an ASCII palindrome of at most 20 characters, then a release.</p>
-<p>A palindrome, compared case insensitively after trimming whitespace, earns 10000 points. Anything else is unsolved.</p>
+<p>A palindrome, compared case insensitively after trimming whitespace, passes. Anything else fails. A passing entry ranks at the maximum.</p>
 <h2 id="fib-golf"><a class="header" href="#fib-golf">fib-golf</a></h2>
-<p>The task asks for an x86-64 ELF <code>fibonacci</code> that prints the first <code>N</code> Fibonacci numbers, space separated, for <code>N</code> in <code>[0, 47]</code> given as the first argument. The smaller the binary the better.</p>
-<p>The scorer runs the binary for every <code>N</code> and compares the output. A binary of 32 KiB or more is rejected. A correct binary earns points by its size. They fall off as <code>e^(-(bytes - 128) / 1500)</code>, scaled so that 128 bytes earn 10000 and 16 KiB earn 0:</p>
+<p>The task asks for an x86-64 ELF <code>fibonacci</code> that prints the first <code>N</code> Fibonacci numbers, space separated, for <code>N</code> in <code>[0, 47]</code> given as the first argument, in at most 16 KiB. The smaller the binary the better.</p>
+<p>The verifier runs the binary for every <code>N</code> and compares the output. A binary printing the right thing at more than 16 KiB fails with a reason saying so. A passing entry ranks by its size. The points fall off as <code>e^(-(bytes - 128) / 1500)</code>, scaled so that 128 bytes earn 10000 and 16 KiB earn 0:</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="fib-golf-points.svg" alt="fib-golf points by ELF size"><span class="img-wrapper"><img src="fib-golf-points.svg" alt="fib-golf points by ELF size"></span></label></p>
 <h2 id="r2wars"><a class="header" href="#r2wars">r2wars</a></h2>
 <p>Two games, <code>r2wars-x86-32</code> and <code>r2wars-gb</code>, one per architecture. The task asks for <code>warrior.&lt;architecture&gt;.asm</code>, a warrior for <a href="https://github.com/radareorg/r2wars">r2wars</a>, the Core War on radare2’s ESIL emulator. Two warriors share a 1 KiB arena and take turns executing instructions until one crashes.</p>
-<p>The scorer assembles the warrior with <code>rasm2</code> for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. An accepted warrior earns 10000 points. The fights are the tournament of the multi player games and not scored yet.</p>
+<p>The verifier assembles the warrior with <code>rasm2</code> for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. A warrior that assembles passes, and ranks at the maximum on its own.</p>
+<p>The playout is automated. A fight is one combat of <code>r2wars --fight</code> between two entries, staged as <code>first.&lt;architecture&gt;.asm</code> and <code>second.&lt;architecture&gt;.asm</code> because r2wars names a warrior by its file and reads the architecture out of the name. Every round the combat prints is tallied: a round the first warrior wins, a round it loses, or a timeout, which is a draw. The fights are played by <a href="tournaments.html">tournaments</a>.</p>
 <p>Both games play on the image of <code>games/r2wars/Dockerfile</code>, which builds r2wars from a pinned commit plus <code>r2wars-headless.patch</code>, adding <code>r2wars --fight a.asm b.asm</code>, a combat on the console without the web server, and installs it with radare2 6.2.0 and the .NET runtime. The sandbox holds the two READMEs of r2wars and two small warriors per architecture under <code>/opt/r2wars/examples/&lt;architecture&gt;/</code>, the x86 ones from r2wars and the Game Boy ones from <code>games/r2wars/examples</code>, and none of the tournament entries.</p>
 
                     </main>
@@ -207,7 +219,7 @@
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="architecture.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="tournaments.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -221,7 +233,7 @@
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="architecture.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="tournaments.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

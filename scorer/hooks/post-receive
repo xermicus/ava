@@ -1,14 +1,21 @@
 #!/bin/bash
 
-# Score every push to the task branch and answer the pusher. Each attempt is
-# one line appended to the attempts file the run collects as score.log, and a
-# release tag leaves the marker ending the run.
+# Verify every push to the task branch and answer the pusher. Each attempt is
+# one line appended to the attempts file the run collects as score.log, the
+# entry of a passing attempt is kept under entries/<seconds>/, and a release
+# tag leaves the marker ending the run.
 
 set -uo pipefail
 
 HOME_DIR=/home/agent
 GAME=$(cat "$HOME_DIR/game")
 STARTED=$(cat "$HOME_DIR/started")
+
+# The entry this run attacks, mounted by ava when the run plays a pairing.
+CHALLENGE=()
+if [ -d "$HOME_DIR/challenge" ]; then
+	CHALLENGE=(--challenge "$HOME_DIR/challenge")
+fi
 
 while read -r _ new ref; do
 	if [ "$ref" = "refs/tags/release" ]; then
@@ -27,7 +34,7 @@ while read -r _ new ref; do
 	mkdir "$scratch/submission"
 	git archive "$new" | tar -x -C "$scratch/submission"
 
-	report=$(cd "$scratch" && timeout 90 ava score --game "$GAME" 2>"$scratch/stderr")
+	report=$(cd "$scratch" && timeout 90 ava score --game "$GAME" "${CHALLENGE[@]}" 2>"$scratch/stderr")
 	status=$?
 
 	if [ $status -ne 0 ]; then
@@ -35,17 +42,25 @@ while read -r _ new ref; do
 		rm -rf "$scratch"
 		continue
 	fi
-	rm -rf "$scratch"
 
 	line=$(printf '%s' "$report" | python3 -c '
-import json, sys
-score = json.load(sys.stdin)["score"]
-attempt = {"seconds": int(sys.argv[1]), "solved": score["solved"], "points": score["points"]}
-if score.get("reason"):
-    attempt["reason"] = score["reason"]
-print(json.dumps(attempt))
-' "$seconds")
+import json, os, shutil, sys
+seconds, scratch, home = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+report = json.load(sys.stdin)
+verdict = report["verdict"]
+attempt = {"seconds": seconds, "passed": verdict["passed"]}
+if verdict.get("reason"):
+    attempt["reason"] = verdict["reason"]
+if verdict["passed"]:
+    kept = os.path.join(home, "entries", str(seconds))
+    os.makedirs(kept, exist_ok=True)
+    shutil.copy(os.path.join(scratch, "submission", report["entry"]), kept)
+line = json.dumps(attempt)
+with open(os.path.join(home, "attempts.jsonl"), "a") as attempts:
+    attempts.write(line + "\n")
+print(line)
+' "$seconds" "$scratch" "$HOME_DIR")
 
-	echo "$line" >> "$HOME_DIR/attempts.jsonl"
+	rm -rf "$scratch"
 	echo "pipeline: $line"
 done

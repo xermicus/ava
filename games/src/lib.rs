@@ -1,5 +1,7 @@
-//! The games scoring benchmark submissions.
+//! The games benchmark submissions are verified and ranked by.
 
+#[path = "../crackme/scorer.rs"]
+pub mod crackme;
 #[path = "../fib-golf/scorer.rs"]
 pub mod fib_golf;
 #[path = "../r2wars-x86-32/scorer.rs"]
@@ -9,35 +11,40 @@ pub mod sanity_check;
 pub mod scoring;
 
 /// Every game a benchmark run can play.
-pub const GAMES: [&dyn Game; 4] = [
+pub const GAMES: [&dyn Game; 6] = [
+    &crackme::Author,
+    &crackme::Solve,
     &fib_golf::FibGolf,
     &r2wars::GAMES[0],
     &r2wars::GAMES[1],
     &sanity_check::SanityCheck,
 ];
 
-/// The points scale every game scores in.
+/// The points scale every game ranks in.
 ///
-/// A submission scores within 0 and this maximum regardless of the game,
-/// which is what makes runs of different games comparable.
+/// An entry ranks within 0 and this maximum regardless of the game, which is
+/// what makes runs of different games comparable. A game with nothing to rank
+/// beyond passing pays the maximum for every passing entry.
 pub const MAXIMUM_POINTS: u64 = 10_000;
 
-/// The verdict a game reaches over one submission.
-#[derive(Debug, serde::Serialize)]
-pub struct Score {
-    /// The game which produced this score.
-    pub game: &'static str,
-    /// Whether the submission solves the task.
-    pub solved: bool,
-    /// The measure the game optimizes for, within 0 and [`MAXIMUM_POINTS`];
-    /// higher is better.
-    pub points: u64,
-    /// Why the submission did not solve the task.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+/// How the entries of a game meet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Playout {
+    /// The entry stands alone against the ceiling of the game.
+    Single,
+    /// The scorer fights two entries and reports the rounds, without an agent.
+    Automated,
+    /// An agent attacks the entry of another in a run of the named game, which
+    /// is started with the entry as its challenge and verified against it.
+    Played { challenge: &'static str },
 }
 
-/// A benchmark task able to score the submission an agent left.
+/// A benchmark task able to verify the submission an agent left and to rank
+/// the entry it kept.
+///
+/// The verifier runs in the scoring container on every push and records a
+/// fact. Ranking runs wherever standings are shown and reads the entry alone,
+/// so it never executes anything and its knobs can change without a re-run.
 pub trait Game {
     /// The name identifying the game on the command line and under the games directory.
     fn name(&self) -> &'static str;
@@ -49,11 +56,53 @@ pub trait Game {
         None
     }
 
-    /// Score the contents of the `submission` directory.
-    fn score(&self, submission: &std::path::Path) -> std::io::Result<Score>;
+    /// The file the task asks for, kept as the entry of every passing attempt.
+    fn entry(&self) -> &'static str;
+
+    /// How the entries of the game meet.
+    fn playout(&self) -> Playout {
+        Playout::Single
+    }
+
+    /// Whether the contents of the `submission` directory do what the task asks.
+    ///
+    /// A game attacking the entry of another gets that entry as the file under
+    /// `challenge`, the way it was mounted into the scoring container.
+    fn verify(
+        &self,
+        submission: &std::path::Path,
+        challenge: Option<&std::path::Path>,
+    ) -> std::io::Result<ava_wire::Verdict>;
+
+    /// The points a passing `entry` ranks at, within 0 and [`MAXIMUM_POINTS`].
+    fn points(&self, entry: &std::path::Path) -> std::io::Result<u64> {
+        let _ = entry;
+        Ok(MAXIMUM_POINTS)
+    }
+
+    /// Fight the entry at `first` against the entry at `second` and report
+    /// the rounds from the view of `first`, for a game with an automated playout.
+    fn fight(
+        &self,
+        first: &std::path::Path,
+        second: &std::path::Path,
+    ) -> std::io::Result<ava_wire::Tally> {
+        let _ = (first, second);
+        Err(std::io::Error::other(format!(
+            "{} has no automated playout",
+            self.name()
+        )))
+    }
 }
 
 /// Look up the game registered under `name`.
 pub fn find(name: &str) -> Option<&'static dyn Game> {
     GAMES.into_iter().find(|game| game.name() == name)
+}
+
+/// The verdict on a submission failing the task, logged as it is reached.
+pub(crate) fn failed(reason: String) -> ava_wire::Verdict {
+    log::info!("{reason}");
+
+    ava_wire::Verdict::failed(reason)
 }

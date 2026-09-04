@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cfbce5bf.js";
+            window.path_to_searchindex_js = "searchindex-0e843654.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-ea099c5c.js"></script>
+        <script src="toc-83b56119.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -195,11 +195,11 @@ The sandbox docker container has no network access.
 A unix socket that connects to the <code>ava-proxy</code> sidecar is mounted in.
 <code>ava-proxy</code> reverse-proxies to the LLM backend, allowing the agent to access LLMs.</p>
 <p>The benchmark task is mounted into the containers.
-The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is scored on the spot and the best solving one counts. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket scores a posted tar without recording it.
+The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is verified on the spot and the entry of every passing push is kept. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket verifies a posted tar without recording it.
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.</p>
-<p>Each benchmark implements a scorer, for security reasons it’s evaluated in a container too.
-The verifier checks the score of the submission however it wishes.
-<code>ava</code> collects the metrics from the <code>ava-proxy</code> side-car logs after the run.
+<p>Each game implements a verifier, for security reasons it’s evaluated in a container too.
+The verifier checks the submission however it wishes and records a verdict, never points.
+<code>ava</code> collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.</p>
 <h3 id="sequence-diagram-of-a-benchmark-run"><a class="header" href="#sequence-diagram-of-a-benchmark-run">Sequence diagram of a benchmark run</a></h3>
 <pre><code class="language-text">  +-----+         +---------+      +-----------+    +--------+      +-------------+
@@ -226,11 +226,11 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 |-----------------&gt;               |                 |
      |                 |                 | submission    |                 |
      |                 |                 |---------------&gt;                 |
-     |                 |                 |               |--. run the game scorer
+     |                 |                 |               |--. run the game verifier
      |                 |                 |               |&lt;-'              |
-     |                 |                 | score report  |                 |
+     |                 |                 | verdict       |                 |
      |                 |                 &lt;---------------|                 |
-     |                 | score report    |               |                 |
+     |                 | verdict         |               |                 |
      |                 &lt;-----------------|               |                 |
      |                 |                 |               |                 |
      | turn over       |                 |               |                 |
@@ -251,21 +251,21 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 |                 |               |                 |
      | turn over       |                 |               |                 |
      &lt;-----------------|                 |               |                 |
-     |--. collect the logs, aggregate runs/&lt;run&gt;/score.json                |
+     |--. collect the logs and the entries, complete runs/&lt;run&gt;/run.json   |
      |&lt;-'              |                 |               |                 |
 </code></pre>
 <h2 id="game-definitions"><a class="header" href="#game-definitions">Game definitions</a></h2>
-<p>Benchmarks are implemented as games with agent vs. agent playouts.</p>
-<h3 id="scoring-and-metrics"><a class="header" href="#scoring-and-metrics">Scoring and metrics</a></h3>
+<p>Benchmarks are implemented as games. A game verifies what an agent left and ranks the entries it kept, and a game with an automated playout fights two entries against each other, which is what tournaments are made of.</p>
+<h3 id="verdicts-fights-and-metrics"><a class="header" href="#verdicts-fights-and-metrics">Verdicts, fights and metrics</a></h3>
 <p>The sidecar dumps each request to a JSON access log, which <code>ava</code> collects into <code>runs/&lt;run&gt;/proxy.access.log</code>.</p>
 <p>Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics.</p>
-<p>The verifier is <code>ava score</code>, running in the scoring container without network access: <code>--game</code> scores the submission left in <code>submission/</code> with the named game. <code>--metrics</code> and <code>--attempts</code> aggregate the collected logs after the run. The reports are printed as one JSON document, which <code>ava</code> stores as <code>runs/&lt;run&gt;/score.json</code>.</p>
+<p>The verifier is <code>ava score</code>, running in the scoring container without network access: <code>--game</code> verifies the submission left in <code>submission/</code> with the named game and prints the verdict with the name of the entry file, which the receive hook keeps for a passing push. <code>--game</code> with <code>--fight &lt;directory&gt;</code> fights the entries under <code>first/</code> and <code>second/</code> of that directory and prints the tally, which is how a tournament plays a pairing: one container of the scorer image per fight, no network, the entries mounted read only. <code>--metrics</code> and <code>--attempts</code> aggregate the collected logs after the run into the run record.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="games.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="tournaments.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -279,7 +279,7 @@ The metrics also record which models were accessed through the proxy, exposing a
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="games.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="tournaments.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

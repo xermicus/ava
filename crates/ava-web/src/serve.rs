@@ -1,13 +1,13 @@
 //! The `serve` sub command: the http layer of the web interface.
 //!
-//! Reading views render from the run artifacts on disk; the two actions
-//! start a run in a background thread and end a live one through its done
-//! marker. The one vendored asset is tailwind, compiling the utility
-//! classes in the browser.
+//! Reading views render from the records on disk; the actions start a run or
+//! a round in a background thread, end a live run through its done marker
+//! and change the seats of a tournament. The one vendored asset is tailwind,
+//! compiling the utility classes in the browser.
 
 use std::io::Read;
 
-use ava_run::{docker, process, registry};
+use ava_run::{docker, process, registry, tournament};
 
 use crate::views;
 
@@ -56,11 +56,27 @@ const FONTS: [(&str, &[u8]); 4] = [
 
 const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
+const BINARY_CONTENT_TYPE: &str = "application/octet-stream";
 const JAVASCRIPT_CONTENT_TYPE: &str = "text/javascript";
 const FONT_CONTENT_TYPE: &str = "font/woff2";
 
 /// A form submission larger than this is not one of ours.
 const MAX_FORM_BYTES: u64 = 16 * 1024;
+
+/// The form fields choosing an agent: the harness, the model and the thinking
+/// level, under a prefix telling apart the agents one form chooses.
+pub(crate) const AGENT_FIELDS: [&str; 3] = ["agent", "model", "thinking"];
+
+/// The prefix of the fields choosing the analyst on the start panel.
+pub(crate) const ANALYST_PREFIX: &str = "analyst_";
+
+/// The start fields carried back to the form, so a submission does not reset it.
+const START_FIELDS: [&str; 8] = [
+    "agent", "model", "game", "thinking", "limit", "parallel", "analyze", "force",
+];
+
+/// The tournament creation fields carried back to its form.
+const CREATE_FIELDS: [&str; 3] = ["name", "game", "limit"];
 
 /// The starts whose runs are not on disk yet, shown as starting rows.
 static PENDING: std::sync::Mutex<Vec<(u64, views::Pending)>> = std::sync::Mutex::new(Vec::new());
@@ -127,16 +143,18 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         refused: query_value(query, "refused"),
     };
     let selection = views::Selection {
-        agent: query_value(query, "agent"),
-        model: query_value(query, "model"),
-        game: query_value(query, "game"),
-        thinking: query_value(query, "thinking"),
-        limit: query_value(query, "limit"),
-        parallel: query_value(query, "parallel"),
-        analyze: query_value(query, "analyze"),
-        analyst: query_value(query, "analyst"),
-        analyst_model: query_value(query, "analyst_model"),
-        analyst_thinking: query_value(query, "analyst_thinking"),
+        fields: START_FIELDS
+            .iter()
+            .chain(CREATE_FIELDS.iter())
+            .chain(AGENT_FIELDS.iter())
+            .map(|key| (key.to_string(), query_value(query, key)))
+            .chain(AGENT_FIELDS.iter().map(|key| {
+                let key = format!("{ANALYST_PREFIX}{key}");
+                let value = query_value(query, &key);
+                (key, value)
+            }))
+            .filter_map(|(key, value)| Some((key, value?)))
+            .collect(),
     };
 
     let pending: Vec<views::Pending> = PENDING
@@ -150,6 +168,15 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         [""] => views::runs_page(&notice, &selection, &pending),
         ["scoreboard"] => views::scoreboard_page(),
         ["games"] => views::games_page(),
+        ["tournaments"] => views::tournaments_page(&notice, &selection),
+        ["tournament", name] => views::tournament_page(name, &notice),
+        ["tournament", name, file] => {
+            return match views::tournament_file(name, file) {
+                Some(contents) => tiny_http::Response::from_data(contents)
+                    .with_header(content_type(TEXT_CONTENT_TYPE)),
+                None => plain_response(404, "no such file\n"),
+            };
+        }
         ["setup"] => views::setup_page(),
         ["assets", "tailwind.js"] => {
             return tiny_http::Response::from_string(TAILWIND)
@@ -168,6 +195,13 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
                 Some(contents) => tiny_http::Response::from_data(contents)
                     .with_header(content_type(TEXT_CONTENT_TYPE)),
                 None => plain_response(404, "no such file\n"),
+            };
+        }
+        ["run", name, "entries", seconds, file] => {
+            return match views::run_entry(name, seconds, file) {
+                Some(contents) => tiny_http::Response::from_data(contents)
+                    .with_header(content_type(BINARY_CONTENT_TYPE)),
+                None => plain_response(404, "no such entry\n"),
             };
         }
         _ => return plain_response(404, "no such page\n"),
@@ -214,20 +248,51 @@ impl Refusal {
 
 /// Answer one action request by sending the browser back to where it acted,
 /// with the outcome in the query for the page to show.
+///
+/// An action that went ahead may name another page to land on, which is how
+/// a created tournament opens.
 fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
     let (origin, carried, outcome) = match segments {
-        ["start"] => ("/".to_string(), preserved(form), start_run(form)),
+        ["start"] => (
+            "/".to_string(),
+            preserved(form, &START_FIELDS),
+            start_run(form),
+        ),
         ["run", name, "stop"] => (format!("/run/{name}"), String::new(), stop_run(name)),
         ["run", name, "analyze"] => (
             format!("/run/{name}"),
             String::new(),
             analyze_run(name, form),
         ),
+        ["tournaments", "create"] => (
+            "/tournaments".to_string(),
+            preserved(form, &CREATE_FIELDS),
+            create_tournament(form),
+        ),
+        ["tournament", name, "seat"] => (
+            format!("/tournament/{name}"),
+            preserved(form, &AGENT_FIELDS),
+            seat(name, form),
+        ),
+        ["tournament", name, "unseat"] => (
+            format!("/tournament/{name}"),
+            String::new(),
+            unseat(name, form),
+        ),
+        ["tournament", name, "play"] => (
+            format!("/tournament/{name}"),
+            String::new(),
+            play_round(name),
+        ),
         _ => return plain_response(404, "no such action\n"),
     };
 
     match outcome {
-        Ok(note) => redirect(&format!("{origin}?started={}{carried}", urlencode(&note))),
+        Ok(Done { note, landing }) => redirect(&format!(
+            "{}?started={}{carried}",
+            landing.unwrap_or(origin),
+            urlencode(&note)
+        )),
         Err(refusal) => {
             refusal.report();
             redirect(&format!(
@@ -238,26 +303,31 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
     }
 }
 
-/// The submitted start fields as query parameters, so the form the browser
+/// An action that went ahead: what to tell the browser, and where, when not
+/// back where it acted.
+struct Done {
+    note: String,
+    landing: Option<String>,
+}
+
+impl Done {
+    fn note(note: String) -> Self {
+        Self {
+            note,
+            landing: None,
+        }
+    }
+}
+
+/// The submitted `fields` as query parameters, so the form the browser
 /// returns to holds what was submitted instead of resetting.
-fn preserved(form: &[(String, String)]) -> String {
-    [
-        "agent",
-        "model",
-        "game",
-        "thinking",
-        "limit",
-        "parallel",
-        "analyze",
-        "analyst",
-        "analyst_model",
-        "analyst_thinking",
-    ]
-    .iter()
-    .map(|key| (key, value(form, key)))
-    .filter(|(_, submitted)| !submitted.is_empty())
-    .map(|(key, submitted)| format!("&{key}={}", urlencode(submitted)))
-    .collect()
+fn preserved(form: &[(String, String)], fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|key| (key, value(form, key)))
+        .filter(|(_, submitted)| !submitted.is_empty())
+        .map(|(key, submitted)| format!("&{key}={}", urlencode(submitted)))
+        .collect()
 }
 
 /// Start a run from the submitted form, in a thread of its own.
@@ -265,20 +335,16 @@ fn preserved(form: &[(String, String)]) -> String {
 /// Everything that can be checked without running is checked here, so a
 /// refusal reaches the browser instead of a log line: the thread only fails
 /// on what docker does at runtime.
-fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
+fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
     let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
-    let (name, model, thinking) = agent_choice(&registry, form, ["agent", "model", "thinking"])?;
+    let agent = agent_choice(&registry, form, "")?;
 
     let analyst = if value(form, "analyze") == "on" {
-        let (name, model, thinking) = agent_choice(
-            &registry,
-            form,
-            ["analyst", "analyst_model", "analyst_thinking"],
-        )?;
+        let analyst = agent_choice(&registry, form, ANALYST_PREFIX)?;
         Some(docker::Analyst {
-            name,
-            model,
-            thinking,
+            name: analyst.harness,
+            model: analyst.model,
+            thinking: analyst.thinking,
         })
     } else {
         None
@@ -290,9 +356,7 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
         return Err(Refusal::Rejected(format!("unknown game `{game}`")));
     }
 
-    let limit: u64 = value(form, "limit")
-        .parse()
-        .map_err(|_| Refusal::Rejected("the seconds are a number".to_string()))?;
+    let limit = limit_choice(form)?;
     let parallel: u64 = value(form, "parallel")
         .parse()
         .map_err(|_| Refusal::Rejected("the parallel count is a number".to_string()))?;
@@ -301,22 +365,17 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
             "the parallel count is at least 1".to_string(),
         ));
     }
-    if limit < docker::LAST_CALL_SECONDS {
-        return Err(Refusal::Rejected(format!(
-            "the seconds pay for the last call, so they are at least {}",
-            docker::LAST_CALL_SECONDS
-        )));
-    }
 
     let command = docker::Agent {
-        name,
-        model,
+        name: agent.harness,
+        model: agent.model,
         game: game.to_string(),
         limit,
         parallel,
-        thinking,
+        thinking: agent.thinking,
         force_build_images: value(form, "force") == "on",
         analyst,
+        challenge: None,
     };
 
     log::info!(
@@ -343,10 +402,7 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
                 game: command.game.clone(),
                 thinking: command.thinking.clone().unwrap_or_default(),
                 parallel: command.parallel,
-                started: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|now| now.as_secs())
-                    .unwrap_or(0),
+                started: ava_run::usage::epoch_now(),
             },
         ));
 
@@ -371,33 +427,45 @@ fn start_run(form: &[(String, String)]) -> Result<String, Refusal> {
         }
     });
 
-    Ok(note)
+    Ok(Done::note(note))
 }
 
-/// The harness, model and thinking level under `fields` of a form, checked
-/// against the registry.
+/// The seconds a run is given, from the submitted form.
+fn limit_choice(form: &[(String, String)]) -> Result<u64, Refusal> {
+    let limit: u64 = value(form, "limit")
+        .parse()
+        .map_err(|_| Refusal::Rejected("the seconds are a number".to_string()))?;
+    if limit < docker::LAST_CALL_SECONDS {
+        return Err(Refusal::Rejected(format!(
+            "the seconds pay for the last call, so they are at least {}",
+            docker::LAST_CALL_SECONDS
+        )));
+    }
+
+    Ok(limit)
+}
+
+/// The agent chosen under the `prefix` fields of a form, checked against the
+/// registry.
 fn agent_choice(
     registry: &registry::Registry,
     form: &[(String, String)],
-    fields: [&str; 3],
-) -> Result<(String, String, Option<String>), Refusal> {
-    let [agent, model_field, thinking_field] = fields;
+    prefix: &str,
+) -> Result<ava_wire::Agent, Refusal> {
+    let [harness_field, model_field, thinking_field] =
+        AGENT_FIELDS.map(|field| format!("{prefix}{field}"));
 
-    let name = value(form, agent);
-    if !registry
-        .harnesses
-        .iter()
-        .any(|harness| harness.name == name)
-    {
-        return Err(Refusal::Rejected(format!("unknown harness `{name}`")));
+    let harness = value(form, &harness_field);
+    if !registry.harnesses.iter().any(|known| known.name == harness) {
+        return Err(Refusal::Rejected(format!("unknown harness `{harness}`")));
     }
 
-    let model = value(form, model_field);
+    let model = value(form, &model_field);
     if !registry.models.iter().any(|known| known.name == model) {
         return Err(Refusal::Rejected(format!("unknown model `{model}`")));
     }
 
-    let thinking = match value(form, thinking_field) {
+    let thinking = match value(form, &thinking_field) {
         "" => None,
         level if registry::THINKING_LEVELS.contains(&level) => Some(level.to_string()),
         level => {
@@ -410,7 +478,13 @@ fn agent_choice(
     // A credential the host never set is the operator's to fix, unlike a
     // pairing this harness cannot serve, which is the form's to correct.
     registry
-        .invocation(name, model, "", thinking.as_deref(), registry::Start::Task)
+        .invocation(
+            harness,
+            model,
+            "",
+            thinking.as_deref(),
+            registry::Start::Task,
+        )
         .map_err(|error| {
             let reason = error.to_string();
             if registry::is_missing_credential(&error) {
@@ -420,11 +494,15 @@ fn agent_choice(
             }
         })?;
 
-    Ok((name.to_string(), model.to_string(), thinking))
+    Ok(ava_wire::Agent {
+        harness: harness.to_string(),
+        model: model.to_string(),
+        thinking,
+    })
 }
 
 /// Analyze the run in a thread of its own.
-fn analyze_run(name: &str, form: &[(String, String)]) -> Result<String, Refusal> {
+fn analyze_run(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     views::run_directory(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
     if views::analyzing(name) {
         return Err(Refusal::Rejected(format!(
@@ -433,14 +511,14 @@ fn analyze_run(name: &str, form: &[(String, String)]) -> Result<String, Refusal>
     }
 
     let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
-    let (agent, model, thinking) = agent_choice(&registry, form, ["agent", "model", "thinking"])?;
+    let analyst = agent_choice(&registry, form, "")?;
 
     let command = docker::Analyze {
         run: name.to_string(),
         analyst: docker::Analyst {
-            name: agent,
-            model,
-            thinking,
+            name: analyst.harness,
+            model: analyst.model,
+            thinking: analyst.thinking,
         },
         limit: docker::Analyze::DEFAULT_LIMIT_SECONDS,
     };
@@ -456,11 +534,11 @@ fn analyze_run(name: &str, form: &[(String, String)]) -> Result<String, Refusal>
         Err(error) => log::error!("the analysis of {} failed: {error}", command.run),
     });
 
-    Ok(note)
+    Ok(Done::note(note))
 }
 
 /// End a live run early by leaving its done marker, as a release tag would.
-fn stop_run(name: &str) -> Result<String, Refusal> {
+fn stop_run(name: &str) -> Result<Done, Refusal> {
     views::run_directory(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
 
     log::info!("stopping {name} through its done marker");
@@ -474,8 +552,71 @@ fn stop_run(name: &str) -> Result<String, Refusal> {
             docker::DONE_MARKER,
         ],
     )
-    .map(|_| format!("stopping {name}"))
+    .map(|_| Done::note(format!("stopping {name}")))
     .map_err(|error| Refusal::Failed(format!("stopping {name} failed: {error}")))
+}
+
+/// Create a tournament from the submitted form and open its lobby.
+fn create_tournament(form: &[(String, String)]) -> Result<Done, Refusal> {
+    let name = value(form, "name");
+    let game = value(form, "game");
+    let limit = limit_choice(form)?;
+
+    tournament::create(name, game, limit).map_err(|error| Refusal::Rejected(error.to_string()))?;
+
+    Ok(Done {
+        note: format!("{name} is open, seat the agents"),
+        landing: Some(format!("/tournament/{name}")),
+    })
+}
+
+/// Seat the agent chosen in the form in the named tournament.
+fn seat(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
+    let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
+    let agent = agent_choice(&registry, form, "")?;
+    let label = agent.label();
+
+    tournament::add_seat(name, &agent).map_err(|error| Refusal::Rejected(error.to_string()))?;
+
+    Ok(Done::note(format!("seated {label}")))
+}
+
+/// Remove the seat named in the form from the named tournament.
+fn unseat(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
+    let seat: usize = value(form, "seat")
+        .parse()
+        .map_err(|_| Refusal::Rejected("the seat is a number".to_string()))?;
+
+    tournament::remove_seat(name, seat).map_err(|error| Refusal::Rejected(error.to_string()))?;
+
+    Ok(Done::note(format!("removed seat {}", seat + 1)))
+}
+
+/// Play one round of the named tournament in a thread of its own.
+fn play_round(name: &str) -> Result<Done, Refusal> {
+    let record = tournament::load(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
+    if tournament::playing(name) {
+        return Err(Refusal::Rejected(format!(
+            "{name} is playing a round already"
+        )));
+    }
+    if record.seats.is_empty() {
+        return Err(Refusal::Rejected(format!(
+            "{name} has no seats, seat an agent first"
+        )));
+    }
+
+    let round = record.rounds.len() + 1;
+    let name = name.to_string();
+    let note = format!("playing round {round} of {name}");
+    log::info!("{note}");
+
+    std::thread::spawn(move || match tournament::play_round(&name, false) {
+        Ok(code) => log::info!("round {round} of {name} finished with code {code}"),
+        Err(error) => log::error!("round {round} of {name} failed: {error}"),
+    });
+
+    Ok(Done::note(note))
 }
 
 /// The submitted form fields, urldecoded.

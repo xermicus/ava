@@ -39,6 +39,7 @@ pub(crate) enum SubCommand {
     Serve(ava_web::serve::Serve),
     Remote(ava_scorer::remote::Remote),
     Upstreams(ava_run::upstreams::Upstreams),
+    Tournament(ava_run::tournament::Tournament),
 }
 
 /// The command line of the agent sandbox command.
@@ -147,6 +148,52 @@ impl AnalyzeCli {
     }
 }
 
+/// The command line of the tournament command.
+struct TournamentCli;
+
+impl TournamentCli {
+    const NAME: &str = "tournament";
+    const DESCRIPTION: &str =
+        "create a tournament, seat agents in it and play one round, into tournaments/<name>";
+
+    const NAME_SHORT: char = 'n';
+    const SEAT_SHORT: char = 's';
+
+    fn help() {
+        command_help(Self::NAME, Self::DESCRIPTION);
+        arg_help_chr(Self::NAME_SHORT, "the tournament");
+        arg_help_chr(
+            AgentCli::GAME_SHORT,
+            "the game to play, creating the tournament",
+        );
+        arg_help_chr(
+            Self::SEAT_SHORT,
+            "seat an agent, harness/model or harness/model/thinking, repeatable",
+        );
+        arg_help_chr(
+            AgentCli::TIME_LIMIT_SHORT,
+            &format!(
+                "the seconds every run is given, {} by default, fixed when the tournament is created",
+                ava_run::docker::Agent::DEFAULT_LIMIT_SECONDS
+            ),
+        );
+        arg_help_str(
+            &format!("--{}", AgentCli::FORCE_BUILD_LONG),
+            "rebuild the docker images instead of reusing the built ones",
+        );
+    }
+
+    /// Exit(1) unless the tournament was named.
+    fn require_arguments(command: &ava_run::tournament::Tournament) {
+        if command.name.is_empty() {
+            fail(&format!(
+                "no tournament given, pass one with -{}",
+                Self::NAME_SHORT
+            ));
+        }
+    }
+}
+
 /// The command line of the image building command.
 struct ImageCli;
 
@@ -171,11 +218,14 @@ struct ScoreCli;
 
 impl ScoreCli {
     const NAME: &str = "score";
-    const DESCRIPTION: &str = "score a submission and aggregate the metrics of a run";
+    const DESCRIPTION: &str =
+        "verify a submission, fight two entries or aggregate the logs of a run";
 
     const METRICS_LONG: &str = "metrics";
     const GAME_LONG: &str = "game";
     const ATTEMPTS_LONG: &str = "attempts";
+    const FIGHT_LONG: &str = "fight";
+    const CHALLENGE_LONG: &str = "challenge";
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
@@ -185,11 +235,19 @@ impl ScoreCli {
         );
         arg_help_str(
             &format!("--{}", Self::GAME_LONG),
-            "the game scoring the submission",
+            "the game verifying the submission",
+        );
+        arg_help_str(
+            &format!("--{}", Self::FIGHT_LONG),
+            "fight the entries under first/ and second/ in this directory instead",
+        );
+        arg_help_str(
+            &format!("--{}", Self::CHALLENGE_LONG),
+            "the directory holding the entry the submission attacks",
         );
         arg_help_str(
             &format!("--{}", Self::ATTEMPTS_LONG),
-            "the live scoring log to aggregate",
+            "the attempts log to read",
         );
     }
 
@@ -201,6 +259,12 @@ impl ScoreCli {
                 Self::GAME_LONG,
                 Self::METRICS_LONG,
                 Self::ATTEMPTS_LONG
+            ));
+        }
+        if (command.fight.is_some() || command.challenge.is_some()) && command.game.is_none() {
+            fail(&format!(
+                "a fight or a challenge needs the game, pass it with --{}",
+                Self::GAME_LONG
             ));
         }
     }
@@ -300,6 +364,9 @@ impl Parser {
                 UpstreamsCli::NAME => {
                     parser.command = Some(SubCommand::Upstreams(Default::default()));
                 }
+                TournamentCli::NAME => {
+                    parser.command = Some(SubCommand::Tournament(Default::default()));
+                }
 
                 _ if next.starts_with("--") => {
                     parser.long(&mut args, next.trim_start_matches("--"));
@@ -317,6 +384,7 @@ impl Parser {
             Some(SubCommand::Agent(ref command)) => AgentCli::require_arguments(command),
             Some(SubCommand::Analyze(ref command)) => AnalyzeCli::require_arguments(command),
             Some(SubCommand::Score(ref command)) => ScoreCli::require_arguments(command),
+            Some(SubCommand::Tournament(ref command)) => TournamentCli::require_arguments(command),
             Some(SubCommand::Image(_))
             | Some(SubCommand::Serve(_))
             | Some(SubCommand::Remote(_))
@@ -383,13 +451,18 @@ impl Parser {
                 }
                 AgentCli::GAME_SHORT => {
                     let game = Self::value(args, &mut chars, flag, "missing game name");
-                    let Some(SubCommand::Agent(ref mut command)) = self.command else {
-                        bail(
+                    match self.command {
+                        Some(SubCommand::Agent(ref mut command)) => command.game = game,
+                        Some(SubCommand::Tournament(ref mut command)) => command.game = game,
+                        _ => bail(
                             flag,
-                            &format!("only valid in the {} subcommand", AgentCli::NAME),
-                        );
-                    };
-                    command.game = game;
+                            &format!(
+                                "only valid in the {} or {} subcommands",
+                                AgentCli::NAME,
+                                TournamentCli::NAME
+                            ),
+                        ),
+                    }
                     break;
                 }
                 AgentCli::TIME_LIMIT_SHORT => {
@@ -411,12 +484,25 @@ impl Parser {
                             command.limit = limit;
                         }
                         Some(SubCommand::Analyze(ref mut command)) => command.limit = limit,
+                        Some(SubCommand::Tournament(ref mut command)) => {
+                            if limit < ava_run::docker::LAST_CALL_SECONDS {
+                                bail(
+                                    flag,
+                                    &format!(
+                                        "the limit pays for the last call, so it is at least {} seconds",
+                                        ava_run::docker::LAST_CALL_SECONDS
+                                    ),
+                                );
+                            }
+                            command.limit = Some(limit);
+                        }
                         _ => bail(
                             flag,
                             &format!(
-                                "only valid in the {} or {} subcommands",
+                                "only valid in the {}, {} or {} subcommands",
                                 AgentCli::NAME,
-                                AnalyzeCli::NAME
+                                AnalyzeCli::NAME,
+                                TournamentCli::NAME
                             ),
                         ),
                     }
@@ -496,26 +582,40 @@ impl Parser {
                         ),
                     ),
                 },
-                ImageCli::SCORER_SHORT => {
-                    let Some(SubCommand::Image(ref mut command)) = self.command else {
-                        bail(
-                            flag,
-                            &format!("only valid in the {} subcommand", ImageCli::NAME),
-                        );
-                    };
-                    command.scorer = true;
-                }
+                ImageCli::SCORER_SHORT => match self.command {
+                    Some(SubCommand::Image(ref mut command)) => command.scorer = true,
+                    Some(SubCommand::Tournament(ref mut command)) => {
+                        let seat = Self::value(args, &mut chars, flag, "missing seat");
+                        command.seats.push(seat);
+                        break;
+                    }
+                    _ => bail(
+                        flag,
+                        &format!(
+                            "only valid in the {} or {} subcommands",
+                            ImageCli::NAME,
+                            TournamentCli::NAME
+                        ),
+                    ),
+                },
 
-                // Upstreams
-                UpstreamsCli::NGINX_MAP_SHORT => {
-                    let Some(SubCommand::Upstreams(ref mut command)) = self.command else {
-                        bail(
-                            flag,
-                            &format!("only valid in the {} subcommand", UpstreamsCli::NAME),
-                        );
-                    };
-                    command.nginx_map = true;
-                }
+                // Upstreams and tournament
+                UpstreamsCli::NGINX_MAP_SHORT => match self.command {
+                    Some(SubCommand::Upstreams(ref mut command)) => command.nginx_map = true,
+                    Some(SubCommand::Tournament(ref mut command)) => {
+                        let name = Self::value(args, &mut chars, flag, "missing tournament name");
+                        command.name = name;
+                        break;
+                    }
+                    _ => bail(
+                        flag,
+                        &format!(
+                            "only valid in the {} or {} subcommands",
+                            UpstreamsCli::NAME,
+                            TournamentCli::NAME
+                        ),
+                    ),
+                },
 
                 _ => bail(flag, "unknown argument"),
             }
@@ -527,15 +627,18 @@ impl Parser {
             Arguments::LIST_MODELS => ava_run::registry::list_models(),
             Arguments::LIST_AGENTS => ava_run::registry::list_agents(),
             Arguments::USAGE => ava_run::usage::print(),
-            AgentCli::FORCE_BUILD_LONG => {
-                let Some(SubCommand::Agent(ref mut command)) = self.command else {
-                    bail(
-                        next,
-                        &format!("only valid in the {} subcommand", AgentCli::NAME),
-                    );
-                };
-                command.force_build_images = true;
-            }
+            AgentCli::FORCE_BUILD_LONG => match self.command {
+                Some(SubCommand::Agent(ref mut command)) => command.force_build_images = true,
+                Some(SubCommand::Tournament(ref mut command)) => command.force_build_images = true,
+                _ => bail(
+                    next,
+                    &format!(
+                        "only valid in the {} or {} subcommands",
+                        AgentCli::NAME,
+                        TournamentCli::NAME
+                    ),
+                ),
+            },
             ScoreCli::METRICS_LONG => {
                 let log = Self::long_value(args, next, "missing log file");
                 let Some(SubCommand::Score(ref mut command)) = self.command else {
@@ -565,6 +668,26 @@ impl Parser {
                     );
                 };
                 command.attempts = Some(log);
+            }
+            ScoreCli::FIGHT_LONG => {
+                let directory = Self::long_value(args, next, "missing fight directory");
+                let Some(SubCommand::Score(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", ScoreCli::NAME),
+                    );
+                };
+                command.fight = Some(directory);
+            }
+            ScoreCli::CHALLENGE_LONG => {
+                let directory = Self::long_value(args, next, "missing challenge directory");
+                let Some(SubCommand::Score(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", ScoreCli::NAME),
+                    );
+                };
+                command.challenge = Some(directory);
             }
             RemoteCli::SOCKET_LONG => {
                 let socket = Self::long_value(args, next, "missing socket path");
@@ -617,6 +740,7 @@ pub(crate) fn help() -> ! {
     for print_command in [
         AgentCli::help,
         AnalyzeCli::help,
+        TournamentCli::help,
         ImageCli::help,
         ScoreCli::help,
         ServeCli::help,

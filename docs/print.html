@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cfbce5bf.js";
+            window.path_to_searchindex_js = "searchindex-0e843654.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-ea099c5c.js"></script>
+        <script src="toc-83b56119.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,7 +183,7 @@
 <h2 id="playing-a-game"><a class="header" href="#playing-a-game">Playing a game</a></h2>
 <p>Run <code>ava agent -a &lt;agent&gt; -m &lt;model&gt; -g &lt;name&gt;</code>, where <code>-t</code> sets the seconds the agent is given, the last call included, and <code>-j</code> starts that many runs in parallel. Existing docker images are reused; <code>--force-build-images</code> rebuilds them.</p>
 <p><code>ava image</code> rebuilds every docker image ahead of runs; <code>-a &lt;agent&gt;</code>, <code>-p</code> (proxy) and <code>-s</code> (scorer) select single images.</p>
-<p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings and the setup, rendered from the run artifacts on disk.</p>
+<p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings, the tournaments with their lobbies and rounds, and the setup, rendered from the records on disk.</p>
 <p><code>ava --usage</code> asks every backend for its limits and prints them with the usage recorded over the runs on disk. The setup page shows the same.</p>
 <ul>
 <li>
@@ -199,16 +199,16 @@
 <p>The agent starts in <code>/home/agent/workspace</code>, inside a home of its own described under <a href="#the-agent-home">The agent home</a>.</p>
 </li>
 <li>
-<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. A tar posted to <code>http://score:8080</code> is scored the same way and not recorded. <code>master</code> rejects every push.</p>
+<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook verifies the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output with the verdict, passed or failed with the reason, and never with points. A tar posted to <code>http://score:8080</code> is verified the same way and not recorded. <code>master</code> rejects every push.</p>
 </li>
 <li>
-<p>Every scored attempt is one line of <code>runs/&lt;run&gt;/score.log</code>. The best solving attempt is the submission of record.</p>
+<p>Every graded push is one line of <code>runs/&lt;run&gt;/score.log</code>, and the entry file of every passing push is kept as <code>runs/&lt;run&gt;/entries/&lt;seconds&gt;/&lt;entry&gt;</code>. Which entry is the entry of record is decided when standings are shown.</p>
 </li>
 <li>
 <p>The run ends when the time is up, when the agent pushes a <code>release</code> tag, or when the harness exits. Running out of time is not the end of the run, it is the last call described below.</p>
 </li>
 <li>
-<p><code>ava score --metrics proxy.access.log --attempts score.log</code> aggregates the logs into <code>runs/&lt;run&gt;/score.json</code>: the attempts with the score of the run, the seconds to the best solving attempt breaking point ties, and the proxy metrics. The report written at the end of a run also names its parameters: the model, the harness and its version, the game and the time budget.</p>
+<p><code>runs/&lt;run&gt;/run.json</code> is the record of the run, described in the <a href="#data-model">data model</a>. It is written when the run starts with the harness and its version, the model, the game and its version and the time budget, and completed when the run is over with every attempt and the metrics aggregated from the proxy log.</p>
 </li>
 </ul>
 <h2 id="the-agent-home"><a class="header" href="#the-agent-home">The agent home</a></h2>
@@ -224,53 +224,82 @@
 <p>Everything else the agent could write to is closed off. The root filesystem is read only, which holds against the passwordless <code>sudo</code> in the image because the container has no <code>CAP_SYS_ADMIN</code> to remount it. <code>/tmp</code> is a small tmpfs of its own and no restart carries it over.</p>
 <h2 id="the-last-call"><a class="header" href="#the-last-call">The last call</a></h2>
 <p>When the time is up the agent is stopped and started again on the home it left behind, prompted once to commit and push. It is one more turn of the loop, resuming the same session, and the only things that set it apart are the prompt and that no turn follows it.</p>
-<p>The prompt states the bound as the final turn, not as seconds. Without a loop the start is one turn, so that is what holds, and the agent has nothing to time itself against. The 120 seconds are the timeout on that turn, not a budget the prompt asks it to spend, and the prompt also says that submitting is free, since the scorer keeps the best attempt of the run.</p>
+<p>The prompt states the bound as the final turn, not as seconds. Without a loop the start is one turn, so that is what holds, and the agent has nothing to time itself against. The 120 seconds are the timeout on that turn, not a budget the prompt asks it to spend, and the prompt also says that submitting is free, since every passing push keeps its entry and a failing one is only a failed attempt.</p>
 <p>The prompt is an argument to that start, which is what makes it arrive at all. A file a harness polls cannot: anything watching between turns is never read by a turn that outlasts the wait.</p>
 <p>Nothing has to be switched off for it either. The loop is <code>ava</code> deciding to start another turn, so the last call is <code>ava</code> deciding not to.</p>
-<h2 id="scoring-a-submission"><a class="header" href="#scoring-a-submission">Scoring a submission</a></h2>
+<h2 id="verifying-and-ranking-a-submission"><a class="header" href="#verifying-and-ranking-a-submission">Verifying and ranking a submission</a></h2>
 <ul>
-<li>Points are the quantity the game optimizes, higher is better. How each game pays them is in <a href="#games">Games</a>.</li>
-<li>Every game scores within 0 and 10000 points, which keeps runs of different games comparable.</li>
-<li>Attempts are recorded with the pure game grade and the arrival second, and the report only aggregates these facts. The final score weighing them against the run metrics, such as the time to the best attempt or the tokens spent, is derived at ranking time, so its knobs can change without re-running anything.</li>
-<li>The scorer executes the submission under a timeout and an output cap.</li>
-<li>A broken submission is an unsolved task, not an error. Only a broken harness fails a run.</li>
+<li>The verifier of the game runs on every push and records a fact: the push passed or failed, with the reason. It executes the submission under a timeout and an output cap, in the scoring container without network.</li>
+<li>A failing submission is a failed attempt, not an error. Only a broken harness fails a run.</li>
+<li>Ranking is derived from the entries when standings are shown. Every game ranks an entry within 0 and 10000 points from the file alone, which keeps runs of different games comparable, and how each game ranks is in <a href="#games">Games</a>. The entry of record of a run is the entry ranking highest, the newest on ties.</li>
+<li>Since the ranking is derived, its knobs can change without re-running anything: a changed curve re-ranks every entry ever kept. The version of the game folder recorded on the run names the verifier the verdicts were reached under.</li>
+<li>Live runs show their pushes and whether one passed. Their points appear once the run is over, since the entries stay in the scoring container until then.</li>
 </ul>
 <h2 id="analyzing-a-run"><a class="header" href="#analyzing-a-run">Analyzing a run</a></h2>
 <p><code>ava analyze -r &lt;run&gt; -a &lt;agent&gt; -m &lt;model&gt;</code> starts the agent once on <code>runs/&lt;run&gt;</code> and this book, both mounted read only, with the analysis prompt as its task. The summary of a few sentences and the full analysis in markdown it writes are assembled into <code>analysis.json</code> in the run directory, next to the analyst’s console <code>analysis.log</code> and the access log of its proxy <code>analysis.access.log</code>; a failed analysis leaves its reason there instead. The run page shows the summary with the analysis folded behind it and offers the same behind a button. <code>-e</code> and <code>-t</code> set the thinking level and the seconds, 1200 by default. The start panel of the web interface can have a run analyzed the moment it is over, by claude on claude-sonnet-5 at medium thinking unless chosen otherwise, and the run shows as analyzing meanwhile.</p>
-<h2 id="rating-multi-player-matches"><a class="header" href="#rating-multi-player-matches">Rating multi player matches</a></h2>
-<p>The playouts are not implemented yet, the ratings are.</p>
-<p>A match is two halves. In each half one agent authors the puzzle and the other solves it, and the half is scored from three facts: the puzzle was valid, the generator solved it from the solver’s view, the solver solved it.</p>
-<ul>
-<li>The generator takes the half by stumping the solver with a puzzle it solved itself.</li>
-<li>An invalid puzzle, or one the generator cannot solve from the solver’s view, forfeits the half.</li>
-<li>Both sides solving is a draw.</li>
-</ul>
-<p><code>Scoring</code> turns played matches into a leaderboard. <code>bradley-terry</code> fits the whole match history, <code>elo</code> updates in match order.</p>
+<h2 id="playing-tournaments"><a class="header" href="#playing-tournaments">Playing tournaments</a></h2>
+<p>Games whose entries fight each other are played in <a href="#tournaments">tournaments</a>: a lobby of seats, each holding an agent, plays rounds of runs followed by the fights of every pairing. The record holds the tallies of the fights and the standings are derived from it.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="games"><a class="header" href="#games">Games</a></h1>
-<p>A game is a folder under <code>games</code>: <code>task/</code> holds what the agent gets, <code>scorer.rs</code> implements the <code>Game</code> trait and is compiled into the <code>ava-game</code> crate, whose package is the <code>games</code> folder itself. A game needing software beyond the base image names a folder under <code>games</code> in <code>image()</code>, whose <code>Dockerfile</code> layers that software over the harness image and the scorer image, taking the image it extends as the build argument <code>BASE</code>. The agent submits by pushing the <code>task</code> branch, the scorer grades the files on it. Points range from 0 to 10000.</p>
+<p>A game is a folder under <code>games</code>: <code>task/</code> holds what the agent gets, <code>scorer.rs</code> implements the <code>Game</code> trait and is compiled into the <code>ava-game</code> crate, whose package is the <code>games</code> folder itself. A game needing software beyond the base image names a folder under <code>games</code> in <code>image()</code>, whose <code>Dockerfile</code> layers that software over the harness image and the scorer image, taking the image it extends as the build argument <code>BASE</code>.</p>
+<p>The trait separates what is recorded from what is derived:</p>
 <ul>
-<li>Single player: the task has a fixed goal. <code>fib-golf</code> is one.</li>
-<li>Multi player: agents author puzzles for each other and solve what they receive.</li>
+<li><code>entry()</code> names the file the task asks for. It is what a passing push leaves behind as its entry.</li>
+<li><code>verify()</code> runs in the scoring container on every push and reaches a verdict, passed or failed with the reason. It records a fact and pays no points.</li>
+<li><code>points()</code> ranks an entry within 0 and 10000 from the file alone, without executing it, wherever standings are shown. A game with nothing to rank beyond passing pays the maximum for every passing entry.</li>
+<li><code>playout()</code> says how entries meet: alone against the ceiling of the game, where a tournament compares them by their points; automated, where the scorer fights two entries without an agent; or played, naming the game whose runs attack an entry.</li>
+<li><code>fight()</code> plays one pairing for an automated game and tallies the rounds from the view of the first entry.</li>
+<li><code>verify()</code> of a game that attacks an entry gets that entry as its challenge, the file mounted into the scoring container and seeded into the attacker’s workspace.</li>
 </ul>
+<p>The agent submits by pushing the <code>task</code> branch. The verifier grades the files on it, and the entry of a passing push is kept under <code>runs/&lt;run&gt;/entries/&lt;seconds&gt;/</code>.</p>
 <h2 id="adding-a-game"><a class="header" href="#adding-a-game">Adding a game</a></h2>
 <ol>
 <li>Write <code>games/&lt;name&gt;/task/task.md</code> and any files the agent needs.</li>
-<li>Implement the <code>Game</code> trait in <code>games/&lt;name&gt;/scorer.rs</code>.</li>
+<li>Implement the <code>Game</code> trait in <code>games/&lt;name&gt;/scorer.rs</code>: the entry file, the verifier, and the points curve when passing is not the whole story.</li>
 <li>Declare the module by its path in <code>games/src/lib.rs</code> and add the implementation to the <code>GAMES</code> constant.</li>
 <li>If the base image lacks software the game needs, return a folder under <code>games</code> from <code>image()</code> and write its <code>Dockerfile</code>, starting with <code>ARG BASE</code> and <code>FROM ${BASE}</code>. The build context is the <code>games</code> folder.</li>
+<li>For a game whose entries fight each other, return <code>Playout::Automated</code> and implement <code>fight()</code>. For a game whose entries are attacked by agents, write the attacking game as a second folder with its own <code>task/</code>, verify its submissions against the challenge, and name it in <code>Playout::Played</code>. The tournaments do the rest.</li>
 </ol>
+<h2 id="crackme"><a class="header" href="#crackme">crackme</a></h2>
+<p>Two games in one pair, <code>crackme</code> and <code>crackme-solve</code>, the first with a played playout naming the second.</p>
+<p>The authoring task asks for an x86-64 ELF <code>crackme</code> that prints <code>OK</code> and exits 0 when started with the secret key as its only argument and exits 1 for any other key, within 5 seconds and 1 MiB, plus <code>key</code>, the secret as one line of at most 256 printable ASCII characters without whitespace. The verifier runs the crackme with the key, then with an empty key, with <code>password</code> and with the key changed in its first character, and passes it when the key is the only one accepted. The entry is the binary alone: the key is never kept.</p>
+<p>The solving task starts with the crackme of another seat in the workspace and asks for <code>key</code>, a key it accepts. The verifier runs the original crackme, mounted as the challenge, with the submitted key. A passing entry ranks at the maximum in both games; the point of the pair is the tournament, where every seat’s crackme is attacked by every other seat.</p>
 <h2 id="sanity-check"><a class="header" href="#sanity-check">sanity-check</a></h2>
 <p>The task asks for a file <code>palindrome</code> holding an ASCII palindrome of at most 20 characters, then a release.</p>
-<p>A palindrome, compared case insensitively after trimming whitespace, earns 10000 points. Anything else is unsolved.</p>
+<p>A palindrome, compared case insensitively after trimming whitespace, passes. Anything else fails. A passing entry ranks at the maximum.</p>
 <h2 id="fib-golf"><a class="header" href="#fib-golf">fib-golf</a></h2>
-<p>The task asks for an x86-64 ELF <code>fibonacci</code> that prints the first <code>N</code> Fibonacci numbers, space separated, for <code>N</code> in <code>[0, 47]</code> given as the first argument. The smaller the binary the better.</p>
-<p>The scorer runs the binary for every <code>N</code> and compares the output. A binary of 32 KiB or more is rejected. A correct binary earns points by its size. They fall off as <code>e^(-(bytes - 128) / 1500)</code>, scaled so that 128 bytes earn 10000 and 16 KiB earn 0:</p>
+<p>The task asks for an x86-64 ELF <code>fibonacci</code> that prints the first <code>N</code> Fibonacci numbers, space separated, for <code>N</code> in <code>[0, 47]</code> given as the first argument, in at most 16 KiB. The smaller the binary the better.</p>
+<p>The verifier runs the binary for every <code>N</code> and compares the output. A binary printing the right thing at more than 16 KiB fails with a reason saying so. A passing entry ranks by its size. The points fall off as <code>e^(-(bytes - 128) / 1500)</code>, scaled so that 128 bytes earn 10000 and 16 KiB earn 0:</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="fib-golf-points.svg" alt="fib-golf points by ELF size"><span class="img-wrapper"><img src="fib-golf-points.svg" alt="fib-golf points by ELF size"></span></label></p>
 <h2 id="r2wars"><a class="header" href="#r2wars">r2wars</a></h2>
 <p>Two games, <code>r2wars-x86-32</code> and <code>r2wars-gb</code>, one per architecture. The task asks for <code>warrior.&lt;architecture&gt;.asm</code>, a warrior for <a href="https://github.com/radareorg/r2wars">r2wars</a>, the Core War on radare2’s ESIL emulator. Two warriors share a 1 KiB arena and take turns executing instructions until one crashes.</p>
-<p>The scorer assembles the warrior with <code>rasm2</code> for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. An accepted warrior earns 10000 points. The fights are the tournament of the multi player games and not scored yet.</p>
+<p>The verifier assembles the warrior with <code>rasm2</code> for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. A warrior that assembles passes, and ranks at the maximum on its own.</p>
+<p>The playout is automated. A fight is one combat of <code>r2wars --fight</code> between two entries, staged as <code>first.&lt;architecture&gt;.asm</code> and <code>second.&lt;architecture&gt;.asm</code> because r2wars names a warrior by its file and reads the architecture out of the name. Every round the combat prints is tallied: a round the first warrior wins, a round it loses, or a timeout, which is a draw. The fights are played by <a href="#tournaments">tournaments</a>.</p>
 <p>Both games play on the image of <code>games/r2wars/Dockerfile</code>, which builds r2wars from a pinned commit plus <code>r2wars-headless.patch</code>, adding <code>r2wars --fight a.asm b.asm</code>, a combat on the console without the web server, and installs it with radare2 6.2.0 and the .NET runtime. The sandbox holds the two READMEs of r2wars and two small warriors per architecture under <code>/opt/r2wars/examples/&lt;architecture&gt;/</code>, the x86 ones from r2wars and the Game Boy ones from <code>games/r2wars/examples</code>, and none of the tournament entries.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="tournaments"><a class="header" href="#tournaments">Tournaments</a></h1>
+<p>A tournament is a lobby of seats playing rounds of one game. Any game can be played: what a round does with the entries depends on the playout of the game, described under <a href="#the-pairings">the pairings</a>. Seating two of the same agent is allowed, and the standings rate agents, so their pairings against each other count for nothing.</p>
+<h2 id="the-lobby"><a class="header" href="#the-lobby">The lobby</a></h2>
+<p><code>ava tournament -n &lt;name&gt; -g &lt;game&gt; -t &lt;seconds&gt;</code> opens a tournament, or the tournaments page of the web interface does. The game and the seconds every run is given are fixed at that point.</p>
+<p>A seat holds an agent: a harness on a model at a thinking level. <code>-s harness/model</code> or <code>-s harness/model/thinking</code> seats one, repeatable, or the seat row on the tournament page does. Two seats may hold the same agent, which doubles its games a round; the standings rate agents, so the two seats are one entry there. Seats join between rounds. A seat can be removed until the first round is played, since the rounds reference seats by their number.</p>
+<h2 id="a-round"><a class="header" href="#a-round">A round</a></h2>
+<p>A round is every seat playing a run of the game, all at once, then every pairing of the entries they kept fighting. <code>ava tournament -n &lt;name&gt;</code> plays one, and the play round button on the tournament page does. The runs are ordinary runs: they show up in the runs table like any other, naming the tournament, round and seat they play, and their pages are the run pages.</p>
+<p>The round is written to the record the moment its runs are named, so the tournament page links the runs while they play. Once every run is over, the entry of record of each is picked: the entry ranking highest, the newest on ties, which for a pass or fail game is the last passing push. Then the pairings of the round robin are played, every pair of seats once. The record is written after every pairing, so a round that breaks off leaves what it had, and only a finished round counts for the standings.</p>
+<h2 id="the-pairings"><a class="header" href="#the-pairings">The pairings</a></h2>
+<ul>
+<li>Automated playout, the r2wars games: the scorer fights the two entries. Each fight is staged into the scorer image of the game with no network and the entries mounted read only, and its rounds are tallied from the view of the first seat. The console of the fights is <code>tournaments/&lt;name&gt;/round-&lt;number&gt;.log</code>. A seat that left no passing entry forfeits its pairings, which are recorded as one round lost with the reason. A pairing whose fight failed is recorded with no rounds and the reason, and counts for nothing.</li>
+<li>Single playout, fib-golf and sanity-check: the entries stand alone, so nothing is fought and nothing is recorded beyond the entries. The pairings are derived when the standings are shown, by comparing the points of the two entries of record: more points win the pairing, equal points draw it, a missing entry forfeits it. A changed curve changes who won without touching the record.</li>
+<li>Played playout, the crackme games: one seat’s entry is another seat’s task. Every seat attacks the entry of every other seat in a run of the challenge game, all at once: the attacker’s harness starts on the challenge task with the defender’s entry seeded into its workspace, and the verifier checks its pushes against that entry, mounted into the scoring container. The pairing is recorded as one round to the attacker when a push passed and one round to the defender otherwise, with the run that played it, so the cross table links every attack. The pairings are every ordered pair of seats, since each seat attacks and defends, and the attacks on a seat that left no entry are forfeited to the attacker. A played round starts one run per ordered pair, six for three seats.</li>
+</ul>
+<h2 id="the-standings"><a class="header" href="#the-standings">The standings</a></h2>
+<p>The record holds tallies, or for a single playout the entries the tallies are compared from. Everything else is derived when the tournament page renders: the matches of the finished rounds between different agents, each scored for the first seat as the rounds won plus half the rounds drawn over the rounds played, and the two ratings over those matches. Elo walks the matches in the order they were fought and moves after every one. Bradley-Terry fits the whole history at once and orders the standings. Both are anchored at 1000. The cross table of every round shows the tally of the row’s seat against the column’s seat, with the reason of a forfeit or a failed fight behind a tooltip.</p>
+<h2 id="files"><a class="header" href="#files">Files</a></h2>
+<ul>
+<li><code>tournaments/&lt;name&gt;/tournament.json</code> is the record described in the <a href="#data-model">data model</a>.</li>
+<li><code>tournaments/&lt;name&gt;/round-&lt;number&gt;.log</code> is what the fights of the round printed.</li>
+<li><code>tournaments/&lt;name&gt;/playing</code> holds the pid of the process playing a round while it does, which is how the web interface knows a round the command line plays is going on.</li>
+<li>The runs of the rounds are under <code>runs/</code>, like every run.</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
 <p>The architecture follows these principles:</p>
@@ -293,11 +322,11 @@ The sandbox docker container has no network access.
 A unix socket that connects to the <code>ava-proxy</code> sidecar is mounted in.
 <code>ava-proxy</code> reverse-proxies to the LLM backend, allowing the agent to access LLMs.</p>
 <p>The benchmark task is mounted into the containers.
-The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is scored on the spot and the best solving one counts. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket scores a posted tar without recording it.
+The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is verified on the spot and the entry of every passing push is kept. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket verifies a posted tar without recording it.
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.</p>
-<p>Each benchmark implements a scorer, for security reasons it’s evaluated in a container too.
-The verifier checks the score of the submission however it wishes.
-<code>ava</code> collects the metrics from the <code>ava-proxy</code> side-car logs after the run.
+<p>Each game implements a verifier, for security reasons it’s evaluated in a container too.
+The verifier checks the submission however it wishes and records a verdict, never points.
+<code>ava</code> collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.</p>
 <h3 id="sequence-diagram-of-a-benchmark-run"><a class="header" href="#sequence-diagram-of-a-benchmark-run">Sequence diagram of a benchmark run</a></h3>
 <pre><code class="language-text">  +-----+         +---------+      +-----------+    +--------+      +-------------+
@@ -324,11 +353,11 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 |-----------------&gt;               |                 |
      |                 |                 | submission    |                 |
      |                 |                 |---------------&gt;                 |
-     |                 |                 |               |--. run the game scorer
+     |                 |                 |               |--. run the game verifier
      |                 |                 |               |&lt;-'              |
-     |                 |                 | score report  |                 |
+     |                 |                 | verdict       |                 |
      |                 |                 &lt;---------------|                 |
-     |                 | score report    |               |                 |
+     |                 | verdict         |               |                 |
      |                 &lt;-----------------|               |                 |
      |                 |                 |               |                 |
      | turn over       |                 |               |                 |
@@ -349,25 +378,37 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 |                 |               |                 |
      | turn over       |                 |               |                 |
      &lt;-----------------|                 |               |                 |
-     |--. collect the logs, aggregate runs/&lt;run&gt;/score.json                |
+     |--. collect the logs and the entries, complete runs/&lt;run&gt;/run.json   |
      |&lt;-'              |                 |               |                 |
 </code></pre>
 <h2 id="game-definitions"><a class="header" href="#game-definitions">Game definitions</a></h2>
-<p>Benchmarks are implemented as games with agent vs. agent playouts.</p>
-<h3 id="scoring-and-metrics"><a class="header" href="#scoring-and-metrics">Scoring and metrics</a></h3>
+<p>Benchmarks are implemented as games. A game verifies what an agent left and ranks the entries it kept, and a game with an automated playout fights two entries against each other, which is what tournaments are made of.</p>
+<h3 id="verdicts-fights-and-metrics"><a class="header" href="#verdicts-fights-and-metrics">Verdicts, fights and metrics</a></h3>
 <p>The sidecar dumps each request to a JSON access log, which <code>ava</code> collects into <code>runs/&lt;run&gt;/proxy.access.log</code>.</p>
 <p>Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics.</p>
-<p>The verifier is <code>ava score</code>, running in the scoring container without network access: <code>--game</code> scores the submission left in <code>submission/</code> with the named game. <code>--metrics</code> and <code>--attempts</code> aggregate the collected logs after the run. The reports are printed as one JSON document, which <code>ava</code> stores as <code>runs/&lt;run&gt;/score.json</code>.</p>
+<p>The verifier is <code>ava score</code>, running in the scoring container without network access: <code>--game</code> verifies the submission left in <code>submission/</code> with the named game and prints the verdict with the name of the entry file, which the receive hook keeps for a passing push. <code>--game</code> with <code>--fight &lt;directory&gt;</code> fights the entries under <code>first/</code> and <code>second/</code> of that directory and prints the tally, which is how a tournament plays a pairing: one container of the scorer image per fight, no network, the entries mounted read only. <code>--metrics</code> and <code>--attempts</code> aggregate the collected logs after the run into the run record.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="data-model"><a class="header" href="#data-model">Data Model</a></h1>
+<h2 id="the-registry"><a class="header" href="#the-registry">The registry</a></h2>
 <p>Backends, models and harnesses are declared in <code>registry.json</code> at the repository root. A harness additionally needs an image directory under <code>agents</code> and an adapter in the <code>registry</code> module.</p>
 <ul>
 <li>A backend is a name paired with the service answering at it, <code>anthropic</code> or <code>openapi</code>, the host the proxy forwards to and the environment variable holding its key. The values of the keys live in <code>.env</code> at the repository root, one <code>NAME=value</code> line each, which <code>ava</code> reads at startup underneath the process environment. The hosts of the backends are the proxy allowlist and the host entries of the sandbox, so a new endpoint is one backend entry and one line in <code>.env</code>.</li>
 <li>A model is a name paired with one route per backend serving it, each naming the backend and carrying the identifier and the token limits that backend expects. One model can carry routes to several gateways, which makes the mapping of key to model explicit.</li>
 <li>A harness is a name paired with the services it speaks, listed most direct first.</li>
 <li>Pairing a harness with a model resolves to an invocation: the environment, arguments and configuration files handed to the container. The route is the first one of the model on a service the harness speaks, walking the services in order. There is one invocation per turn: the first opens a session on the task prompt and every later one resumes the recorded session, on the loop prompt or on the last call.</li>
-<li>A game is a folder under <code>games</code>, holding the task the agent gets in <code>task/</code> and the scorer implementing the <code>Game</code> trait of the <code>ava-game</code> crate in <code>scorer.rs</code>. A game needing software beyond the base image names the folder whose <code>Dockerfile</code> layers it over the harness image and the scorer image.</li>
+<li>A game is a folder under <code>games</code>, holding the task the agent gets in <code>task/</code> and the verifier implementing the <code>Game</code> trait of the <code>ava-game</code> crate in <code>scorer.rs</code>. A game needing software beyond the base image names the folder whose <code>Dockerfile</code> layers it over the harness image and the scorer image.</li>
 </ul>
+<h2 id="the-wire-format"><a class="header" href="#the-wire-format">The wire format</a></h2>
+<p>Everything the core produces and consumes is a record of the <code>ava-wire</code> crate, serialized as JSON. Every record carries the <code>version</code> of the format, and the items inside it carry the version of what they name. The records hold facts. Points, ratings and standings are derived from them wherever they are shown and never stored, so the knobs deriving them can change without touching a record.</p>
+<ul>
+<li>An agent is a harness paired with a model, asked for a thinking level. This is the identity a seat holds and ratings key on. The version of the harness is a fact of every run the agent plays, since it is only knowable once the image exists, and is recorded on the run.</li>
+<li>A verdict is what the verifier of a game says about one submission: passed, and the reason when it did not. An attempt is one graded push, the verdict and the seconds it arrived at, counted from the start of the scoring container. Attempt lines from before the wire format spell the verdict <code>solved</code>, which reads as <code>passed</code>.</li>
+<li>A tally is the rounds of one pairing from the view of its first seat: won, drawn and lost. One shape covers an r2wars fight of several rounds and a single verdict pairing, where it reads 1-0-0 or 0-0-1.</li>
+<li>The run record is <code>runs/&lt;run&gt;/run.json</code>. It is written when the run starts with the harness and its version, the model, the thinking level, the game and its version, the time budget, the image id, the prompt and the arguments, the names of the variables the sandbox was given without their values, and for a run attacking the entry of another the run and attempt that entry came from. It is completed when the run is over with the second it finished, every attempt and the metrics aggregated from the proxy log. A record without an end is a run still going, or one that broke. A run from before the wire format left its metrics and its end in a separate <code>score.json</code>, which is read in their place.</li>
+<li>The game version is the short hash of the last commit touching the game folder and the folder of its image, suffixed with <code>-dirty</code> when the working tree differs from it, and empty outside a repository. It names the verifier a verdict was reached under. Points are derived, so a changed curve re-ranks every entry rather than invalidating the runs before it.</li>
+<li>The tournament record is <code>tournaments/&lt;name&gt;/tournament.json</code>: the game and its version at creation, the pairing scheme, the seconds every run is given, the lobby as the agent in every seat, and the rounds. A round holds when it started and finished, one entry per seat naming the run it played and the seconds of the attempt whose entry fights, and the pairings in the order they were fought, each two seats, the second they were fought at, their tally, the reason when the tally is not the outcome of a fight, and the run that played the pairing for a playout an agent plays. A game whose entries stand alone records no pairings, since the standings compare the entries themselves. A round without an end is playing or broke off, and only finished rounds count for the standings.</li>
+</ul>
+<p>Two clocks appear in the records. The seconds of an attempt count from the start of the scoring container, which every attempt of a run shares and which an entry is named by. The seconds of a run and a tournament are epoch seconds.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="developer-guide"><a class="header" href="#developer-guide">Developer guide</a></h1>
 <p>The codebase is a cargo workspace under <code>crates/</code> and <code>games/</code> with a minimal dependency budget. The <code>ava</code> binary is the CLI plumbing over the library crates: <code>ava-run</code> orchestrates runs and images, <code>ava-scorer</code> serves and scores submissions, <code>ava-web</code> renders the web interface, <code>ava-game</code>, the <code>games</code> folder, defines the games.</p>
