@@ -10,7 +10,8 @@
 //! through the author's keygen into the crackme, and by pairs the crackme
 //! must refuse. Solving is verified by running the sample through the
 //! attacker's keygen into the crackme of the defending seat, mounted as the
-//! challenge.
+//! challenge. Both binaries run confined to the system directories and
+//! themselves, so neither can read or run the other.
 
 const AUTHOR_GAME: &str = "crackme";
 const SOLVE_GAME: &str = "crackme-solve";
@@ -37,6 +38,10 @@ const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WAIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 const OUTPUT_LIMIT: u64 = 4096;
+
+/// What a binary of the task may reach on the filesystem besides itself: the
+/// directories a dynamically linked binary starts from.
+const SYSTEM_DIRECTORIES: [&str; 6] = ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"];
 
 /// Keys every crackme must refuse for any number, besides the altered keys
 /// and the keys of other numbers.
@@ -296,21 +301,29 @@ fn refused(crackme: &std::path::Path, number: u64, key: &str) -> std::io::Result
     }
 }
 
-/// Run `binary` on `arguments` and return its exit status and standard output,
-/// or `None` after killing it on timeout.
+/// Run `binary` on `arguments`, confined to the system directories and itself,
+/// and return its exit status and standard output, or `None` after killing it
+/// on timeout.
+///
+/// Both binaries of the task read nothing but their arguments. In the solve
+/// container the keygen sits next to the crackme it has to reproduce, so
+/// unconfined it could run the crackme as an oracle, and a crackme could read
+/// the keygen it is asked to accept and refuse every one but its author's.
 fn run_with_timeout(
     binary: &std::path::Path,
     arguments: &[&str],
 ) -> std::io::Result<Option<(std::process::ExitStatus, Vec<u8>)>> {
-    let mut child = std::process::Command::new(binary)
+    let mut command = std::process::Command::new(binary);
+    command
         .args(arguments)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            std::io::Error::other(format!("{} cannot be started: {error}", binary.display()))
-        })?;
+        .stderr(std::process::Stdio::null());
+    confine(&mut command, binary)?;
+
+    let mut child = command.spawn().map_err(|error| {
+        std::io::Error::other(format!("{} cannot be started: {error}", binary.display()))
+    })?;
 
     let stdout = child.stdout.take().expect("stdout was requested piped");
     let reader = std::thread::spawn(move || {
@@ -336,6 +349,189 @@ fn run_with_timeout(
     Ok(Some((status, output)))
 }
 
+/// Let `command` reach nothing on the filesystem but the system directories
+/// and `binary`, through a Landlock ruleset the child applies to itself
+/// before it executes.
+fn confine(command: &mut std::process::Command, binary: &std::path::Path) -> std::io::Result<()> {
+    let ruleset = landlock::Ruleset::new()?;
+    for directory in SYSTEM_DIRECTORIES {
+        let directory = std::path::Path::new(directory);
+        if directory.is_dir() {
+            ruleset.allow(directory, landlock::READ_AND_EXECUTE)?;
+        }
+    }
+    ruleset.allow(binary, landlock::EXECUTE_FILE)?;
+
+    // The ruleset is built here, so the child only applies it: two system
+    // calls and no allocation between fork and exec.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(command, move || ruleset.restrict_self());
+    }
+
+    Ok(())
+}
+
+/// Landlock, the Linux facility letting an unprivileged process restrict the
+/// filesystem it may reach.
+#[cfg(target_os = "linux")]
+mod landlock {
+    use std::os::fd::AsRawFd;
+
+    const SYS_CREATE_RULESET: std::ffi::c_long = 444;
+    const SYS_ADD_RULE: std::ffi::c_long = 445;
+    const SYS_RESTRICT_SELF: std::ffi::c_long = 446;
+    const PR_SET_NO_NEW_PRIVS: std::ffi::c_int = 38;
+    const CREATE_RULESET_VERSION: std::ffi::c_uint = 1;
+    const RULE_PATH_BENEATH: std::ffi::c_uint = 1;
+    const NO_FLAGS: std::ffi::c_uint = 0;
+
+    const ACCESS_FS_EXECUTE: u64 = 1 << 0;
+    const ACCESS_FS_READ_FILE: u64 = 1 << 2;
+    const ACCESS_FS_READ_DIR: u64 = 1 << 3;
+
+    /// Every access right of the first ABI.
+    const ACCESS_FS_ABI_1: u64 = (1 << 13) - 1;
+
+    /// The rights later ABIs added, by the ABI that added each, handled once
+    /// the kernel knows them so they are denied like the rest.
+    const ACCESS_FS_LATER: [(std::ffi::c_long, u64); 3] =
+        [(2, 1 << 13), (3, 1 << 14), (5, 1 << 15)];
+
+    /// Reading and executing beneath a directory.
+    pub(super) const READ_AND_EXECUTE: u64 =
+        ACCESS_FS_READ_FILE | ACCESS_FS_READ_DIR | ACCESS_FS_EXECUTE;
+
+    /// Reading and executing one file.
+    pub(super) const EXECUTE_FILE: u64 = ACCESS_FS_READ_FILE | ACCESS_FS_EXECUTE;
+
+    #[repr(C)]
+    struct RulesetAttr {
+        handled_access_fs: u64,
+    }
+
+    #[repr(C, packed)]
+    struct PathBeneathAttr {
+        allowed_access: u64,
+        parent_fd: std::ffi::c_int,
+    }
+
+    unsafe extern "C" {
+        fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
+        fn prctl(option: std::ffi::c_int, ...) -> std::ffi::c_int;
+    }
+
+    /// A ruleset denying every handled access unless a rule allows it.
+    pub(super) struct Ruleset(std::os::fd::OwnedFd);
+
+    impl Ruleset {
+        pub(super) fn new() -> std::io::Result<Self> {
+            let abi = unsafe {
+                syscall(
+                    SYS_CREATE_RULESET,
+                    std::ptr::null::<RulesetAttr>(),
+                    0usize,
+                    CREATE_RULESET_VERSION,
+                )
+            };
+            if abi < 0 {
+                return Err(std::io::Error::other(format!(
+                    "the kernel has no landlock, the binaries of the task cannot be confined: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+
+            let mut handled = ACCESS_FS_ABI_1;
+            for (since, right) in ACCESS_FS_LATER {
+                if abi >= since {
+                    handled |= right;
+                }
+            }
+            let attr = RulesetAttr {
+                handled_access_fs: handled,
+            };
+            let fd = unsafe {
+                syscall(
+                    SYS_CREATE_RULESET,
+                    &attr as *const RulesetAttr,
+                    std::mem::size_of::<RulesetAttr>(),
+                    NO_FLAGS,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            Ok(Self(unsafe {
+                std::os::fd::FromRawFd::from_raw_fd(fd as std::ffi::c_int)
+            }))
+        }
+
+        /// Allow `access` beneath `path`, a directory or a single file.
+        pub(super) fn allow(&self, path: &std::path::Path, access: u64) -> std::io::Result<()> {
+            let opened = std::fs::File::open(path)?;
+            let rule = PathBeneathAttr {
+                allowed_access: access,
+                parent_fd: opened.as_raw_fd(),
+            };
+            let added = unsafe {
+                syscall(
+                    SYS_ADD_RULE,
+                    self.0.as_raw_fd(),
+                    RULE_PATH_BENEATH,
+                    &rule as *const PathBeneathAttr,
+                    NO_FLAGS,
+                )
+            };
+            if added < 0 {
+                return Err(std::io::Error::other(format!(
+                    "{}: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+
+            Ok(())
+        }
+
+        /// Restrict the calling process for good.
+        pub(super) fn restrict_self(&self) -> std::io::Result<()> {
+            if unsafe { prctl(PR_SET_NO_NEW_PRIVS, 1usize, 0usize, 0usize, 0usize) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if unsafe { syscall(SYS_RESTRICT_SELF, self.0.as_raw_fd(), NO_FLAGS) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            Ok(())
+        }
+    }
+}
+
+/// The verifier only runs in the scoring container, which is linux.
+#[cfg(not(target_os = "linux"))]
+mod landlock {
+    pub(super) const READ_AND_EXECUTE: u64 = 0;
+    pub(super) const EXECUTE_FILE: u64 = 0;
+
+    pub(super) struct Ruleset;
+
+    impl Ruleset {
+        pub(super) fn new() -> std::io::Result<Self> {
+            Err(std::io::Error::other(
+                "the binaries of the task can only be confined on linux",
+            ))
+        }
+
+        pub(super) fn allow(&self, _path: &std::path::Path, _access: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        pub(super) fn restrict_self(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -351,5 +547,21 @@ mod tests {
     fn an_altered_key_differs_in_its_first_character() {
         assert_eq!(super::altered("abc"), "bbc");
         assert_eq!(super::altered("zzz"), "azz");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_confined_binary_reaches_the_system_and_nothing_else() {
+        let secret =
+            std::env::temp_dir().join(format!("ava-crackme-secret-{}", std::process::id()));
+        std::fs::write(&secret, "secret").unwrap();
+        let cat = std::path::Path::new("/bin/cat");
+
+        let outside = super::run_with_timeout(cat, &[secret.to_str().unwrap()]);
+        let inside = super::run_with_timeout(cat, &["/etc/passwd"]);
+        std::fs::remove_file(&secret).unwrap();
+
+        assert!(!outside.unwrap().unwrap().0.success());
+        assert!(inside.unwrap().unwrap().0.success());
     }
 }

@@ -29,6 +29,8 @@ The authoring task asks for two x86-64 ELF binaries: `keygen`, which started wit
 
 The solving task starts with the crackme of another seat in the workspace and asks for a `keygen` for it, under the same rules. The verifier runs the sample through the submitted keygen and feeds each number with its key to the original crackme, mounted as the challenge. A passing entry ranks at the maximum in both games; the point of the pair is the tournament, where every seat's crackme is attacked by every other seat.
 
+The verifier trusts neither binary. Both run as the sandbox user in the scoring container, which has no network, under the 5 second timeout with their output capped, and confined by Landlock to reading and executing the system directories and their own file. Every process they start inherits the confinement. So the keygen cannot run the crackme beside it as an oracle, nor leave a helper behind that could, and the crackme cannot read the keygen it is asked to accept and refuse every keygen but its author's. The sample of numbers is drawn fresh for every verification, so neither binary can be a table of it. The solver may run the crackme in its own sandbox as often as it likes, which is the reverse engineering the game asks for. It cannot pass without a keygen that answers the numbers the verifier picks. A check weak enough to be inverted inside 5 seconds is a weak crackme, not a hole in the game.
+
 ## sanity-check
 
 The task asks for a file `palindrome` holding an ASCII palindrome of at most 20 characters, then a release.

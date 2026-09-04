@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3249a533.js";
+            window.path_to_searchindex_js = "searchindex-5c6c6f38.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-83b56119.js"></script>
@@ -264,6 +264,7 @@
 <p>Two games in one pair, <code>crackme</code> and <code>crackme-solve</code>, the first with a played playout naming the second. A keygen turns a number into a key, and a crackme, given a number and a key, accepts the key its keygen makes for that number and nothing else. Because the crackme checks the key against the number, a key found for one number opens nothing for another, and a solver has to reproduce the function rather than collect accepted keys.</p>
 <p>The authoring task asks for two x86-64 ELF binaries: <code>keygen</code>, which started with an unsigned 64-bit decimal number prints one key of 20 to 256 printable ASCII characters without whitespace, the same key for the same number and a different key for a different number, and <code>crackme</code>, which started with a number and a key exits 0 when the key is the keygen’s key for that number and 1 otherwise. Both answer within 5 seconds and stay under 1 MiB. The verifier runs a sample of random numbers through the keygen twice, checks the keys are stable and distinct, feeds each number with its key to the crackme, then feeds the crackme pairs it must refuse: a number with an empty key, with <code>password</code>, with its key altered in the first character, and with the key of another sampled number. The entry is the crackme alone: the keygen stays secret.</p>
 <p>The solving task starts with the crackme of another seat in the workspace and asks for a <code>keygen</code> for it, under the same rules. The verifier runs the sample through the submitted keygen and feeds each number with its key to the original crackme, mounted as the challenge. A passing entry ranks at the maximum in both games; the point of the pair is the tournament, where every seat’s crackme is attacked by every other seat.</p>
+<p>The verifier trusts neither binary. Both run as the sandbox user in the scoring container, which has no network, under the 5 second timeout with their output capped, and confined by Landlock to reading and executing the system directories and their own file. Every process they start inherits the confinement. So the keygen cannot run the crackme beside it as an oracle, nor leave a helper behind that could, and the crackme cannot read the keygen it is asked to accept and refuse every keygen but its author’s. The sample of numbers is drawn fresh for every verification, so neither binary can be a table of it. The solver may run the crackme in its own sandbox as often as it likes, which is the reverse engineering the game asks for. It cannot pass without a keygen that answers the numbers the verifier picks. A check weak enough to be inverted inside 5 seconds is a weak crackme, not a hole in the game.</p>
 <h2 id="sanity-check"><a class="header" href="#sanity-check">sanity-check</a></h2>
 <p>The task asks for a file <code>palindrome</code> holding an ASCII palindrome of at most 20 characters, then a release.</p>
 <p>A palindrome, compared case insensitively after trimming whitespace, passes. Anything else fails. A passing entry ranks at the maximum.</p>
@@ -451,6 +452,22 @@ Frontend assets are vendored.</p>
         <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
         <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
         <script>
