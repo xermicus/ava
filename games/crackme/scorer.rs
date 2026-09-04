@@ -2,17 +2,20 @@
 //! it, the other seats write a keygen for that crackme.
 //!
 //! A keygen turns a number into a key: the same key for the same number, a
-//! different key for a different number. A crackme exits 0 for every key its
-//! keygen makes and 1 for anything else. Authoring is verified by running a
-//! sample of random numbers through the author's keygen into the crackme, and
-//! by keys the crackme must refuse. Solving is verified by running the sample
-//! through the attacker's keygen into the crackme of the defending seat,
-//! mounted as the challenge.
+//! different key for a different number. A crackme gets a number and a key
+//! and exits 0 when the key is the one its keygen makes for that number, 1
+//! for anything else. Since the crackme checks the key against the number,
+//! keys found for other numbers open nothing, and a solver has to reproduce
+//! the function. Authoring is verified by running a sample of random numbers
+//! through the author's keygen into the crackme, and by pairs the crackme
+//! must refuse. Solving is verified by running the sample through the
+//! attacker's keygen into the crackme of the defending seat, mounted as the
+//! challenge.
 
 const AUTHOR_GAME: &str = "crackme";
 const SOLVE_GAME: &str = "crackme-solve";
 
-/// The crackme, an ELF started with a key as its only argument.
+/// The crackme, an ELF started with a number and a key as its arguments.
 const CRACKME: &str = "crackme";
 
 /// The keygen, an ELF started with a number as its only argument, printing the key.
@@ -21,17 +24,22 @@ const KEYGEN: &str = "keygen";
 /// How many random numbers a verification runs through a keygen.
 const SAMPLE: usize = 16;
 
-/// How many of the sampled keys are altered into keys the crackme must refuse.
+/// How many of the sampled numbers are tried with keys the crackme must refuse.
 const ALTERED: usize = 4;
 
 const SIZE_LIMIT: u64 = 1 << 20;
+
+/// The characters a key has at least, so the space a check can spread over
+/// is out of reach of a search, and at most.
+const KEY_MINIMUM: usize = 20;
 const KEY_LIMIT: usize = 256;
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WAIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 const OUTPUT_LIMIT: u64 = 4096;
 
-/// Keys every crackme must refuse besides the altered ones.
+/// Keys every crackme must refuse for any number, besides the altered keys
+/// and the keys of other numbers.
 const REFUSED_KEYS: [&str; 2] = ["", "password"];
 
 /// The authoring game: write a crackme and the keygen unlocking it.
@@ -55,8 +63,8 @@ impl crate::Game for Author {
         }
     }
 
-    /// Verify that the crackme accepts every key the keygen makes and refuses
-    /// the keys it must not accept.
+    /// Verify that the crackme accepts the key the keygen makes for a number,
+    /// and refuses altered keys, the keys of other numbers and fixed wrong keys.
     fn verify(
         &self,
         submission: &std::path::Path,
@@ -77,27 +85,30 @@ impl crate::Game for Author {
         };
 
         for (number, key) in numbers.iter().zip(&keys) {
-            if let Some(reason) = refused(&crackme, key)? {
+            if let Some(reason) = refused(&crackme, *number, key)? {
                 return Ok(crate::failed(format!(
                     "{CRACKME} refuses the key of {number} from its own {KEYGEN}: {reason}"
                 )));
             }
         }
 
-        for wrong in REFUSED_KEYS
-            .iter()
-            .map(|wrong| wrong.to_string())
-            .chain(keys.iter().take(ALTERED).map(|key| altered(key)))
-        {
-            if refused(&crackme, &wrong)?.is_none() {
-                return Ok(crate::failed(format!(
-                    "{CRACKME} accepts `{wrong}`, which its {KEYGEN} never made"
-                )));
+        for (index, (number, key)) in numbers.iter().zip(&keys).enumerate().take(ALTERED) {
+            let other = &keys[(index + 1) % keys.len()];
+            for wrong in REFUSED_KEYS
+                .iter()
+                .map(|wrong| wrong.to_string())
+                .chain([altered(key), other.clone()])
+            {
+                if refused(&crackme, *number, &wrong)?.is_none() {
+                    return Ok(crate::failed(format!(
+                        "{CRACKME} accepts `{wrong}` for {number}, which its {KEYGEN} never made for it"
+                    )));
+                }
             }
         }
 
         log::info!(
-            "{CRACKME} accepts the {SAMPLE} keys of its {KEYGEN} and refuses the wrong ones"
+            "{CRACKME} accepts the {SAMPLE} keys of its {KEYGEN} for their numbers and refuses the wrong ones"
         );
 
         Ok(ava_wire::Verdict::passed())
@@ -138,14 +149,14 @@ impl crate::Game for Solve {
         };
 
         for (number, key) in numbers.iter().zip(&keys) {
-            if let Some(reason) = refused(&crackme, key)? {
+            if let Some(reason) = refused(&crackme, *number, key)? {
                 return Ok(crate::failed(format!(
                     "the {CRACKME} refuses the key of {number}: {reason}"
                 )));
             }
         }
 
-        log::info!("the {CRACKME} accepts the {SAMPLE} keys of the {KEYGEN}");
+        log::info!("the {CRACKME} accepts the {SAMPLE} keys of the {KEYGEN} for their numbers");
 
         Ok(ava_wire::Verdict::passed())
     }
@@ -210,7 +221,7 @@ fn generated(
 
 /// The key `keygen` prints for `argument`, or why what it printed is not a key.
 fn key_of(keygen: &std::path::Path, argument: &str) -> std::io::Result<Result<String, String>> {
-    let Some((status, output)) = run_with_timeout(keygen, argument)? else {
+    let Some((status, output)) = run_with_timeout(keygen, &[argument])? else {
         return Ok(Err(format!(
             "{KEYGEN} gave no answer within {RUN_TIMEOUT:?} for {argument}"
         )));
@@ -224,9 +235,9 @@ fn key_of(keygen: &std::path::Path, argument: &str) -> std::io::Result<Result<St
     if key.is_empty() {
         return Ok(Err(format!("{KEYGEN} printed no key for {argument}")));
     }
-    if key.len() > KEY_LIMIT {
+    if key.len() < KEY_MINIMUM || key.len() > KEY_LIMIT {
         return Ok(Err(format!(
-            "{KEYGEN} printed {} characters for {argument}, a key has at most {KEY_LIMIT}",
+            "{KEYGEN} printed {} characters for {argument}, a key has {KEY_MINIMUM} to {KEY_LIMIT}",
             key.len()
         )));
     }
@@ -269,9 +280,10 @@ fn unfit_binary(binary: &std::path::Path, name: &str) -> std::io::Result<Option<
     Ok(None)
 }
 
-/// Why `crackme` refuses `key`, or nothing when it accepts it by exiting 0.
-fn refused(crackme: &std::path::Path, key: &str) -> std::io::Result<Option<String>> {
-    let Some((status, _)) = run_with_timeout(crackme, key)? else {
+/// Why `crackme` refuses `key` for `number`, or nothing when it accepts the
+/// pair by exiting 0.
+fn refused(crackme: &std::path::Path, number: u64, key: &str) -> std::io::Result<Option<String>> {
+    let Some((status, _)) = run_with_timeout(crackme, &[&number.to_string(), key])? else {
         return Ok(Some(format!(
             "no answer within {RUN_TIMEOUT:?} for `{key}`"
         )));
@@ -284,14 +296,14 @@ fn refused(crackme: &std::path::Path, key: &str) -> std::io::Result<Option<Strin
     }
 }
 
-/// Run `binary` on `argument` and return its exit status and standard output,
+/// Run `binary` on `arguments` and return its exit status and standard output,
 /// or `None` after killing it on timeout.
 fn run_with_timeout(
     binary: &std::path::Path,
-    argument: &str,
+    arguments: &[&str],
 ) -> std::io::Result<Option<(std::process::ExitStatus, Vec<u8>)>> {
     let mut child = std::process::Command::new(binary)
-        .arg(argument)
+        .args(arguments)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
