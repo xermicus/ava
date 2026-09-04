@@ -10,6 +10,9 @@ pub const SECOND_DIRECTORY: &str = "second";
 
 const SUCCESS_STATUS: u32 = 200;
 
+/// The combats a fight plays unless the command asks for more.
+const DEFAULT_COMBATS: u64 = 1;
+
 /// What the proxy logs for a request it finished serving.
 const COMPLETED: &str = "OK";
 
@@ -31,6 +34,8 @@ pub struct Score {
     pub attempts: Option<String>,
     /// The directory holding the two entries to fight, under `first` and `second`.
     pub fight: Option<String>,
+    /// The combats the fight plays.
+    pub combats: Option<u64>,
     /// The directory holding the entry the submission attacks.
     pub challenge: Option<String>,
 }
@@ -109,6 +114,7 @@ pub fn run(command: &Score) -> std::io::Result<i32> {
                 let tally = game.fight(
                     &directory.join(FIRST_DIRECTORY).join(game.entry()),
                     &directory.join(SECOND_DIRECTORY).join(game.entry()),
+                    command.combats.unwrap_or(DEFAULT_COMBATS),
                 )?;
                 log::info!(
                     "the {name} fight went {} won, {} drawn, {} lost for the first entry",

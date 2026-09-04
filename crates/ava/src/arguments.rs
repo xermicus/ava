@@ -158,6 +158,7 @@ impl TournamentCli {
 
     const NAME_SHORT: char = 'n';
     const SEAT_SHORT: char = 's';
+    const COMBATS_SHORT: char = 'c';
     const ANALYST_LONG: &str = "analyst";
 
     fn help() {
@@ -176,6 +177,13 @@ impl TournamentCli {
             &format!(
                 "the seconds every run is given, {} by default, fixed when the tournament is created",
                 ava_run::docker::Agent::DEFAULT_LIMIT_SECONDS
+            ),
+        );
+        arg_help_chr(
+            Self::COMBATS_SHORT,
+            &format!(
+                "the combats every fight plays, {} by default, fixed when the tournament is created",
+                ava_run::tournament::DEFAULT_COMBATS
             ),
         );
         arg_help_chr(
@@ -234,6 +242,7 @@ impl ScoreCli {
     const GAME_LONG: &str = "game";
     const ATTEMPTS_LONG: &str = "attempts";
     const FIGHT_LONG: &str = "fight";
+    const COMBATS_LONG: &str = "combats";
     const CHALLENGE_LONG: &str = "challenge";
 
     fn help() {
@@ -249,6 +258,10 @@ impl ScoreCli {
         arg_help_str(
             &format!("--{}", Self::FIGHT_LONG),
             "fight the entries under first/ and second/ in this directory instead",
+        );
+        arg_help_str(
+            &format!("--{}", Self::COMBATS_LONG),
+            "the combats the fight plays, 1 by default",
         );
         arg_help_str(
             &format!("--{}", Self::CHALLENGE_LONG),
@@ -615,6 +628,24 @@ impl Parser {
                     ),
                 },
 
+                TournamentCli::COMBATS_SHORT => {
+                    let count = Self::value(args, &mut chars, flag, "missing combat count");
+                    let combats: u64 = count
+                        .parse()
+                        .unwrap_or_else(|_| bail(flag, "the combat count is a number"));
+                    if combats == 0 {
+                        bail(flag, "a fight plays at least one combat");
+                    }
+                    let Some(SubCommand::Tournament(ref mut command)) = self.command else {
+                        bail(
+                            flag,
+                            &format!("only valid in the {} subcommand", TournamentCli::NAME),
+                        );
+                    };
+                    command.combats = Some(combats);
+                    break;
+                }
+
                 // Upstreams and tournament
                 UpstreamsCli::NGINX_MAP_SHORT => match self.command {
                     Some(SubCommand::Upstreams(ref mut command)) => command.nginx_map = true,
@@ -694,6 +725,22 @@ impl Parser {
                     );
                 };
                 command.fight = Some(directory);
+            }
+            ScoreCli::COMBATS_LONG => {
+                let count = Self::long_value(args, next, "missing combat count");
+                let combats: u64 = count
+                    .parse()
+                    .unwrap_or_else(|_| bail(next, "the combat count is a number"));
+                if combats == 0 {
+                    bail(next, "a fight plays at least one combat");
+                }
+                let Some(SubCommand::Score(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", ScoreCli::NAME),
+                    );
+                };
+                command.combats = Some(combats);
             }
             TournamentCli::ANALYST_LONG => {
                 let analyst = Self::long_value(args, next, "missing analyst");

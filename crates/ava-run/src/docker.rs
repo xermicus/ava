@@ -1186,7 +1186,7 @@ pub struct Launch {
 /// and the egress network it needs.
 pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
     let agent = command.name.as_str();
-    require_game(&command.game)?;
+    require_game(&command.game, command.challenge.as_ref())?;
 
     let registry = crate::registry::load()?;
     let invocation = registry.invocation(
@@ -1333,14 +1333,25 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
     Ok(code)
 }
 
-/// Fail before anything is built when the game or its task folder is missing.
-fn require_game(game: &str) -> std::io::Result<()> {
+/// Fail before anything is built when the game or its task folder is missing,
+/// or when the game attacks the entries of another and no `challenge` is given.
+fn require_game(game: &str, challenge: Option<&Challenge>) -> std::io::Result<()> {
     if ava_game::find(game).is_none() {
         return Err(crate::registry::unknown(
             game,
             "game",
             ava_game::GAMES.iter().map(|game| game.name()),
         ));
+    }
+
+    if challenge.is_none()
+        && let Some(attacked) = ava_game::attacked_by(game)
+    {
+        return Err(std::io::Error::other(format!(
+            "{game} attacks the entries of {} runs and only starts as one, play a {} tournament",
+            attacked.name(),
+            attacked.name()
+        )));
     }
 
     let task = std::path::Path::new(GAMES_DIRECTORY)
@@ -1402,6 +1413,7 @@ pub fn fight(
     game: &str,
     first: &std::path::Path,
     second: &std::path::Path,
+    combats: u64,
     log: &std::path::Path,
 ) -> std::io::Result<ava_wire::Tally> {
     let played = ava_game::find(game).ok_or_else(|| {
@@ -1448,6 +1460,8 @@ pub fn fight(
             game,
             "--fight",
             FIGHT_MOUNT,
+            "--combats",
+            &combats.to_string(),
         ])
         .output();
     let _ = std::fs::remove_dir_all(&staging);

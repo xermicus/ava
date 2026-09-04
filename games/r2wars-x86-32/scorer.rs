@@ -121,11 +121,13 @@ impl crate::Game for R2wars {
         Ok(ava_wire::Verdict::passed())
     }
 
-    /// Play one combat between the two warriors and tally its rounds.
+    /// Play `combats` combats between the two warriors, each best of three
+    /// rounds on random load positions, and tally every round.
     fn fight(
         &self,
         first: &std::path::Path,
         second: &std::path::Path,
+        combats: u64,
     ) -> std::io::Result<ava_wire::Tally> {
         let stage = std::env::temp_dir().join(format!("{STAGE_PREFIX}{}", std::process::id()));
         std::fs::create_dir_all(&stage)?;
@@ -141,25 +143,40 @@ impl crate::Game for R2wars {
         std::fs::copy(first, &staged_first)?;
         std::fs::copy(second, &staged_second)?;
 
-        let output = std::process::Command::new(FIGHTER)
-            .arg(FIGHT_OPTION)
-            .arg(&staged_first)
-            .arg(&staged_second)
-            .output();
-        let _ = std::fs::remove_dir_all(&stage);
-        let output = output?;
+        let mut tally = ava_wire::Tally::default();
+        for _ in 0..combats {
+            let output = std::process::Command::new(FIGHTER)
+                .arg(FIGHT_OPTION)
+                .arg(&staged_first)
+                .arg(&staged_second)
+                .output();
+            let output = match output {
+                Ok(output) => output,
+                Err(error) => {
+                    let _ = std::fs::remove_dir_all(&stage);
+                    return Err(error);
+                }
+            };
 
-        let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stdout);
-        let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stderr);
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stdout);
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stderr);
 
-        if !output.status.success() {
-            return Err(std::io::Error::other(format!(
-                "{FIGHTER} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+            if !output.status.success() {
+                let _ = std::fs::remove_dir_all(&stage);
+                return Err(std::io::Error::other(format!(
+                    "{FIGHTER} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+
+            let combat = self.tally(&String::from_utf8_lossy(&output.stdout));
+            tally.won += combat.won;
+            tally.drawn += combat.drawn;
+            tally.lost += combat.lost;
         }
+        let _ = std::fs::remove_dir_all(&stage);
 
-        Ok(self.tally(&String::from_utf8_lossy(&output.stdout)))
+        Ok(tally)
     }
 }
 

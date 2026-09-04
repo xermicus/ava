@@ -56,7 +56,7 @@ Nothing has to be switched off for it either. The loop is `ava` deciding to star
 
 - The verifier of the game runs on every push and records a fact: the push passed or failed, with the reason. It executes the submission under a timeout and an output cap, in the scoring container without network.
 - A failing submission is a failed attempt, not an error. Only a broken harness fails a run.
-- Ranking is derived from the entries when standings are shown. Every game ranks an entry within 0 and 10000 points from the file alone, which keeps runs of different games comparable, and how each game ranks is in [Games](games.md). The entry of record of a run is the entry ranking highest, the newest on ties.
+- Ranking is derived from the entries when standings are shown. A game ranks an entry within 0 and 10000 points from the file alone, which keeps runs of different games comparable, or ranks nothing when passing is all there is, and how each game ranks is in [Games](games.md). The entry of record of a run is the entry ranking highest, the newest on ties.
 - Since the ranking is derived, its knobs can change without re-running anything: a changed curve re-ranks every entry ever kept. The version of the game folder recorded on the run names the verifier the verdicts were reached under.
 - Live runs show their pushes and whether one passed. Their points appear once the run is over, since the entries stay in the scoring container until then.
 

@@ -36,6 +36,11 @@ const SEAT_PARTS: usize = 3;
 /// The characters a tournament name is made of, besides letters and digits.
 const NAME_PUNCTUATION: [char; 3] = ['-', '_', '.'];
 
+/// The combats every fight of a tournament plays unless chosen otherwise:
+/// one combat is best of three rounds on random load positions, too few to
+/// tell a win share from a coin flip.
+pub const DEFAULT_COMBATS: u64 = 5;
+
 /// The reason of a pairing neither seat fielded an entry for.
 const NEITHER_ENTRY: &str = "neither seat left a passing entry";
 
@@ -51,6 +56,8 @@ pub struct Tournament {
     pub seats: Vec<String>,
     /// The seconds every run is given, taken when the tournament is created.
     pub limit: Option<u64>,
+    /// The combats every fight plays, taken when the tournament is created.
+    pub combats: Option<u64>,
     /// The agent analyzing every run, `harness/model` or
     /// `harness/model/thinking`, taken when the tournament is created.
     pub analyst: Option<String>,
@@ -153,6 +160,11 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
                 "{name} exists, its seconds are fixed"
             )));
         }
+        if command.combats.is_some() {
+            return Err(std::io::Error::other(format!(
+                "{name} exists, its combats are fixed"
+            )));
+        }
         if command.analyst.is_some() {
             return Err(std::io::Error::other(format!(
                 "{name} exists, its analyst is fixed"
@@ -174,6 +186,7 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
             command
                 .limit
                 .unwrap_or(docker::Agent::DEFAULT_LIMIT_SECONDS),
+            command.combats.unwrap_or(DEFAULT_COMBATS),
             analyst,
         )?;
     }
@@ -236,11 +249,13 @@ fn checked_name(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Create the named tournament of `game`, every run given `limit` seconds.
+/// Create the named tournament of `game`, every run given `limit` seconds
+/// and every fight playing `combats` combats.
 pub fn create(
     name: &str,
     game: &str,
     limit: u64,
+    combats: u64,
     analyst: Option<ava_wire::Agent>,
 ) -> std::io::Result<ava_wire::Tournament> {
     checked_name(name)?;
@@ -248,11 +263,20 @@ pub fn create(
     ava_game::find(game).ok_or_else(|| {
         crate::registry::unknown(game, "game", ava_game::GAMES.iter().map(|game| game.name()))
     })?;
+    if let Some(attacked) = ava_game::attacked_by(game) {
+        return Err(std::io::Error::other(format!(
+            "{game} only starts as an attack, open the tournament on {}",
+            attacked.name()
+        )));
+    }
     if limit < docker::LAST_CALL_SECONDS {
         return Err(std::io::Error::other(format!(
             "the seconds pay for the last call, so they are at least {}",
             docker::LAST_CALL_SECONDS
         )));
+    }
+    if combats == 0 {
+        return Err(std::io::Error::other("a fight plays at least one combat"));
     }
 
     let _records = RECORDS.lock().expect("the records lock is not poisoned");
@@ -269,6 +293,7 @@ pub fn create(
         game_version: docker::game_version(game),
         pairing: ava_wire::ROUND_ROBIN.to_string(),
         limit_seconds: limit,
+        combats,
         analyst,
         created_seconds: crate::usage::epoch_now(),
         seats: Vec::new(),
@@ -403,8 +428,8 @@ pub fn placements() -> std::io::Result<std::collections::HashMap<String, Placeme
 /// The pairings of `round` as the standings see them: the fights or attacks
 /// recorded for an automated or played playout, or, for a game whose entries
 /// stand alone, every pair of seats compared by the points of their entries of
-/// record. The comparison is derived when asked, so a changed curve changes
-/// who won.
+/// record, which draws every pairing of a game ranking nothing. The comparison
+/// is derived when asked, so a changed curve changes who won.
 pub fn pairings(
     record: &ava_wire::Tournament,
     round: &ava_wire::Round,
@@ -418,21 +443,24 @@ pub fn pairings(
         .entries
         .iter()
         .map(|entry| entry_points(game, entry))
-        .collect::<std::io::Result<Vec<Option<u64>>>>()?;
+        .collect::<std::io::Result<Vec<Option<Option<u64>>>>>()?;
     let seconds = round.finished_seconds.unwrap_or(round.started_seconds);
 
     Ok(ava_game::scoring::round_robin(round.entries.len())
         .into_iter()
         .map(|(first, second)| {
             let (tally, reason) = match (points[first], points[second]) {
-                (Some(first_points), Some(second_points)) => (
-                    ava_wire::Tally {
-                        won: u64::from(first_points > second_points),
-                        drawn: u64::from(first_points == second_points),
-                        lost: u64::from(first_points < second_points),
-                    },
-                    None,
-                ),
+                (Some(first_points), Some(second_points)) => {
+                    let compared = first_points.cmp(&second_points);
+                    (
+                        ava_wire::Tally {
+                            won: u64::from(compared.is_gt()),
+                            drawn: u64::from(compared.is_eq()),
+                            lost: u64::from(compared.is_lt()),
+                        },
+                        None,
+                    )
+                }
                 (first_points, second_points) => forfeit(
                     first,
                     first_points.is_some(),
@@ -453,10 +481,11 @@ pub fn pairings(
 }
 
 /// The points of the entry of record `entry` names, or nothing without one.
+/// The points themselves are nothing for a game ranking nothing.
 fn entry_points(
     game: &dyn ava_game::Game,
     entry: &ava_wire::Entry,
-) -> std::io::Result<Option<u64>> {
+) -> std::io::Result<Option<Option<u64>>> {
     let Some(attempt) = entry.attempt else {
         return Ok(None);
     };
@@ -766,7 +795,13 @@ fn fight_round(
         let (tally, reason) = match (&entries[first], &entries[second]) {
             (Some(kept_first), Some(kept_second)) => {
                 log::info!("{name}: seat {} fights seat {}", first + 1, second + 1);
-                match docker::fight(&record.game, &kept_first.path, &kept_second.path, &console) {
+                match docker::fight(
+                    &record.game,
+                    &kept_first.path,
+                    &kept_second.path,
+                    record.combats,
+                    &console,
+                ) {
                     Ok(tally) => (tally, None),
                     Err(error) => (ava_wire::Tally::default(), Some(error.to_string())),
                 }

@@ -24,7 +24,7 @@ pub const GAMES: [&dyn Game; 6] = [
 ///
 /// An entry ranks within 0 and this maximum regardless of the game, which is
 /// what makes runs of different games comparable. A game with nothing to rank
-/// beyond passing pays the maximum for every passing entry.
+/// beyond passing ranks nothing.
 pub const MAXIMUM_POINTS: u64 = 10_000;
 
 /// How the entries of a game meet.
@@ -74,20 +74,23 @@ pub trait Game {
         challenge: Option<&std::path::Path>,
     ) -> std::io::Result<ava_wire::Verdict>;
 
-    /// The points a passing `entry` ranks at, within 0 and [`MAXIMUM_POINTS`].
-    fn points(&self, entry: &std::path::Path) -> std::io::Result<u64> {
+    /// The points a passing `entry` ranks at, within 0 and [`MAXIMUM_POINTS`],
+    /// or nothing for a game with nothing to rank beyond passing.
+    fn points(&self, entry: &std::path::Path) -> std::io::Result<Option<u64>> {
         let _ = entry;
-        Ok(MAXIMUM_POINTS)
+        Ok(None)
     }
 
-    /// Fight the entry at `first` against the entry at `second` and report
-    /// the rounds from the view of `first`, for a game with an automated playout.
+    /// Fight the entry at `first` against the entry at `second` over `combats`
+    /// combats and report the rounds from the view of `first`, for a game with
+    /// an automated playout.
     fn fight(
         &self,
         first: &std::path::Path,
         second: &std::path::Path,
+        combats: u64,
     ) -> std::io::Result<ava_wire::Tally> {
-        let _ = (first, second);
+        let _ = (first, second, combats);
         Err(std::io::Error::other(format!(
             "{} has no automated playout",
             self.name()
@@ -98,6 +101,14 @@ pub trait Game {
 /// Look up the game registered under `name`.
 pub fn find(name: &str) -> Option<&'static dyn Game> {
     GAMES.into_iter().find(|game| game.name() == name)
+}
+
+/// The game whose entries the game `name` attacks, if `name` is the challenge
+/// game of another and so only ever starts as an attack.
+pub fn attacked_by(name: &str) -> Option<&'static dyn Game> {
+    GAMES
+        .into_iter()
+        .find(|game| matches!(game.playout(), Playout::Played { challenge } if challenge == name))
 }
 
 /// The verdict on a submission failing the task, logged as it is reached.

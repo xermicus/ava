@@ -55,8 +55,9 @@ pub struct Entry {
     pub seconds: u64,
     pub path: std::path::PathBuf,
     pub bytes: u64,
-    /// The points the game ranks the entry at.
-    pub points: u64,
+    /// The points the game ranks the entry at, or nothing for a game with
+    /// nothing to rank beyond passing.
+    pub points: Option<u64>,
 }
 
 /// Every entry the run in `directory` kept, oldest first.

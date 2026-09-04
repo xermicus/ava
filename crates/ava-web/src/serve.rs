@@ -76,10 +76,11 @@ const START_FIELDS: [&str; 8] = [
 ];
 
 /// The tournament creation fields carried back to its form.
-const CREATE_FIELDS: [&str; 7] = [
+const CREATE_FIELDS: [&str; 8] = [
     "name",
     "game",
     "limit",
+    "combats",
     "analyze",
     "analyst_agent",
     "analyst_model",
@@ -359,7 +360,7 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
     };
 
     let game = value(form, "game");
-    let games = views::games().map_err(|error| Refusal::Failed(error.to_string()))?;
+    let games = views::startable_games().map_err(|error| Refusal::Failed(error.to_string()))?;
     if !games.iter().any(|known| known == game) {
         return Err(Refusal::Rejected(format!("unknown game `{game}`")));
     }
@@ -569,6 +570,14 @@ fn create_tournament(form: &[(String, String)]) -> Result<Done, Refusal> {
     let name = value(form, "name");
     let game = value(form, "game");
     let limit = limit_choice(form)?;
+    let combats: u64 = value(form, "combats")
+        .parse()
+        .map_err(|_| Refusal::Rejected("the combats are a number".to_string()))?;
+    if combats == 0 {
+        return Err(Refusal::Rejected(
+            "a fight plays at least one combat".to_string(),
+        ));
+    }
     let analyst = if value(form, "analyze") == "on" {
         let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
         Some(agent_choice(&registry, form, ANALYST_PREFIX)?)
@@ -576,7 +585,7 @@ fn create_tournament(form: &[(String, String)]) -> Result<Done, Refusal> {
         None
     };
 
-    tournament::create(name, game, limit, analyst)
+    tournament::create(name, game, limit, combats, analyst)
         .map_err(|error| Refusal::Rejected(error.to_string()))?;
 
     Ok(Done {

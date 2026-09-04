@@ -297,9 +297,9 @@ impl RunEntry {
         self.attempts.iter().any(|attempt| attempt.verdict.passed)
     }
 
-    /// The points of the entry of record.
+    /// The points of the entry of record, nothing for a game ranking nothing.
     fn points(&self) -> Option<u64> {
-        self.record.as_ref().map(|entry| entry.points)
+        self.record.as_ref().and_then(|entry| entry.points)
     }
 
     /// The run name as a link into its page.
@@ -519,7 +519,7 @@ pub(crate) fn runs_page(
 /// hold, with the carried `selection` or the defaults preselected.
 fn start_panel(selection: &Selection) -> std::io::Result<String> {
     let registry = registry::load()?;
-    let games = games()?;
+    let games = startable_games()?;
     let games = games.iter().map(String::as_str).collect::<Vec<_>>();
 
     let limit = selection
@@ -777,7 +777,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                     vec![
                         kept.seconds.to_string(),
                         kept.bytes.to_string(),
-                        points_meter(kept.points),
+                        kept.points.map(points_meter).unwrap_or_default(),
                         if record == Some(kept.seconds) {
                             pill(PASSED_PILL, false, "entry of record")
                         } else {
@@ -860,7 +860,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         runs: u64,
         passed: u64,
         /// The best entry of record, with the seconds it arrived at.
-        best: Option<(u64, u64)>,
+        best: Option<(Option<u64>, u64)>,
     }
 
     let runs = collect_runs()?;
@@ -921,7 +921,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
                 standing.passed.to_string(),
                 standing
                     .best
-                    .map(|(points, _)| points_meter(points))
+                    .and_then(|(points, _)| points.map(points_meter))
                     .unwrap_or_default(),
                 standing
                     .best
@@ -964,13 +964,15 @@ pub(crate) fn games_page() -> std::io::Result<String> {
             .map(|_| ", played in tournaments")
             .unwrap_or_default();
         let record = match standing.first() {
-            Some((best, record)) => format!(
-                "{} runs, {passed} passed, the record is {} by {} on {}{playout}",
-                played.len(),
-                record.points,
-                escape(&best.run.model),
-                best.agent()
-            ),
+            Some((best, record)) => match record.points {
+                Some(points) => format!(
+                    "{} runs, {passed} passed, the record is {points} by {} on {}{playout}",
+                    played.len(),
+                    escape(&best.run.model),
+                    best.agent()
+                ),
+                None => format!("{} runs, {passed} passed{playout}", played.len()),
+            },
             None if played.is_empty() => format!("not played yet{playout}"),
             None => format!("{} runs, none passing{playout}", played.len()),
         };
@@ -1000,7 +1002,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
                 vec![
                     escape(&run.run.model),
                     run.agent(),
-                    points_meter(record.points),
+                    record.points.map(points_meter).unwrap_or_default(),
                     record.seconds.to_string(),
                     run.link(),
                 ]
@@ -1032,12 +1034,20 @@ pub(crate) fn games_page() -> std::io::Result<String> {
 
 /// The tournaments: the form opening one, and every tournament on disk.
 pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
-    let games: Vec<&str> = ava_game::GAMES.iter().map(|game| game.name()).collect();
+    let games: Vec<&str> = ava_game::GAMES
+        .iter()
+        .map(|game| game.name())
+        .filter(|game| ava_game::attacked_by(game).is_none())
+        .collect();
     let limit = selection
         .get("limit", "")
         .parse::<u64>()
         .unwrap_or(docker::Agent::DEFAULT_LIMIT_SECONDS);
     let last_call = docker::LAST_CALL_SECONDS;
+    let combats = selection
+        .get("combats", "")
+        .parse::<u64>()
+        .unwrap_or(tournament::DEFAULT_COMBATS);
 
     let mut body = format!(
         "<p class=\"{FIRST_TITLE_CLASSES}\">new tournament</p>\
@@ -1047,6 +1057,8 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
          {}\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
+         <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"combats\" value=\"{combats}\" min=\"1\"></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">open</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
          <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
@@ -1064,6 +1076,10 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         explained(
             "seconds",
             &format!("the budget of every run, the {last_call} second last call included"),
+        ),
+        explained(
+            "combats",
+            "the combats every fight of an automated playout plays, each best of three rounds",
         ),
         agent_fields(
             &registry::load()?,
@@ -1095,6 +1111,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
                 record.seats.len().to_string(),
                 record.rounds.len().to_string(),
                 format!("{}s", record.limit_seconds),
+                record.combats.to_string(),
             ]
         })
         .collect();
@@ -1105,7 +1122,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         "<p class=\"{TITLE_CLASSES}\">tournaments <span class=\"{NOTE_CLASSES} font-normal\">{} on disk</span></p>{}",
         tournaments.len(),
         table(
-            &["NAME", "STATE", "GAME", "#SEATS", "#ROUNDS", "*SECONDS"],
+            &["NAME", "STATE", "GAME", "#SEATS", "#ROUNDS", "*SECONDS", "#COMBATS"],
             rows,
             Some(NO_TOURNAMENTS_NOTE),
         )
@@ -1181,11 +1198,12 @@ pub(crate) fn tournament_page(
     );
     body.push_str(&notice.render());
     body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {}s a run{} \u{00b7} opened {} ago</p>",
+        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {}s a run \u{00b7} {} combats a fight{} \u{00b7} opened {} ago</p>",
         escape(&record.game),
         version_label(&record.game_version),
         escape(&record.pairing),
         record.limit_seconds,
+        record.combats,
         record
             .analyst
             .as_ref()
@@ -1790,6 +1808,15 @@ pub(crate) fn error_page(message: &str) -> String {
 }
 
 /// The known game folders, sorted.
+/// The games a run or a tournament can be started on: every game but the ones
+/// only starting as an attack on the entry of another.
+pub(crate) fn startable_games() -> std::io::Result<Vec<String>> {
+    Ok(games()?
+        .into_iter()
+        .filter(|game| ava_game::attacked_by(game).is_none())
+        .collect())
+}
+
 pub(crate) fn games() -> std::io::Result<Vec<String>> {
     let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)
         .map_err(|error| at_path(GAMES_DIRECTORY, error))?

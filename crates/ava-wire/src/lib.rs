@@ -18,6 +18,13 @@ fn unversioned() -> u32 {
     UNVERSIONED
 }
 
+/// The combats a fight played before a tournament could fix them.
+const ONE_COMBAT: u64 = 1;
+
+fn one_combat() -> u64 {
+    ONE_COMBAT
+}
+
 /// An agent: a harness paired with a model, asked for a thinking level.
 ///
 /// This is the identity seats hold and ratings key on. The version of the
@@ -250,6 +257,9 @@ pub struct Tournament {
     pub pairing: String,
     /// The seconds every run of the tournament is given.
     pub limit_seconds: u64,
+    /// The combats every fight of an automated playout plays.
+    #[serde(default = "one_combat")]
+    pub combats: u64,
     /// The agent analyzing every run of a round once the round is over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analyst: Option<Agent>,

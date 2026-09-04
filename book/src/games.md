@@ -6,7 +6,7 @@ The trait separates what is recorded from what is derived:
 
 - `entry()` names the file the task asks for. It is what a passing push leaves behind as its entry.
 - `verify()` runs in the scoring container on every push and reaches a verdict, passed or failed with the reason. It records a fact and pays no points.
-- `points()` ranks an entry within 0 and 10000 from the file alone, without executing it, wherever standings are shown. A game with nothing to rank beyond passing pays the maximum for every passing entry.
+- `points()` ranks an entry within 0 and 10000 from the file alone, without executing it, wherever standings are shown. A game with nothing to rank beyond passing ranks nothing, and its entries show no points.
 - `playout()` says how entries meet: alone against the ceiling of the game, where a tournament compares them by their points; automated, where the scorer fights two entries without an agent; or played, naming the game whose runs attack an entry.
 - `fight()` plays one pairing for an automated game and tallies the rounds from the view of the first entry.
 - `verify()` of a game that attacks an entry gets that entry as its challenge, the file mounted into the scoring container and seeded into the attacker's workspace.
@@ -27,7 +27,7 @@ Two games in one pair, `crackme` and `crackme-solve`, the first with a played pl
 
 The authoring task asks for two x86-64 ELF binaries: `keygen`, which started with an unsigned 64-bit decimal number prints one key of 20 to 256 printable ASCII characters without whitespace, the same key for the same number and a different key for a different number, and `crackme`, which started with a number and a key exits 0 when the key is the keygen's key for that number and 1 otherwise. Both answer within 5 seconds and stay under 1 MiB. The verifier runs a sample of random numbers through the keygen twice, checks the keys are stable and distinct, feeds each number with its key to the crackme, then feeds the crackme pairs it must refuse: a number with an empty key, with `password`, with its key altered in the first character, and with the key of another sampled number. The entry is the crackme alone: the keygen stays secret.
 
-The solving task starts with the crackme of another seat in the workspace and asks for a `keygen` for it, under the same rules. The verifier runs the sample through the submitted keygen and feeds each number with its key to the original crackme, mounted as the challenge. A passing entry ranks at the maximum in both games; the point of the pair is the tournament, where every seat's crackme is attacked by every other seat.
+The solving task starts with the crackme of another seat in the workspace and asks for a `keygen` for it, under the same rules. The verifier runs the sample through the submitted keygen and feeds each number with its key to the original crackme, mounted as the challenge. Neither game ranks beyond passing; the point of the pair is the tournament, where every seat's crackme is attacked by every other seat. `crackme-solve` only starts as an attack: neither a run nor a tournament can be opened on it.
 
 The verifier trusts neither binary. Both run as the sandbox user in the scoring container, which has no network, under the 5 second timeout with their output capped, and confined by Landlock to reading and executing the system directories and their own file. Every process they start inherits the confinement. So the keygen cannot run the crackme beside it as an oracle, nor leave a helper behind that could, and the crackme cannot read the keygen it is asked to accept and refuse every keygen but its author's. The sample of numbers is drawn fresh for every verification, so neither binary can be a table of it. The solver may run the crackme in its own sandbox as often as it likes, which is the reverse engineering the game asks for. It cannot pass without a keygen that answers the numbers the verifier picks. A check weak enough to be inverted inside 5 seconds is a weak crackme, not a hole in the game.
 
@@ -35,7 +35,7 @@ The verifier trusts neither binary. Both run as the sandbox user in the scoring 
 
 The task asks for a file `palindrome` holding an ASCII palindrome of at most 20 characters, then a release.
 
-A palindrome, compared case insensitively after trimming whitespace, passes. Anything else fails. A passing entry ranks at the maximum.
+A palindrome, compared case insensitively after trimming whitespace, passes. Anything else fails. Passing is all there is to rank.
 
 ## fib-golf
 
@@ -49,8 +49,8 @@ The verifier runs the binary for every `N` and compares the output. A binary pri
 
 Two games, `r2wars-x86-32` and `r2wars-gb`, one per architecture. The task asks for `warrior.<architecture>.asm`, a warrior for [r2wars](https://github.com/radareorg/r2wars), the Core War on radare2's ESIL emulator. Two warriors share a 1 KiB arena and take turns executing instructions until one crashes.
 
-The verifier assembles the warrior with `rasm2` for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. A warrior that assembles passes, and ranks at the maximum on its own.
+The verifier assembles the warrior with `rasm2` for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. A warrior that assembles passes. Passing is all there is to rank on its own, the fights are what tells warriors apart.
 
-The playout is automated. A fight is one combat of `r2wars --fight` between two entries, staged as `first.<architecture>.asm` and `second.<architecture>.asm` because r2wars names a warrior by its file and reads the architecture out of the name. Every round the combat prints is tallied: a round the first warrior wins, a round it loses, or a timeout, which is a draw. The fights are played by [tournaments](tournaments.md).
+The playout is automated. A fight is the combats the tournament fixed, five unless chosen otherwise, of `r2wars --fight` between two entries, each best of three rounds on random load positions, staged as `first.<architecture>.asm` and `second.<architecture>.asm` because r2wars names a warrior by its file and reads the architecture out of the name. Every round the combats print is tallied: a round the first warrior wins, a round it loses, or a timeout, which is a draw. The fights are played by [tournaments](tournaments.md).
 
 Both games play on the image of `games/r2wars/Dockerfile`, which builds r2wars from a pinned commit plus `r2wars-headless.patch`, adding `r2wars --fight a.asm b.asm`, a combat on the console without the web server, and installs it with radare2 6.2.0 and the .NET runtime. The sandbox holds the two READMEs of r2wars and two small warriors per architecture under `/opt/r2wars/examples/<architecture>/`, the x86 ones from r2wars and the Game Boy ones from `games/r2wars/examples`, and none of the tournament entries.
