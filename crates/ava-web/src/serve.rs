@@ -282,7 +282,7 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
         ["tournament", name, "play"] => (
             format!("/tournament/{name}"),
             String::new(),
-            play_round(name),
+            play_round(name, form),
         ),
         _ => return plain_response(404, "no such action\n"),
     };
@@ -592,9 +592,22 @@ fn unseat(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     Ok(Done::note(format!("removed seat {}", seat + 1)))
 }
 
-/// Play one round of the named tournament in a thread of its own.
-fn play_round(name: &str) -> Result<Done, Refusal> {
+/// Play one round of the named tournament in a thread of its own, with at
+/// most the submitted number of runs at once.
+fn play_round(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     let record = tournament::load(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
+    let parallel = match value(form, "parallel") {
+        "" => None,
+        count => Some(
+            count
+                .parse::<usize>()
+                .ok()
+                .filter(|count| *count > 0)
+                .ok_or_else(|| {
+                    Refusal::Rejected("the parallel count is a number above zero".to_string())
+                })?,
+        ),
+    };
     if tournament::playing(name) {
         return Err(Refusal::Rejected(format!(
             "{name} is playing a round already"
@@ -611,10 +624,12 @@ fn play_round(name: &str) -> Result<Done, Refusal> {
     let note = format!("playing round {round} of {name}");
     log::info!("{note}");
 
-    std::thread::spawn(move || match tournament::play_round(&name, false) {
-        Ok(code) => log::info!("round {round} of {name} finished with code {code}"),
-        Err(error) => log::error!("round {round} of {name} failed: {error}"),
-    });
+    std::thread::spawn(
+        move || match tournament::play_round(&name, false, parallel) {
+            Ok(code) => log::info!("round {round} of {name} finished with code {code}"),
+            Err(error) => log::error!("round {round} of {name} failed: {error}"),
+        },
+    );
 
     Ok(Done::note(note))
 }

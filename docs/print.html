@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0e843654.js";
+            window.path_to_searchindex_js = "searchindex-d45d16a3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-83b56119.js"></script>
@@ -283,7 +283,7 @@
 <p><code>ava tournament -n &lt;name&gt; -g &lt;game&gt; -t &lt;seconds&gt;</code> opens a tournament, or the tournaments page of the web interface does. The game and the seconds every run is given are fixed at that point.</p>
 <p>A seat holds an agent: a harness on a model at a thinking level. <code>-s harness/model</code> or <code>-s harness/model/thinking</code> seats one, repeatable, or the seat row on the tournament page does. Two seats may hold the same agent, which doubles its games a round; the standings rate agents, so the two seats are one entry there. Seats join between rounds. A seat can be removed until the first round is played, since the rounds reference seats by their number.</p>
 <h2 id="a-round"><a class="header" href="#a-round">A round</a></h2>
-<p>A round is every seat playing a run of the game, all at once, then every pairing of the entries they kept fighting. <code>ava tournament -n &lt;name&gt;</code> plays one, and the play round button on the tournament page does. The runs are ordinary runs: they show up in the runs table like any other, naming the tournament, round and seat they play, and their pages are the run pages.</p>
+<p>A round is every seat playing a run of the game, all at once, then every pairing of the entries they kept fighting. <code>ava tournament -n &lt;name&gt;</code> plays one, and the play round button on the tournament page does. <code>-j &lt;runs&gt;</code>, or the field beside the button, caps how many runs a phase has going at once; without it every run of a phase starts together, which for a played round is one per ordered pair of seats. A queued attack shows as queued in the cross table until its run starts. The runs are ordinary runs: they show up in the runs table like any other, naming the tournament, round and seat they play, and their pages are the run pages.</p>
 <p>The round is written to the record the moment its runs are named, so the tournament page links the runs while they play. Once every run is over, the entry of record of each is picked: the entry ranking highest, the newest on ties, which for a pass or fail game is the last passing push. Then the pairings of the round robin are played, every pair of seats once. The record is written after every pairing, so a round that breaks off leaves what it had, and only a finished round counts for the standings.</p>
 <h2 id="the-pairings"><a class="header" href="#the-pairings">The pairings</a></h2>
 <ul>
@@ -451,6 +451,22 @@ Frontend assets are vendored.</p>
         <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
         <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
         <script>

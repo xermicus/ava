@@ -1136,8 +1136,15 @@ pub(crate) fn tournament_page(name: &str, notice: &Notice) -> std::io::Result<St
         String::new()
     } else {
         format!(
-            "<form method=\"post\" action=\"/tournament/{}/play\"><button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">play round {}</button></form>",
+            "<form method=\"post\" action=\"/tournament/{}/play\" class=\"flex items-end gap-3\">\
+             <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+             <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" min=\"1\" placeholder=\"all\"></label>\
+             <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">play round {}</button></form>",
             escape(name),
+            explained(
+                "parallel",
+                "the most runs the round starts at once, every run of a phase at once when empty"
+            ),
             record.rounds.len() + 1
         )
     };
@@ -1285,6 +1292,9 @@ pub(crate) fn tournament_page(name: &str, notice: &Notice) -> std::io::Result<St
                         pill(FAILED_PILL, false, "failed")
                     }
                     (Some(_), false) => pill(BROKEN_PILL, false, "unfinished"),
+                    (None, false) if playing && index + 1 == record.rounds.len() => {
+                        pill(STARTING_PILL, true, "queued")
+                    }
                     (None, false) => pill(BROKEN_PILL, false, "missing"),
                 };
                 vec![
@@ -1510,9 +1520,17 @@ fn cross_table(
 
                 match fought {
                     Some((tally, None, Some(run))) if live && tally.rounds() == 0 => {
+                        let started = std::path::Path::new(docker::RUN_DIRECTORY)
+                            .join(run)
+                            .join(docker::RUN_FILE)
+                            .is_file();
                         cells.push(format!(
                             "{} <a class=\"{LINK_CLASSES} text-xs\" href=\"/run/{run}\">run</a>",
-                            pill(LIVE_PILL, true, "live"),
+                            if started {
+                                pill(LIVE_PILL, true, "live")
+                            } else {
+                                pill(STARTING_PILL, true, "queued")
+                            },
                             run = escape(run)
                         ));
                     }

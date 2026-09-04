@@ -177,6 +177,10 @@ impl TournamentCli {
                 ava_run::docker::Agent::DEFAULT_LIMIT_SECONDS
             ),
         );
+        arg_help_chr(
+            AgentCli::PARALLEL_SHORT,
+            "the most runs a round starts at once, all of them by default",
+        );
         arg_help_str(
             &format!("--{}", AgentCli::FORCE_BUILD_LONG),
             "rebuild the docker images instead of reusing the built ones",
@@ -516,13 +520,20 @@ impl Parser {
                     if parallel == 0 {
                         bail(flag, "at least one run must be started");
                     }
-                    let Some(SubCommand::Agent(ref mut command)) = self.command else {
-                        bail(
+                    match self.command {
+                        Some(SubCommand::Agent(ref mut command)) => command.parallel = parallel,
+                        Some(SubCommand::Tournament(ref mut command)) => {
+                            command.parallel = Some(parallel as usize)
+                        }
+                        _ => bail(
                             flag,
-                            &format!("only valid in the {} subcommand", AgentCli::NAME),
-                        );
-                    };
-                    command.parallel = parallel;
+                            &format!(
+                                "only valid in the {} or {} subcommands",
+                                AgentCli::NAME,
+                                TournamentCli::NAME
+                            ),
+                        ),
+                    }
                     break;
                 }
                 AgentCli::THINKING_SHORT => {

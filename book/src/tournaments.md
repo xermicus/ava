@@ -10,7 +10,7 @@ A seat holds an agent: a harness on a model at a thinking level. `-s harness/mod
 
 ## A round
 
-A round is every seat playing a run of the game, all at once, then every pairing of the entries they kept fighting. `ava tournament -n <name>` plays one, and the play round button on the tournament page does. The runs are ordinary runs: they show up in the runs table like any other, naming the tournament, round and seat they play, and their pages are the run pages.
+A round is every seat playing a run of the game, all at once, then every pairing of the entries they kept fighting. `ava tournament -n <name>` plays one, and the play round button on the tournament page does. `-j <runs>`, or the field beside the button, caps how many runs a phase has going at once; without it every run of a phase starts together, which for a played round is one per ordered pair of seats. A queued attack shows as queued in the cross table until its run starts. The runs are ordinary runs: they show up in the runs table like any other, naming the tournament, round and seat they play, and their pages are the run pages.
 
 The round is written to the record the moment its runs are named, so the tournament page links the runs while they play. Once every run is over, the entry of record of each is picked: the entry ranking highest, the newest on ties, which for a pass or fail game is the last passing push. Then the pairings of the round robin are played, every pair of seats once. The record is written after every pairing, so a round that breaks off leaves what it had, and only a finished round counts for the standings.
 

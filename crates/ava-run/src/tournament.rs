@@ -53,6 +53,8 @@ pub struct Tournament {
     pub limit: Option<u64>,
     /// Whether the docker images are rebuilt instead of reused.
     pub force_build_images: bool,
+    /// The most runs a round starts at once, all of them without a cap.
+    pub parallel: Option<usize>,
 }
 
 /// Where a run sits in a tournament.
@@ -167,7 +169,7 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
         add_seat(name, &parse_seat(seat)?)?;
     }
 
-    play_round(name, command.force_build_images)
+    play_round(name, command.force_build_images, command.parallel)
 }
 
 /// The agent a `harness/model` or `harness/model/thinking` seat names.
@@ -511,7 +513,11 @@ fn modify(
 /// the runs while they play, and again after every fight, so a round that
 /// breaks off leaves what it had. Only a finished round counts for the
 /// standings.
-pub fn play_round(name: &str, force_build_images: bool) -> std::io::Result<i32> {
+pub fn play_round(
+    name: &str,
+    force_build_images: bool,
+    parallel: Option<usize>,
+) -> std::io::Result<i32> {
     let _playing = Playing::begin(name)?;
     let record = load(name)?;
     if record.seats.is_empty() {
@@ -565,18 +571,8 @@ pub fn play_round(name: &str, force_build_images: bool) -> std::io::Result<i32> 
         record.game
     );
 
-    let outcomes: Vec<std::io::Result<i32>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = launches
-            .iter()
-            .zip(&runs)
-            .map(|(launch, run)| scope.spawn(move || docker::play(launch, run)))
-            .collect();
-
-        handles
-            .into_iter()
-            .map(|handle| handle.join().expect("the run threads do not panic"))
-            .collect()
-    });
+    let seat_runs: Vec<(docker::Launch, String)> = launches.into_iter().zip(runs.clone()).collect();
+    let outcomes = play_bounded(&seat_runs, parallel, |_, _| Ok(()));
 
     let mut code = 0;
     for (run, outcome) in runs.iter().zip(outcomes) {
@@ -625,6 +621,7 @@ pub fn play_round(name: &str, force_build_images: bool) -> std::io::Result<i32> 
                 &runs,
                 &entries,
                 force_build_images,
+                parallel,
             )?;
             if code == 0 {
                 code = attacked;
@@ -643,6 +640,48 @@ pub fn play_round(name: &str, force_build_images: bool) -> std::io::Result<i32> 
     log::info!("{name}: round {round} is over");
 
     Ok(code)
+}
+
+/// Play `runs` with at most `parallel` sandboxes at a time, or all at once
+/// without a cap, calling `finished` on each run as it ends. The outcomes come
+/// back in the order the runs were given.
+fn play_bounded(
+    runs: &[(docker::Launch, String)],
+    parallel: Option<usize>,
+    finished: impl Fn(&str, &std::io::Result<i32>) -> std::io::Result<()> + Sync,
+) -> Vec<std::io::Result<i32>> {
+    let workers = parallel.unwrap_or(runs.len()).clamp(1, runs.len().max(1));
+    let queue = std::sync::Mutex::new((0..runs.len()).collect::<std::collections::VecDeque<_>>());
+    let outcomes = std::sync::Mutex::new(Vec::new());
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let next = queue.lock().expect("the queue is not poisoned").pop_front();
+                    let Some(index) = next else {
+                        return;
+                    };
+                    let (launch, run) = &runs[index];
+                    let outcome = docker::play(launch, run);
+                    let outcome = match finished(run, &outcome) {
+                        Ok(()) => outcome,
+                        Err(error) => Err(error),
+                    };
+                    outcomes
+                        .lock()
+                        .expect("the outcomes are not poisoned")
+                        .push((index, outcome));
+                }
+            });
+        }
+    });
+
+    let mut outcomes = outcomes
+        .into_inner()
+        .expect("the outcomes are not poisoned");
+    outcomes.sort_by_key(|(index, _)| *index);
+    outcomes.into_iter().map(|(_, outcome)| outcome).collect()
 }
 
 /// Record `pairing` on the last round of the named tournament.
@@ -752,8 +791,11 @@ fn attack_round(
     runs: &[String],
     entries: &[Option<crate::runs::Entry>],
     force_build_images: bool,
+    parallel: Option<usize>,
 ) -> std::io::Result<i32> {
-    let mut attacks: Vec<(usize, usize, docker::Launch, String)> = Vec::new();
+    let mut attacks: Vec<(docker::Launch, String)> = Vec::new();
+    let mut seats: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
     for attacker in 0..runs.len() {
         for defender in 0..runs.len() {
             if attacker == defender {
@@ -805,7 +847,8 @@ fn attack_round(
                     run: Some(run.clone()),
                 },
             )?;
-            attacks.push((attacker, defender, launch, run));
+            seats.insert(run.clone(), (attacker, defender));
+            attacks.push((launch, run));
         }
     }
     log::info!(
@@ -813,43 +856,30 @@ fn attack_round(
         attacks.len()
     );
 
-    let outcomes: Vec<std::io::Result<i32>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = attacks
-            .iter()
-            .map(|(attacker, defender, launch, run)| {
-                scope.spawn(move || {
-                    let outcome = docker::play(launch, run);
-                    let (tally, reason) = match &outcome {
-                        Ok(_) => match crate::runs::read(
-                            &std::path::Path::new(docker::RUN_DIRECTORY).join(run),
-                        ) {
-                            Ok(played) if played.passed() => (ava_wire::Tally::FIRST_WON, None),
-                            Ok(_) => (ava_wire::Tally::SECOND_WON, None),
-                            Err(error) => (ava_wire::Tally::default(), Some(error.to_string())),
-                        },
-                        Err(error) => (ava_wire::Tally::default(), Some(error.to_string())),
-                    };
-                    log::info!(
-                        "{name}: seat {} attacked seat {} in {run}: {} won, {} lost{}",
-                        attacker + 1,
-                        defender + 1,
-                        tally.won,
-                        tally.lost,
-                        reason
-                            .as_deref()
-                            .map(|reason| format!(", {reason}"))
-                            .unwrap_or_default()
-                    );
-                    complete_pairing(name, run, tally, reason)?;
-                    outcome
-                })
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .map(|handle| handle.join().expect("the attack threads do not panic"))
-            .collect()
+    let outcomes = play_bounded(&attacks, parallel, |run, outcome| {
+        let (tally, reason) = match outcome {
+            Ok(_) => {
+                match crate::runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(run)) {
+                    Ok(played) if played.passed() => (ava_wire::Tally::FIRST_WON, None),
+                    Ok(_) => (ava_wire::Tally::SECOND_WON, None),
+                    Err(error) => (ava_wire::Tally::default(), Some(error.to_string())),
+                }
+            }
+            Err(error) => (ava_wire::Tally::default(), Some(error.to_string())),
+        };
+        let (attacker, defender) = seats[run];
+        log::info!(
+            "{name}: seat {} attacked seat {} in {run}: {} won, {} lost{}",
+            attacker + 1,
+            defender + 1,
+            tally.won,
+            tally.lost,
+            reason
+                .as_deref()
+                .map(|reason| format!(", {reason}"))
+                .unwrap_or_default()
+        );
+        complete_pairing(name, run, tally, reason)
     });
 
     let mut code = 0;
