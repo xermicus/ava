@@ -63,8 +63,7 @@ const RUN_HEADERS: [&str; 12] = [
     "STATE|live or the last call while the run goes, whether a push passed the verifier once it is over",
     "ANALYSIS|whether an analyst was run over the finished run: analyzing, analyzed or failed",
     "GAME|the game that was played",
-    "TOURNAMENT|the tournament the run plays a seat in, with the seat, the round and the turn, or a dash \
-     for a run of its own",
+    "TOURNAMENT|the tournament the run plays a seat in, or a dash for a run of its own",
     "MODEL|the model under test",
     "HARNESS|the harness driving the model, with the thinking level it was asked for",
     "*TIME|seconds spent of the time budget, red once the whole budget is gone",
@@ -234,6 +233,10 @@ const GRAPH_POINTS_CLASSES: &str = "fill-amber-400 font-mono";
 const GRAPH_RUN_CLASSES: &str = "fill-indigo-300 font-mono";
 const GRAPH_STATE_CLASSES: &str = "font-medium";
 const GRAPH_EDGE_CLASSES: &str = "stroke-neutral-700";
+/// What is not played yet is drawn faded and its edges dashed.
+const GRAPH_PLANNED_CLASSES: &str = "opacity-40";
+const GRAPH_PLANNED_DASH: &str = "4 4";
+const GRAPH_PLANNED_STATE: &str = "pending";
 /// The turn the attacks of a record from before the turns count as.
 const LEGACY_ATTACK_TURN: usize = 1;
 
@@ -277,7 +280,7 @@ const NO_ENTRY: &str = "no entry";
 const NOT_KEPT: &str = "not kept";
 const UNRANKED: &str = "unranked";
 const UNFINISHED: &str = "unfinished";
-const NOT_ANALYZED: &str = "none";
+const NOT_ANALYZED: &str = "-";
 
 /// The figures of a live run count what its proxy logged up to the last look.
 const SO_FAR: &str = "so far";
@@ -484,21 +487,13 @@ impl RunEntry {
         )
     }
 
-    /// The tournament the run plays a seat in, linked, with the seat, the
-    /// round and the turn beneath, or a dash for a run of its own.
+    /// The tournament the run plays a seat in, linked, or a dash for a run of
+    /// its own.
     fn tournament_cell(&self) -> String {
-        let Some(placement) = &self.placement else {
-            return format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>");
-        };
-
-        format!(
-            "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{}</div>",
-            tournament_link(&placement.tournament),
-            placement_role(
-                placement,
-                ava_game::find(&self.run.game).map_or(1, |game| game.turns().len())
-            )
-        )
+        match &self.placement {
+            Some(placement) => tournament_link(&placement.tournament),
+            None => format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>"),
+        }
     }
 
     /// The state of the run as a pill.
@@ -1932,10 +1927,12 @@ pub(crate) fn tournament_page(
     Ok(page(name, &body))
 }
 
-/// The runs of a round as the graph the tournament walked: a column per turn,
+/// The runs of a round as the graph the tournament walks: a column per turn,
 /// a row per seat, every run a node linking its page with its state, and an
-/// edge from every entry a run got as its input to that run. While the round
-/// is `live`, a run not started yet shows as queued.
+/// edge from every entry a run got as its input to that run. Every seat and
+/// turn not reached yet is drawn faded, with the edges the game will ask for
+/// dashed, so the whole round shows and the part played stands out. While
+/// the round is `live`, a run named but not started shows as queued.
 fn round_graph(
     record: &ava_wire::Tournament,
     round: &ava_wire::Round,
@@ -1943,9 +1940,17 @@ fn round_graph(
     running: &[String],
     live: bool,
 ) -> String {
+    /// An edge the game will ask for once a turn starts, by seat and turn.
+    struct Planned {
+        from: (usize, usize),
+        to: (usize, usize),
+        name: String,
+    }
+
     struct Node {
         seat: usize,
         turn: usize,
+        /// The run, empty for a node not played yet.
         run: String,
         record: Option<ava_wire::Run>,
         points: Option<u64>,
@@ -1953,6 +1958,7 @@ fn round_graph(
         y: f64,
     }
 
+    let seats = record.seats.len();
     let mut nodes: Vec<Node> = Vec::new();
     let mut place = |seat: usize, turn: usize, run: &str, attempt: Option<u64>| {
         if nodes.iter().any(|node| node.run == run) {
@@ -1989,10 +1995,42 @@ fn round_graph(
         }
     }
 
-    let seats = record.seats.len();
     let turns = game
         .map_or(1, |game| game.turns().len())
         .max(nodes.iter().map(|node| node.turn + 1).max().unwrap_or(1));
+
+    // Every seat and turn without a run yet is a planned node, with the edges
+    // the game will ask for once the turn starts.
+    let mut planned_edges: Vec<Planned> = Vec::new();
+    for turn in 0..turns {
+        for seat in 0..seats {
+            if nodes
+                .iter()
+                .any(|node| node.seat == seat && node.turn == turn)
+            {
+                continue;
+            }
+            nodes.push(Node {
+                seat,
+                turn,
+                run: String::new(),
+                record: None,
+                points: None,
+                x: 0.0,
+                y: 0.0,
+            });
+            if let Some(game) = game {
+                let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
+                for input in game.inputs(turn, &opponents) {
+                    planned_edges.push(Planned {
+                        from: (input.seat, input.turn),
+                        to: (seat, turn),
+                        name: input.name,
+                    });
+                }
+            }
+        }
+    }
 
     // A seat's row is as tall as its fullest column, so nodes never overlap
     // when a turn holds several runs of one seat.
@@ -2029,6 +2067,28 @@ fn round_graph(
             + *slot as f64 * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP);
         *slot += 1;
     }
+    let at = |seat: usize, turn: usize| {
+        nodes
+            .iter()
+            .find(|node| node.seat == seat && node.turn == turn)
+            .map(|node| (node.x, node.y))
+    };
+    let edge = |from: (f64, f64), to: (f64, f64), name: &str, planned: bool| {
+        let (from_x, from_y) = (from.0 + GRAPH_NODE_WIDTH, from.1 + GRAPH_NODE_HEIGHT / 2.0);
+        let (to_x, to_y) = (to.0, to.1 + GRAPH_NODE_HEIGHT / 2.0);
+        let bend = (from_x + to_x) / 2.0;
+        let dashed = if planned {
+            format!(
+                " stroke-dasharray=\"{GRAPH_PLANNED_DASH}\" class=\"{GRAPH_EDGE_CLASSES} {GRAPH_PLANNED_CLASSES}\""
+            )
+        } else {
+            format!(" class=\"{GRAPH_EDGE_CLASSES}\"")
+        };
+        format!(
+            "<path d=\"M{from_x} {from_y} C{bend} {from_y} {bend} {to_y} {to_x} {to_y}\"{dashed} fill=\"none\"><title>{}</title></path>",
+            escape(name)
+        )
+    };
 
     let mut svg = format!(
         "<svg class=\"block w-full {GRAPH_CLASSES}\" style=\"max-width:{width}px\" viewBox=\"0 0 {width} {height}\" font-size=\"{GRAPH_FONT_SIZE}\">"
@@ -2055,22 +2115,28 @@ fn round_graph(
             let Some(source) = nodes.iter().find(|source| source.run == input.run) else {
                 continue;
             };
-            let (from_x, from_y) = (
-                source.x + GRAPH_NODE_WIDTH,
-                source.y + GRAPH_NODE_HEIGHT / 2.0,
-            );
-            let (to_x, to_y) = (node.x, node.y + GRAPH_NODE_HEIGHT / 2.0);
-            let bend = (from_x + to_x) / 2.0;
-            svg.push_str(&format!(
-                "<path d=\"M{from_x} {from_y} C{bend} {from_y} {bend} {to_y} {to_x} {to_y}\" class=\"{GRAPH_EDGE_CLASSES}\" fill=\"none\"><title>{}</title></path>",
-                escape(&input.name)
+            svg.push_str(&edge(
+                (source.x, source.y),
+                (node.x, node.y),
+                &input.name,
+                false,
             ));
+        }
+    }
+    for planned in &planned_edges {
+        if let (Some(from), Some(to)) = (
+            at(planned.from.0, planned.from.1),
+            at(planned.to.0, planned.to.1),
+        ) {
+            svg.push_str(&edge(from, to, &planned.name, true));
         }
     }
 
     for node in &nodes {
-        let live_run = running.contains(&docker::scorer_container(&node.run));
+        let planned = node.run.is_empty();
+        let live_run = !planned && running.contains(&docker::scorer_container(&node.run));
         let (state, tint, pulsing) = match (&node.record, live_run) {
+            _ if planned => (GRAPH_PLANNED_STATE, MUTED_CLASSES, false),
             (_, true) => ("live", LIVE_PILL, true),
             (Some(run), false) if run.passed() => ("passed", PASSED_PILL, false),
             (Some(run), false) if run.finished_seconds.is_some() => ("failed", FAILED_PILL, false),
@@ -2106,14 +2172,13 @@ fn round_graph(
             })
             .unwrap_or_default();
         let dot_class = if pulsing { "animate-pulse" } else { "" };
-        svg.push_str(&format!(
-            "<a href=\"/run/{run}\"><title>{title}</title>\
+        let body = format!(
+            "<title>{title}</title>\
              <rect x=\"{x}\" y=\"{y}\" width=\"{GRAPH_NODE_WIDTH}\" height=\"{GRAPH_NODE_HEIGHT}\" rx=\"6\" class=\"{GRAPH_NODE_CLASSES}\"/>\
              <text x=\"{text_x}\" y=\"{line_one}\" class=\"{GRAPH_LABEL_CLASSES}\">{shown}</text>{points}\
              <text x=\"{text_x}\" y=\"{line_two}\" class=\"{GRAPH_RUN_CLASSES}\">{run}</text>\
              <circle cx=\"{dot_x}\" cy=\"{dot_y}\" r=\"3\" fill=\"currentColor\" class=\"{tint} {dot_class}\"/>\
-             <text x=\"{state_x}\" y=\"{line_two}\" text-anchor=\"end\" fill=\"currentColor\" class=\"{GRAPH_STATE_CLASSES} {tint}\">{state}</text>\
-             </a>",
+             <text x=\"{state_x}\" y=\"{line_two}\" text-anchor=\"end\" fill=\"currentColor\" class=\"{GRAPH_STATE_CLASSES} {tint}\">{state}</text>",
             run = escape(&node.run),
             title = escape(&format!("{label}, {state}")),
             x = node.x,
@@ -2124,7 +2189,15 @@ fn round_graph(
             dot_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET - GRAPH_STATE_WIDTH,
             dot_y = node.y + GRAPH_LINE_TWO - GRAPH_DOT_LIFT,
             state_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET,
-        ));
+        );
+        if planned {
+            svg.push_str(&format!("<g class=\"{GRAPH_PLANNED_CLASSES}\">{body}</g>"));
+        } else {
+            svg.push_str(&format!(
+                "<a href=\"/run/{}\">{body}</a>",
+                escape(&node.run)
+            ));
+        }
     }
 
     svg.push_str("</svg>");
@@ -2252,7 +2325,7 @@ fn cross_table(
     ordered: bool,
     live: bool,
 ) -> String {
-    let seats = round.entries.len();
+    let seats = record.seats.len();
     let mut headers: Vec<String> = vec![if ordered {
         "*SEAT|the seat of the row attacks the entry of the column".to_string()
     } else {
