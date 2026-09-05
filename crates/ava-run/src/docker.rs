@@ -386,7 +386,7 @@ pub fn run_directories() -> std::io::Result<Vec<std::path::PathBuf>> {
 }
 
 /// The proxy container serving one run.
-fn proxy_container(run: &str) -> String {
+pub fn proxy_container(run: &str) -> String {
     format!("{PROXY_CONTAINER_PREFIX}{run}")
 }
 

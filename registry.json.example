@@ -88,11 +88,11 @@
    ]
   },
   {
-   "name": "qwen3.8-flash-next",
+   "name": "qwen3.8-flash",
    "routes": [
     {
      "backend": "substrate",
-     "id": "Qwen/Qwen3.8-Flash-Next",
+     "id": "openrouter/qwen/qwen3.8-flash",
      "context_window": 1000000,
      "max_output": 131072
     }

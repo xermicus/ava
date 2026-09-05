@@ -170,14 +170,32 @@ pub fn find(name: &str) -> std::io::Result<&'static dyn ava_game::Game> {
 pub fn aggregate_metrics(log: &str) -> std::io::Result<ava_wire::Metrics> {
     let contents = std::fs::read_to_string(log)
         .map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
+    let metrics =
+        aggregate(&contents).map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
 
+    log::info!(
+        "{log}: {} requests, {} failed, {} truncated, {} aborted, {} buffered, models: {}",
+        metrics.requests,
+        metrics.failed_requests,
+        metrics.truncated_requests,
+        metrics.aborted_requests,
+        metrics.buffered_requests,
+        metrics.served_models.join(" ")
+    );
+
+    Ok(metrics)
+}
+
+/// Aggregate `records`, the JSON lines of a proxy access log, into one
+/// [`ava_wire::Metrics`]: what the run record is completed with, and what the
+/// interface runs over the output of the proxy of a live run.
+pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
     let mut metrics = ava_wire::Metrics::default();
     let mut first_token_seconds = 0f64;
     let mut streamed_requests = 0u64;
 
-    for line in contents.lines().filter(|line| line.starts_with('{')) {
-        let record: Record = serde_json::from_str(line)
-            .map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
+    for line in records.lines().filter(|line| line.starts_with('{')) {
+        let record: Record = serde_json::from_str(line).map_err(std::io::Error::other)?;
 
         metrics.requests += 1;
         if record.status != SUCCESS_STATUS {
@@ -226,16 +244,6 @@ pub fn aggregate_metrics(log: &str) -> std::io::Result<ava_wire::Metrics> {
     if streamed_requests > 0 {
         metrics.mean_first_token_seconds = first_token_seconds / streamed_requests as f64;
     }
-
-    log::info!(
-        "{log}: {} requests, {} failed, {} truncated, {} aborted, {} buffered, models: {}",
-        metrics.requests,
-        metrics.failed_requests,
-        metrics.truncated_requests,
-        metrics.aborted_requests,
-        metrics.buffered_requests,
-        metrics.served_models.join(" ")
-    );
 
     Ok(metrics)
 }
@@ -296,5 +304,28 @@ pub fn read_attempts(log: &str) -> std::io::Result<Vec<ava_wire::Attempt>> {
 fn record_distinct(seen: &mut Vec<String>, value: &str) {
     if !seen.iter().any(|entry| entry == value) {
         seen.push(value.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    const ANSWERED: &str = r#"{"host":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":1.5,"header_seconds":"0.2","upstream_seconds":"1.4","first_token_seconds":0.3,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":5,"ratelimits":"","gateway_cost":"0.01"}"#;
+    const CUT: &str = r#"{"host":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":2.0,"header_seconds":"0.2","upstream_seconds":"1.9","first_token_seconds":0.5,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":9,"ratelimits":"","gateway_cost":""}"#;
+
+    #[test]
+    fn records_aggregate_without_a_file() {
+        let metrics = super::aggregate(&format!("{ANSWERED}\n{CUT}\n")).unwrap();
+
+        assert_eq!(metrics.requests, 2);
+        assert_eq!(metrics.truncated_requests, 1);
+        assert_eq!(metrics.output_tokens, 40);
+        assert_eq!(metrics.served_models, ["claude-sonnet-5"]);
+        assert!((metrics.gateway_cost - 0.01).abs() < f64::EPSILON);
+        assert!((metrics.mean_first_token_seconds - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_broken_record_is_an_error() {
+        assert!(super::aggregate("{not json\n").is_err());
     }
 }

@@ -62,9 +62,10 @@ const SLACK_MARKER: char = '*';
 const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
-const RUN_HEADERS: [&str; 10] = [
+const RUN_HEADERS: [&str; 11] = [
     "RUN|the run directory under runs/, how long ago it started, and the tournament seat it plays",
     "STATE|live or the last call while the run goes, whether a push passed the verifier once it is over",
+    "ANALYSIS|whether an analyst was run over the finished run: analyzing, analyzed or failed",
     "GAME|the game that was played",
     "MODEL|the model under test",
     "HARNESS|the harness driving the model, with the thinking level it was asked for",
@@ -115,7 +116,14 @@ const MUTED_CLASSES: &str = "text-neutral-500";
 const MONO_CLASSES: &str = "font-mono";
 const LINK_CLASSES: &str = "font-mono text-indigo-300 hover:text-indigo-200 transition-colors";
 const CONSOLE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-950 p-4 text-xs \
-     font-mono text-neutral-300 whitespace-pre-wrap break-all overflow-x-auto";
+     font-mono text-neutral-300 whitespace-pre overflow-x-auto";
+/// A section title that folds its section.
+const COLLAPSIBLE_TITLE_CLASSES: &str = "cursor-pointer list-none [&::-webkit-details-marker]:hidden \
+     text-sm font-semibold text-neutral-100 mt-8 mb-3";
+
+/// The renderer caps its prose at a reading width. Inside a box that is the
+/// width, the prose fills the box and wraps at its edge.
+const FULL_WIDTH_PROSE: &str = "[&_*]:max-w-none";
 const SUMMARY_CLASSES: &str = "cursor-pointer list-none [&::-webkit-details-marker]:hidden \
      text-neutral-400 hover:text-neutral-200 transition-colors";
 
@@ -138,6 +146,7 @@ const PASSED_PILL: &str = "bg-emerald-500/10 text-emerald-400";
 const FAILED_PILL: &str = "bg-orange-500/10 text-orange-400";
 const BROKEN_PILL: &str = "bg-red-500/10 text-red-400";
 const STARTING_PILL: &str = "bg-amber-500/10 text-amber-400";
+const ANALYZED_PILL: &str = "bg-indigo-500/10 text-indigo-300";
 const NEUTRAL_PILL: &str = "bg-neutral-800 text-neutral-400";
 
 /// The tints of a tally, by who came out ahead.
@@ -168,6 +177,24 @@ const TILE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900 
 const TILE_LABEL_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500";
 const TILE_VALUE_CLASSES: &str =
     "mt-1 text-lg font-semibold text-neutral-100 font-mono tabular-nums";
+const TILE_TEXT_CLASSES: &str = "mt-1 text-sm font-semibold text-neutral-100 font-mono break-all";
+const TILE_DETAIL_CLASSES: &str = "mt-1 text-xs text-neutral-500 break-all";
+const TILE_GRID_CLASSES: &str = "mt-3 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3";
+
+/// A tile with nothing to show says why, quietly.
+const PLACEHOLDER_CLASSES: &str = "text-sm font-normal text-neutral-500";
+const AFTER_THE_RUN: &str = "after the run";
+const NOT_RECORDED: &str = "not recorded";
+const NO_ENTRY: &str = "no entry";
+
+/// A passing run from before entries were kept left no entry file.
+const NOT_KEPT: &str = "not kept";
+const UNRANKED: &str = "unranked";
+const UNFINISHED: &str = "unfinished";
+const NOT_ANALYZED: &str = "none";
+
+/// The figures of a live run count what its proxy logged up to the last look.
+const SO_FAR: &str = "so far";
 
 /// What the last action left for the page to show.
 pub(crate) struct Notice {
@@ -240,8 +267,8 @@ struct RunEntry {
     name: String,
     run: ava_wire::Run,
     live: bool,
-    /// Whether an analyst is up for the run.
-    analyzing: bool,
+    /// What became of the analysis of the run.
+    analysis: Analysis,
     /// The newest heartbeat of the run loop, for a live run.
     monitor: Option<serde_json::Value>,
     /// The pushes graded so far: the record once the run is over, the output
@@ -249,6 +276,9 @@ struct RunEntry {
     attempts: Vec<ava_wire::Attempt>,
     /// The entry of record, once the run is over and kept one.
     record: Option<runs::Entry>,
+    /// The metrics of the run: the record once it is over, the aggregate of
+    /// what its proxy logged so far while it is live.
+    metrics: Option<ava_wire::Metrics>,
     /// The tournament seat the run plays, if any.
     placement: Option<tournament::Placement>,
 }
@@ -272,11 +302,23 @@ impl RunEntry {
                 .and_then(|game| runs::entry_of_record(game, directory).ok().flatten())
         };
 
+        let (attempts, metrics) = if live {
+            live_run(&name)
+                .map(|seen| (seen.attempts, seen.metrics))
+                .unwrap_or_default()
+        } else {
+            (attempts_of(directory, &run), run.metrics.clone())
+        };
+
         Self {
             live,
-            analyzing: running.contains(&docker::analyst_container(&name)),
+            metrics,
+            analysis: analysis_of(
+                directory,
+                running.contains(&docker::analyst_container(&name)),
+            ),
             monitor: read_json(&directory.join(docker::MONITOR_FILE)),
-            attempts: attempts_of(directory, &name, live, &run),
+            attempts,
             record,
             placement: placements.get(&name).cloned(),
             name,
@@ -304,10 +346,43 @@ impl RunEntry {
 
     /// The run name as a link into its page.
     fn link(&self) -> String {
-        format!(
-            "<a class=\"{LINK_CLASSES}\" href=\"/run/{name}\">{name}</a>",
-            name = escape(&self.name)
-        )
+        run_link(&self.name)
+    }
+
+    /// Whether an analyst is up for the run.
+    fn analyzing(&self) -> bool {
+        matches!(self.analysis, Analysis::Analyzing)
+    }
+
+    /// The state of the analysis as a pill, or nothing when none was started.
+    fn analysis_pill(&self) -> String {
+        match self.analysis {
+            Analysis::Analyzing => pill(STARTING_PILL, true, "analyzing"),
+            Analysis::Done(_) => pill(ANALYZED_PILL, false, "analyzed"),
+            Analysis::Failed(_) => pill(BROKEN_PILL, false, "failed"),
+            Analysis::None => String::new(),
+        }
+    }
+
+    /// The analysis cell of the runs table: the pill, or that there is none
+    /// once the run is over and could have been analyzed.
+    fn analysis_cell(&self) -> String {
+        match self.analysis {
+            Analysis::None if !self.live => placeholder(NOT_ANALYZED),
+            _ => self.analysis_pill(),
+        }
+    }
+
+    /// The points tile of the run page: the entry of record ranked, or why
+    /// there is nothing to rank yet or at all.
+    fn points_tile(&self) -> String {
+        match self.points() {
+            Some(points) => points_meter(points),
+            None if self.live => placeholder(AFTER_THE_RUN),
+            None if self.record.is_some() => placeholder(UNRANKED),
+            None if self.passed() => placeholder(NOT_KEPT),
+            None => placeholder(NO_ENTRY),
+        }
     }
 
     /// The run cell of the runs table: the link with the age beneath it, and
@@ -346,9 +421,7 @@ impl RunEntry {
             };
         }
 
-        if self.analyzing {
-            pill(STARTING_PILL, true, "analyzing")
-        } else if self.passed() {
+        if self.passed() {
             pill(PASSED_PILL, false, "passed")
         } else if self.run.finished_seconds.is_some() {
             pill(FAILED_PILL, false, "failed")
@@ -409,7 +482,6 @@ impl RunEntry {
     /// simply did not pass the task, since both rank nowhere.
     fn truncated_cell(&self) -> String {
         match self
-            .run
             .metrics
             .as_ref()
             .map(|metrics| metrics.truncated_requests)
@@ -445,6 +517,7 @@ impl RunEntry {
         vec![
             self.run_cell(),
             self.state(),
+            self.analysis_cell(),
             escape(&self.run.game),
             escape(&self.run.model),
             self.agent(),
@@ -454,6 +527,51 @@ impl RunEntry {
             self.points_cell(),
             self.stop_form(),
         ]
+    }
+}
+
+/// What became of the analysis of a run.
+#[derive(Clone, Copy)]
+enum Analysis {
+    /// No analyst was started on the run.
+    None,
+    /// An analyst is up on the run.
+    Analyzing,
+    /// The report holding the analysis was written at the epoch second.
+    Done(u64),
+    /// The report holding the reason the analysis failed was written at the epoch second.
+    Failed(u64),
+}
+
+/// What became of the analysis of the run in `directory`, given whether an
+/// analyst is up on it.
+fn analysis_of(directory: &std::path::Path, analyzing: bool) -> Analysis {
+    if analyzing {
+        return Analysis::Analyzing;
+    }
+
+    let report = directory.join(docker::ANALYSIS_FILE);
+    let Some(written) = runs::modified_seconds(&report) else {
+        return Analysis::None;
+    };
+
+    match read_json(&report) {
+        Some(report) if report.get(docker::ANALYSIS_ERROR).is_some() => Analysis::Failed(written),
+        _ => Analysis::Done(written),
+    }
+}
+
+/// The summary without the heading an analyst puts over it, since the card
+/// showing it is the heading.
+fn summary_body(summary: &str) -> &str {
+    let trimmed = summary.trim_start();
+    if !trimmed.starts_with('#') {
+        return trimmed;
+    }
+
+    match trimmed.split_once('\n') {
+        Some((_, rest)) if !rest.trim().is_empty() => rest,
+        _ => trimmed,
     }
 }
 
@@ -487,6 +605,7 @@ pub(crate) fn runs_page(
                     usage::age(start.started)
                 ),
                 pill(STARTING_PILL, true, "starting"),
+                String::new(),
                 escape(&start.game),
                 escape(&start.model),
                 agent_label(&start.agent, &start.thinking),
@@ -693,103 +812,139 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
 
     let mut body = format!(
         "<div data-refresh=\"run\"><div class=\"flex items-center gap-3\">\
-         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}{}</div>",
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}{}{}</div>",
         escape(name),
         entry.state(),
+        entry.analysis_pill(),
         entry.stop_form()
     );
     body.push_str(&notice.render());
 
-    body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {}{} \u{00b7} {} \u{00b7} {} {} \u{00b7} started {} ago</p>",
-        escape(&entry.run.game),
-        version_label(&entry.run.game_version),
-        if entry.run.architecture.is_empty() {
-            String::new()
-        } else {
-            format!(" on {}", escape(&entry.run.architecture))
-        },
-        escape(&entry.run.model),
-        entry.agent(),
-        version_label(&entry.run.harness_version),
-        usage::age(entry.run.started_seconds),
-    ));
+    let served = entry
+        .metrics
+        .as_ref()
+        .filter(|metrics| !metrics.served_models.is_empty())
+        .map(|metrics| format!("served {}", escape(&metrics.served_models.join(" "))))
+        .unwrap_or_default();
+    let mut facts = vec![
+        tile(
+            "game",
+            &escape(&entry.run.game),
+            &joined(&[&entry.run.game_version, &entry.run.architecture]),
+            TILE_TEXT_CLASSES,
+        ),
+        tile(
+            "model",
+            &escape(&entry.run.model),
+            &served,
+            TILE_TEXT_CLASSES,
+        ),
+        tile(
+            "harness",
+            &escape(&entry.run.harness),
+            &joined(&[
+                entry.run.thinking.as_deref().unwrap_or_default(),
+                &entry.run.harness_version,
+            ]),
+            TILE_TEXT_CLASSES,
+        ),
+        tile(
+            "started",
+            &format!("{} ago", usage::age(entry.run.started_seconds)),
+            &usage::utc_date(entry.run.started_seconds),
+            TILE_TEXT_CLASSES,
+        ),
+    ];
     if let Some(placement) = &entry.placement {
-        body.push_str(&format!(
-            "<p class=\"{NOTE_CLASSES} mt-1\">{}</p>",
-            placement_label(placement)
+        facts.push(tile(
+            "tournament",
+            &tournament_link(&placement.tournament),
+            &placement_role(placement),
+            TILE_TEXT_CLASSES,
         ));
     }
     if let Some(challenge) = &entry.run.challenge {
-        body.push_str(&format!(
-            "<p class=\"{NOTE_CLASSES} mt-1\">attacking the entry <a class=\"{LINK_CLASSES}\" href=\"/run/{run}\">{run}</a> kept at {}s</p>",
-            challenge.attempt,
-            run = escape(&challenge.run)
+        facts.push(tile(
+            "attacking",
+            &run_link(&challenge.run),
+            &format!("the entry kept at {}s", challenge.attempt),
+            TILE_TEXT_CLASSES,
         ));
     }
-
-    if !entry.live {
-        let report = directory.join(docker::ANALYSIS_FILE);
-        let analysis = read_json(&report);
-        let failed = analysis
-            .as_ref()
-            .is_some_and(|analysis| analysis.get(docker::ANALYSIS_ERROR).is_some());
-        let analyzed = match runs::modified_seconds(&report) {
-            Some(written) if failed => format!("failed {} ago", usage::age(written)),
-            Some(written) => format!("analyzed {} ago", usage::age(written)),
-            None => "not analyzed yet".to_string(),
-        };
-        body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES}\">analysis <span class=\"{NOTE_CLASSES} font-normal\">{analyzed}</span></p>"
-        ));
-        if let Some(analysis) = analysis {
-            if failed {
-                body.push_str(&format!(
-                    "<p class=\"mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p>",
-                    escape(text(&analysis, docker::ANALYSIS_ERROR))
-                ));
-            } else {
-                body.push_str(&format!(
-                    "<div class=\"{CARD_CLASSES} px-4 py-3 mb-4\"><p class=\"max-w-prose leading-relaxed text-neutral-200\">{}</p>\
-                     <details class=\"mt-3\"><summary class=\"{SUMMARY_CLASSES}\">the full analysis</summary><div class=\"mt-2\">{}</div></details></div>",
-                    escape(text(&analysis, "analysis_summary")),
-                    crate::markdown::render(text(&analysis, "analysis"))
-                ));
-            }
-        }
-        if !entry.analyzing {
-            body.push_str(&analysis_panel(name)?);
-        }
-    }
+    body.push_str(&tiles(&facts));
 
     let entry_at = match &entry.record {
         Some(record) => format!("{}s", record.seconds),
-        None if entry.live => String::new(),
-        None => "no entry".to_string(),
+        None if entry.live => placeholder(AFTER_THE_RUN),
+        None if entry.passed() => placeholder(NOT_KEPT),
+        None => placeholder(NO_ENTRY),
     };
-    let metric = |value: fn(&ava_wire::Metrics) -> u64| {
-        entry
-            .run
-            .metrics
-            .as_ref()
-            .map(|metrics| value(metrics).to_string())
-            .unwrap_or_default()
+    let time = match entry.time_cell() {
+        cell if cell.is_empty() => placeholder(UNFINISHED),
+        cell => cell,
     };
-    let tiles = [
-        ("points", entry.points_cell()),
-        ("pushes", entry.attempts.len().to_string()),
-        ("entry at", entry_at),
-        ("time", entry.time_cell()),
-        ("requests", metric(|metrics| metrics.requests)),
-        ("output tokens", metric(|metrics| metrics.output_tokens)),
+    let so_far = if entry.live { SO_FAR } else { "" };
+    let metric = |value: fn(&ava_wire::Metrics) -> u64| match &entry.metrics {
+        Some(metrics) => value(metrics).to_string(),
+        None if entry.live => placeholder(AFTER_THE_RUN),
+        None => placeholder(NOT_RECORDED),
+    };
+    let figures = [
+        tile("points", &entry.points_tile(), "", TILE_VALUE_CLASSES),
+        tile(
+            "pushes",
+            &entry.attempts.len().to_string(),
+            "",
+            TILE_VALUE_CLASSES,
+        ),
+        tile("entry at", &entry_at, "", TILE_VALUE_CLASSES),
+        tile("time", &time, "", TILE_VALUE_CLASSES),
+        tile(
+            "requests",
+            &metric(|metrics| metrics.requests),
+            so_far,
+            TILE_VALUE_CLASSES,
+        ),
+        tile(
+            "output tokens",
+            &metric(|metrics| metrics.output_tokens),
+            so_far,
+            TILE_VALUE_CLASSES,
+        ),
     ];
-    body.push_str("<div class=\"mt-6 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3\">");
-    for (label, value) in tiles {
-        body.push_str(&format!(
-            "<div class=\"{TILE_CLASSES}\"><p class=\"{TILE_LABEL_CLASSES}\">{label}</p><div class=\"{TILE_VALUE_CLASSES}\">{value}</div></div>"
-        ));
+    body.push_str(&tiles(&figures));
+
+    if !entry.live {
+        let state = match entry.analysis {
+            Analysis::Analyzing => "analyzing".to_string(),
+            Analysis::Done(written) => format!("analyzed {} ago", usage::age(written)),
+            Analysis::Failed(written) => format!("failed {} ago", usage::age(written)),
+            Analysis::None => "not analyzed yet".to_string(),
+        };
+        let title = format!("analysis <span class=\"{NOTE_CLASSES} font-normal\">{state}</span>");
+        match read_json(&directory.join(docker::ANALYSIS_FILE)) {
+            Some(report) if report.get(docker::ANALYSIS_ERROR).is_some() => {
+                body.push_str(&format!(
+                    "<p class=\"{TITLE_CLASSES}\">{title}</p>\
+                     <p class=\"mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p>",
+                    escape(text(&report, docker::ANALYSIS_ERROR))
+                ));
+            }
+            Some(report) => {
+                body.push_str(&format!(
+                    "<details open data-fold=\"analysis\"><summary class=\"{COLLAPSIBLE_TITLE_CLASSES}\">{title}</summary>\
+                     <div class=\"{CARD_CLASSES} {FULL_WIDTH_PROSE} px-4 py-3 mb-4\">{}\
+                     <details class=\"mt-3\" data-fold=\"full-analysis\"><summary class=\"{SUMMARY_CLASSES}\">the full analysis</summary><div class=\"mt-2\">{}</div></details></div></details>",
+                    ava_markdown::render(summary_body(text(&report, "analysis_summary"))),
+                    ava_markdown::render(text(&report, "analysis"))
+                ));
+            }
+            None => body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">{title}</p>")),
+        }
+        if !entry.analyzing() {
+            body.push_str(&analysis_panel(name)?);
+        }
     }
-    body.push_str("</div>");
 
     if let Some(game) = ava_game::find(&entry.run.game)
         && !entry.live
@@ -840,8 +995,10 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         body.push_str(&table(&["#SECONDS", "STATE", "*REASON"], pushes, None));
     }
 
-    if let Some(metrics) = &entry.run.metrics {
-        body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">metrics</p>"));
+    if let Some(metrics) = &entry.metrics {
+        body.push_str(&format!(
+            "<p class=\"{TITLE_CLASSES}\">metrics <span class=\"{NOTE_CLASSES} font-normal\">{so_far}</span></p>"
+        ));
         body.push_str(&object_table(
             &serde_json::to_value(metrics).unwrap_or_default(),
         ));
@@ -876,7 +1033,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         }
     }
     body.push_str(&format!(
-        "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">parameters</summary><div class=\"mt-3\">{}</div></details>",
+        "<details class=\"mt-8\" data-fold=\"parameters\"><summary class=\"{SUMMARY_CLASSES}\">parameters</summary><div class=\"mt-3\">{}</div></details>",
         object_table(&parameters)
     ));
     body.push_str("</div>");
@@ -1045,7 +1202,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
 
         body.push_str(&format!(
             "<div class=\"{CARD_CLASSES} overflow-hidden\"><div class=\"px-4 pb-4\">{}</div>{}</div>",
-            crate::markdown::render(&task),
+            ava_markdown::render(&task),
             table(
                 &["MODEL", "HARNESS", "*POINTS", "#SECONDS", "RUN"],
                 standings,
@@ -1059,7 +1216,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
     {
         body.push_str(&format!(
             "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">the instructions shared by every game</summary><div class=\"{CARD_CLASSES} mt-3 px-4 pb-4\">{}</div></details>",
-            crate::markdown::render(&instructions)
+            ava_markdown::render(&instructions)
         ));
     }
 
@@ -2053,16 +2210,28 @@ pub(crate) fn analyzing(name: &str) -> bool {
         .any(|container| container == &docker::analyst_container(name))
 }
 
-/// What the watcher last saw of docker: the running containers and the output
-/// of every live scoring container, which holds the pushes graded so far.
+/// What the watcher last saw of one live run, read out of the output of its
+/// containers once per look, so no page parses that output itself.
+#[derive(Clone)]
+struct LiveRun {
+    run: String,
+    /// The pushes its scoring container graded so far.
+    attempts: Vec<ava_wire::Attempt>,
+    /// The requests its proxy served so far, aggregated, or nothing when that
+    /// output does not aggregate.
+    metrics: Option<ava_wire::Metrics>,
+}
+
+/// What the watcher last saw of docker: the running containers and the state
+/// of every live run.
 struct Snapshot {
     containers: Vec<String>,
-    scorer_logs: Vec<(String, String)>,
+    live: Vec<LiveRun>,
 }
 
 static SNAPSHOT: std::sync::Mutex<Snapshot> = std::sync::Mutex::new(Snapshot {
     containers: Vec::new(),
-    scorer_logs: Vec::new(),
+    live: Vec::new(),
 });
 
 /// How long the watcher rests between two looks at docker.
@@ -2085,21 +2254,44 @@ fn refresh_snapshot() {
             .lines()
             .map(str::to_string)
             .collect();
-    let scorer_logs = containers
+    let live = containers
         .iter()
         .filter_map(|container| container.strip_prefix(docker::SCORER_CONTAINER_PREFIX))
-        .map(|run| {
-            (
-                run.to_string(),
-                container_logs(&docker::scorer_container(run)),
-            )
+        .map(|run| LiveRun {
+            run: run.to_string(),
+            attempts: attempt_lines(&container_logs(&docker::scorer_container(run))),
+            metrics: aggregated(run, &container_logs(&docker::proxy_container(run))),
         })
         .collect();
 
-    *SNAPSHOT.lock().expect("the snapshot is never poisoned") = Snapshot {
-        containers,
-        scorer_logs,
-    };
+    *SNAPSHOT.lock().expect("the snapshot is never poisoned") = Snapshot { containers, live };
+}
+
+/// What the watcher last saw of the live run `name`, if it saw it.
+fn live_run(name: &str) -> Option<LiveRun> {
+    SNAPSHOT
+        .lock()
+        .expect("the snapshot is never poisoned")
+        .live
+        .iter()
+        .find(|live| live.run == name)
+        .cloned()
+}
+
+/// The metrics of the live run `name` over `logged`, what its proxy printed up
+/// to this look, or nothing when that does not aggregate. A request is logged
+/// when it completes, so the one in flight is not counted yet.
+fn aggregated(name: &str, logged: &str) -> Option<ava_wire::Metrics> {
+    // A record still being written is not a record yet.
+    let whole: String = logged
+        .lines()
+        .filter(|line| line.starts_with('{') && line.ends_with('}'))
+        .map(|line| format!("{line}\n"))
+        .collect();
+
+    ava_scorer::score::aggregate(&whole)
+        .inspect_err(|error| log::warn!("{name}: the proxy log so far does not aggregate: {error}"))
+        .ok()
 }
 
 fn container_logs(container: &str) -> String {
@@ -2135,34 +2327,20 @@ fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
     Ok(runs)
 }
 
-/// The graded pushes of a run: the record once the run is over, the output of
-/// the scoring container while it is live, since that output is the very log
-/// collected at the end, and that log itself for a run that broke before its
-/// record was completed.
-fn attempts_of(
-    directory: &std::path::Path,
-    name: &str,
-    live: bool,
-    run: &ava_wire::Run,
-) -> Vec<ava_wire::Attempt> {
-    if !live && !run.attempts.is_empty() {
+/// The graded pushes of a finished run: the record, or the collected log for a
+/// run that broke before its record was completed.
+fn attempts_of(directory: &std::path::Path, run: &ava_wire::Run) -> Vec<ava_wire::Attempt> {
+    if !run.attempts.is_empty() {
         return run.attempts.clone();
     }
 
-    let contents = if live {
-        SNAPSHOT
-            .lock()
-            .expect("the snapshot is never poisoned")
-            .scorer_logs
-            .iter()
-            .find(|(run, _)| run == name)
-            .map(|(_, logs)| logs.clone())
-            .unwrap_or_default()
-    } else {
-        std::fs::read_to_string(directory.join(docker::SCORE_LOG)).unwrap_or_default()
-    };
+    attempt_lines(&std::fs::read_to_string(directory.join(docker::SCORE_LOG)).unwrap_or_default())
+}
 
-    contents
+/// The attempts among `lines`, one JSON record each, as the scoring container
+/// prints them and the attempts log keeps them.
+fn attempt_lines(lines: &str) -> Vec<ava_wire::Attempt> {
+    lines
         .lines()
         .filter(|line| line.starts_with('{'))
         .filter_map(|line| serde_json::from_str(line).ok())
@@ -2347,22 +2525,83 @@ fn version_label(version: &str) -> String {
     )
 }
 
+/// The seat a run plays in its round, and the seat it attacks when it does.
+fn placement_role(placement: &tournament::Placement) -> String {
+    match placement.attacking {
+        Some(defender) => format!(
+            "seat {} attacking seat {} in round {}",
+            placement.seat + 1,
+            defender + 1,
+            placement.round + 1
+        ),
+        None => format!(
+            "seat {} in round {}",
+            placement.seat + 1,
+            placement.round + 1
+        ),
+    }
+}
+
 /// Where a run sits in a tournament, linking the tournament.
 fn placement_label(placement: &tournament::Placement) -> String {
-    let role = match placement.attacking {
-        Some(defender) => format!(
-            "seat {} attacking seat {}",
-            placement.seat + 1,
-            defender + 1
-        ),
-        None => format!("seat {}", placement.seat + 1),
+    format!(
+        "{} of {}",
+        placement_role(placement),
+        tournament_link(&placement.tournament)
+    )
+}
+
+/// The name of a tournament as a link into its page.
+fn tournament_link(name: &str) -> String {
+    format!(
+        "<a class=\"{LINK_CLASSES}\" href=\"/tournament/{name}\">{name}</a>",
+        name = escape(name)
+    )
+}
+
+/// The name of a run as a link into its page.
+fn run_link(name: &str) -> String {
+    format!(
+        "<a class=\"{LINK_CLASSES}\" href=\"/run/{name}\">{name}</a>",
+        name = escape(name)
+    )
+}
+
+/// A tile of the run page: a label over a value, with a muted detail beneath
+/// it when there is one.
+fn tile(label: &str, value: &str, detail: &str, value_classes: &str) -> String {
+    let detail = if detail.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"{TILE_DETAIL_CLASSES}\">{detail}</p>")
     };
 
     format!(
-        "{role} in round {} of <a class=\"{LINK_CLASSES}\" href=\"/tournament/{name}\">{name}</a>",
-        placement.round + 1,
-        name = escape(&placement.tournament)
+        "<div class=\"{TILE_CLASSES}\"><p class=\"{TILE_LABEL_CLASSES}\">{label}</p><div class=\"{value_classes}\">{value}</div>{detail}</div>"
     )
+}
+
+/// A row of tiles.
+fn tiles(tiles: &[String]) -> String {
+    format!(
+        "<div class=\"{TILE_GRID_CLASSES}\">{}</div>",
+        tiles.concat()
+    )
+}
+
+/// What a tile shows instead of a value it does not have, and why.
+fn placeholder(reason: &str) -> String {
+    format!("<span class=\"{PLACEHOLDER_CLASSES}\">{reason}</span>")
+}
+
+/// The non-empty `parts`, escaped and joined by a dot.
+fn joined(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| escape(part))
+        .collect::<Vec<_>>()
+        .join(" \u{00b7} ")
 }
 
 /// A state pill, with a pulsing dot for a state still changing.

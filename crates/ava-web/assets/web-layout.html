@@ -84,9 +84,19 @@ __AVA_BODY__
 </div>
 <script>
 /* Keep the marked regions current without reloading, so forms keep their
- * state. The query is dropped from the address after the first swap, which
- * lets an action notice show once and then retire. */
+ * state and the folds stay the way the reader left them. The query is
+ * dropped from the address after the first swap, which lets an action notice
+ * show once and then retire. */
 const REFRESH_MILLISECONDS = 5000;
+
+/* The open state of every named fold in `region`, by its name. */
+function folds(region) {
+    const state = new Map();
+    for (const fold of region.querySelectorAll("details[data-fold]")) {
+        state.set(fold.dataset.fold, fold.open);
+    }
+    return state;
+}
 
 async function refresh() {
     const regions = document.querySelectorAll("[data-refresh]");
@@ -102,8 +112,15 @@ async function refresh() {
 
     for (const region of regions) {
         const update = fresh.querySelector(`[data-refresh="${region.dataset.refresh}"]`);
-        if (update) {
-            region.replaceChildren(...update.childNodes);
+        if (!update) {
+            continue;
+        }
+        const state = folds(region);
+        region.replaceChildren(...update.childNodes);
+        for (const fold of region.querySelectorAll("details[data-fold]")) {
+            if (state.has(fold.dataset.fold)) {
+                fold.open = state.get(fold.dataset.fold);
+            }
         }
     }
 

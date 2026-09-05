@@ -6,7 +6,9 @@ authors.workspace = true
 
 [dependencies]
 ava-game = { path = "../../games" }
+ava-markdown = { path = "../ava-markdown" }
 ava-run = { path = "../ava-run" }
+ava-scorer = { path = "../ava-scorer" }
 ava-wire = { path = "../ava-wire" }
 log.workspace = true
 serde_json.workspace = true

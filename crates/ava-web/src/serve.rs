@@ -71,7 +71,7 @@ pub(crate) const AGENT_FIELDS: [&str; 3] = ["agent", "model", "thinking"];
 pub(crate) const ANALYST_PREFIX: &str = "analyst_";
 
 /// The start fields carried back to the form, so a submission does not reset it.
-const START_FIELDS: [&str; 9] = [
+const START_FIELDS: [&str; 12] = [
     "agent",
     "model",
     "game",
@@ -80,6 +80,9 @@ const START_FIELDS: [&str; 9] = [
     "parallel",
     "analyze",
     "force",
+    "analyst_agent",
+    "analyst_model",
+    "analyst_thinking",
     "analyst_seconds",
 ];
 
