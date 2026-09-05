@@ -276,15 +276,113 @@ pub struct Analysis {
     pub turns: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<Metrics>,
-    /// The summary.
+    /// What the analyst wrote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<Report>,
+    /// The summary of a record from before the report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis_summary: Option<String>,
-    /// The analysis in markdown.
+    /// The analysis of a record from before the report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis: Option<String>,
     /// Why the analysis failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl Analysis {
+    /// What the analyst wrote, or the two texts alone for a record from
+    /// before the report.
+    pub fn report(&self) -> Option<Report> {
+        if self.report.is_some() {
+            return self.report.clone();
+        }
+
+        Some(Report {
+            summary: self.analysis_summary.clone()?,
+            analysis: self.analysis.clone().unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+}
+
+/// Who the analyst holds responsible for the outcome of a run, each word with
+/// what it means.
+pub const ATTRIBUTIONS: [(&str, &str); 3] = [
+    ("agent", "the agent's own decisions"),
+    ("environment", "the backend, harness or sandbox"),
+    ("mixed", "the agent and the environment both"),
+];
+
+/// The failure modes an analyst files a lost run under, each with what it
+/// means, [`OTHER_FAILURE_MODE`] for one that fits none.
+pub const FAILURE_MODES: [(&str, &str); 7] = [
+    ("never_wrote", "no solution file was ever written"),
+    (
+        "unbanked",
+        "a valid solution existed and was pushed only in the last call or never",
+    ),
+    (
+        "hung_tool",
+        "one tool call stalled for the rest of the phase",
+    ),
+    (
+        "wrong_place",
+        "the work lived outside the workspace and never reached the branch",
+    ),
+    (
+        "wrong_solution",
+        "what was pushed did not do what the task asks",
+    ),
+    (
+        "environment",
+        "the backend, harness or sandbox ended the run",
+    ),
+    (OTHER_FAILURE_MODE, "none of these, named beside it"),
+];
+
+/// The failure mode naming its failure in the field beside it.
+pub const OTHER_FAILURE_MODE: &str = "other";
+
+/// What `word` means in `vocabulary`, if it is one of its words.
+pub fn meaning(vocabulary: &[(&str, &'static str)], word: &str) -> Option<&'static str> {
+    vocabulary
+        .iter()
+        .find(|(known, _)| *known == word)
+        .map(|(_, meaning)| *meaning)
+}
+
+/// The report of an analyst on a run: the fields, one or two sentences each,
+/// and the two texts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Report {
+    /// What the agent set out to do and how.
+    pub strategy: String,
+    /// What worked.
+    pub went_well: String,
+    /// What the agent got wrong by its own doing.
+    pub agent_mistakes: String,
+    /// What broke around the agent, empty when nothing did.
+    pub environment_issues: String,
+    /// The one thing that made or broke the outcome.
+    pub decisive: String,
+    /// One of [`ATTRIBUTIONS`].
+    pub attribution: String,
+    /// How the agent checked its work before pushing, or that it did not.
+    pub verification: String,
+    /// Where the budget went and when the first pass was banked, if ever.
+    pub pacing: String,
+    /// The smallest change that would have flipped the outcome.
+    pub counterfactual: String,
+    /// One of [`FAILURE_MODES`], empty on a pass.
+    pub failure_mode: String,
+    /// The failure in a few words when none of the modes fits.
+    pub other_failure: String,
+    /// A handful of sentences.
+    pub summary: String,
+    /// The full analysis in markdown.
+    pub analysis: String,
 }
 
 /// A tournament, kept as `tournaments/<name>/tournament.json`: the seats and
@@ -411,6 +509,20 @@ mod tests {
 
         let failed: super::Analysis = serde_json::from_str(r#"{"error": "no files"}"#).unwrap();
         assert_eq!(failed.error.as_deref(), Some("no files"));
+    }
+
+    #[test]
+    fn a_legacy_analysis_record_reads_its_texts_as_the_report() {
+        let record = r#"{"analysis_summary": "short", "analysis": "long"}"#;
+        let analysis: super::Analysis = serde_json::from_str(record).unwrap();
+        let report = analysis.report().unwrap();
+
+        assert_eq!(report.summary, "short");
+        assert_eq!(report.analysis, "long");
+        assert_eq!(report.strategy, "");
+
+        let failed: super::Analysis = serde_json::from_str(r#"{"error": "no"}"#).unwrap();
+        assert_eq!(failed.report(), None);
     }
 
     #[test]

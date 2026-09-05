@@ -81,6 +81,7 @@ const NO_RUNS_NOTE: &str = "no runs yet, start one above";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
 const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
 const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
+const NO_REPORT_NOTE: &str = "the record holds neither a report nor a reason";
 const IMAGE_FORMAT: &str = "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
 const IMAGE_PREFIX: &str = "ava/";
 
@@ -167,6 +168,11 @@ const USAGE_FILL: &str = "bg-amber-500";
 const WAIT_FILL: &str = "bg-sky-500";
 const RESET_LABEL_WIDTH: &str = "w-44";
 const POINTS_FILL: &str = "bg-amber-500";
+
+/// The values of a key value table: code and numbers in mono, sentences in
+/// the text face.
+const MONO_VALUE_CLASSES: &str = "font-mono text-neutral-200";
+const TEXT_VALUE_CLASSES: &str = "text-neutral-200";
 
 /// The time meter, tinted by whether the budget held.
 const TIME_SPENT_FILL: &str = "bg-red-500";
@@ -358,8 +364,8 @@ impl RunEntry {
     fn analysis_pill(&self) -> String {
         match self.analysis {
             Analysis::Analyzing => pill(STARTING_PILL, true, "analyzing"),
-            Analysis::Done(_) => pill(ANALYZED_PILL, false, "analyzed"),
-            Analysis::Failed(_) => pill(BROKEN_PILL, false, "failed"),
+            Analysis::Done => pill(ANALYZED_PILL, false, "analyzed"),
+            Analysis::Failed => pill(BROKEN_PILL, false, "failed"),
             Analysis::None => String::new(),
         }
     }
@@ -537,10 +543,10 @@ enum Analysis {
     None,
     /// An analyst is up on the run.
     Analyzing,
-    /// The report holding the analysis was written at the epoch second.
-    Done(u64),
-    /// The report holding the reason the analysis failed was written at the epoch second.
-    Failed(u64),
+    /// The record holds the report.
+    Done,
+    /// The record holds the reason the analysis failed.
+    Failed,
 }
 
 /// What became of the analysis of the run in `directory`, given whether an
@@ -550,42 +556,113 @@ fn analysis_of(directory: &std::path::Path, analyzing: bool) -> Analysis {
         return Analysis::Analyzing;
     }
 
-    let Some(written) = runs::modified_seconds(&directory.join(docker::ANALYSIS_FILE)) else {
-        return Analysis::None;
-    };
-
     match runs::analysis(directory) {
-        Ok(Some(report)) if report.error.is_none() => Analysis::Done(written),
-        _ => Analysis::Failed(written),
+        Ok(None) => Analysis::None,
+        Ok(Some(record)) if record.error.is_none() && record.report().is_some() => Analysis::Done,
+        _ => Analysis::Failed,
     }
 }
 
-/// The analyst, its version, turns and tokens.
-fn analyst_note(report: &ava_wire::Analysis) -> String {
-    let Some(analyst) = &report.analyst else {
-        return String::new();
+/// The analyst behind a record: who it was, its version, its turns, the
+/// seconds it took, the tokens it wrote and the cost the gateway reported.
+fn analyst_rows(record: &ava_wire::Analysis) -> Vec<(String, String)> {
+    let Some(analyst) = &record.analyst else {
+        return Vec::new();
     };
 
-    let turns = if report.turns == 1 { "turn" } else { "turns" };
-    let mut parts = vec![
-        escape(&analyst.label()),
-        escape(&report.harness_version),
-        format!("{} {turns}", report.turns),
+    let mut rows = vec![
+        ("analyst".to_string(), analyst.label()),
+        (
+            "harness version".to_string(),
+            record.harness_version.clone(),
+        ),
+        ("turns".to_string(), record.turns.to_string()),
+        (
+            "seconds".to_string(),
+            format!(
+                "{} of {}",
+                record
+                    .finished_seconds
+                    .saturating_sub(record.started_seconds),
+                record.limit_seconds
+            ),
+        ),
     ];
-    if let Some(metrics) = &report.metrics {
-        parts.push(format!("{} output tokens", metrics.output_tokens));
+    if let Some(metrics) = &record.metrics {
+        rows.push((
+            "output tokens".to_string(),
+            metrics.output_tokens.to_string(),
+        ));
         if metrics.gateway_cost > 0.0 {
-            parts.push(usage::money(metrics.gateway_cost));
+            rows.push(("cost".to_string(), usage::money(metrics.gateway_cost)));
         }
     }
+    rows
+}
+
+/// The fields of a report as label and text, the closed vocabularies spelled
+/// out, the fields the analyst left empty dropped.
+fn report_rows(report: &ava_wire::Report) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if let Some(meaning) = ava_wire::meaning(&ava_wire::ATTRIBUTIONS, &report.attribution) {
+        rows.push(("outcome decided by".to_string(), meaning.to_string()));
+    }
+    if report.failure_mode == ava_wire::OTHER_FAILURE_MODE {
+        rows.push(("failure mode".to_string(), report.other_failure.clone()));
+    } else if let Some(meaning) = ava_wire::meaning(&ava_wire::FAILURE_MODES, &report.failure_mode)
+    {
+        rows.push(("failure mode".to_string(), meaning.to_string()));
+    }
+
+    let sentences = [
+        ("strategy", &report.strategy),
+        ("went well", &report.went_well),
+        ("agent mistakes", &report.agent_mistakes),
+        ("environment issues", &report.environment_issues),
+        ("decisive", &report.decisive),
+        ("verification", &report.verification),
+        ("pacing", &report.pacing),
+        ("counterfactual", &report.counterfactual),
+    ];
+    rows.extend(
+        sentences
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(label, value)| (label.to_string(), value.clone())),
+    );
+    rows
+}
+
+/// A report on the run page: the summary, then folded behind it the fields,
+/// the analysis and the analyst.
+fn report_card(record: &ava_wire::Analysis, report: &ava_wire::Report) -> String {
+    let block = |html: String| {
+        if html.is_empty() {
+            String::new()
+        } else {
+            format!("<div class=\"mt-3\">{html}</div>")
+        }
+    };
+    let rows = |rows: Vec<(String, String)>| {
+        if rows.is_empty() {
+            String::new()
+        } else {
+            pairs_table(&rows, TEXT_VALUE_CLASSES)
+        }
+    };
+    let analysis = if report.analysis.is_empty() {
+        String::new()
+    } else {
+        ava_markdown::render(&report.analysis)
+    };
 
     format!(
-        "<p class=\"text-xs {MUTED_CLASSES} mb-2\">{}</p>",
-        parts
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(" \u{00b7} ")
+        "<div class=\"{CARD_CLASSES} {FULL_WIDTH_PROSE} px-4 py-3 mb-4\">{}\
+         <details class=\"mt-3\" data-fold=\"full-analysis\"><summary class=\"{SUMMARY_CLASSES}\">the full analysis</summary>{}{}{}</details></div>",
+        ava_markdown::render(summary_body(&report.summary)),
+        block(rows(report_rows(report))),
+        block(analysis),
+        block(rows(analyst_rows(record)))
     )
 }
 
@@ -943,32 +1020,25 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     body.push_str(&tiles(&figures));
 
     if !entry.live {
-        let state = match entry.analysis {
-            Analysis::Analyzing => "analyzing".to_string(),
-            Analysis::Done(written) => format!("analyzed {} ago", usage::age(written)),
-            Analysis::Failed(written) => format!("failed {} ago", usage::age(written)),
-            Analysis::None => "not analyzed yet".to_string(),
-        };
-        let title = format!("analysis <span class=\"{NOTE_CLASSES} font-normal\">{state}</span>");
-        match runs::analysis(&directory)? {
+        let title = "analysis";
+        let record = runs::analysis(&directory)?;
+        if entry.analyzing() {
+            body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">{title}</p>"));
+        } else {
+            match record {
             None => body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">{title}</p>")),
-            Some(report) => match &report.error {
-                Some(error) => body.push_str(&format!(
+            Some(record) => match (&record.error, record.report()) {
+                (None, Some(report)) => body.push_str(&format!(
+                    "<details open data-fold=\"analysis\"><summary class=\"{COLLAPSIBLE_TITLE_CLASSES}\">{title}</summary>{}</details>",
+                    report_card(&record, &report)
+                )),
+                (error, _) => body.push_str(&format!(
                     "<p class=\"{TITLE_CLASSES}\">{title}</p>\
                      <p class=\"mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p>",
-                    escape(error)
-                )),
-                None => body.push_str(&format!(
-                    "<details open data-fold=\"analysis\"><summary class=\"{COLLAPSIBLE_TITLE_CLASSES}\">{title}</summary>\
-                     <div class=\"{CARD_CLASSES} {FULL_WIDTH_PROSE} px-4 py-3 mb-4\">{}{}\
-                     <details class=\"mt-3\" data-fold=\"full-analysis\"><summary class=\"{SUMMARY_CLASSES}\">the full analysis</summary><div class=\"mt-2\">{}</div></details></div></details>",
-                    analyst_note(&report),
-                    ava_markdown::render(summary_body(
-                        report.analysis_summary.as_deref().unwrap_or_default()
-                    )),
-                    ava_markdown::render(report.analysis.as_deref().unwrap_or_default())
+                    escape(error.as_deref().unwrap_or(NO_REPORT_NOTE))
                 )),
             },
+        }
         }
         if !entry.analyzing() {
             body.push_str(&analysis_panel(name)?);
@@ -2402,15 +2472,25 @@ fn object_table(value: &serde_json::Value) -> String {
         return String::new();
     };
 
+    let rows: Vec<(String, String)> = object
+        .iter()
+        .map(|(key, value)| (key.clone(), plain(value)))
+        .collect();
+    pairs_table(&rows, MONO_VALUE_CLASSES)
+}
+
+/// A two column table of labels and values without a header, the values in
+/// `value_classes`.
+fn pairs_table(rows: &[(String, String)], value_classes: &str) -> String {
     let mut html = format!(
         "<div class=\"{CARD_CLASSES} overflow-hidden\"><table class=\"{TABLE_CLASSES}\"><tbody>"
     );
-    for (index, (key, value)) in object.iter().enumerate() {
+    for (index, (label, value)) in rows.iter().enumerate() {
         let border = if index == 0 { "border-t-0" } else { "" };
         html.push_str(&format!(
-            "<tr class=\"{ROW_CLASSES}\"><td class=\"{PACKED_COLUMN_CLASSES} {CELL_CLASSES} {border} text-neutral-400\">{}</td><td class=\"{SLACK_COLUMN_CLASSES} {CELL_CLASSES} {border} {MONO_CLASSES} text-neutral-200\">{}</td></tr>",
-            escape(key),
-            escape(&plain(value))
+            "<tr class=\"{ROW_CLASSES}\"><td class=\"{PACKED_COLUMN_CLASSES} {CELL_CLASSES} {border} align-top text-neutral-400\">{}</td><td class=\"{SLACK_COLUMN_CLASSES} {CELL_CLASSES} {border} {value_classes}\">{}</td></tr>",
+            escape(label),
+            escape(value)
         ));
     }
     html.push_str("</tbody></table></div>");

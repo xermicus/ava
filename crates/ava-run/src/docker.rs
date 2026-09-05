@@ -162,9 +162,8 @@ const RUN_MOUNT: &str = "/home/agent/run";
 /// The files the analysis writes into the run directory.
 const ANALYSIS_PREFIX: &str = "analysis";
 
-/// The files the analyst writes into its workspace.
-const ANALYSIS_SUMMARY_FILE: &str = "analysis_summary.md";
-const ANALYSIS_TEXT_FILE: &str = "analysis.md";
+/// The report the analyst writes into its workspace.
+const REPORT_FILE: &str = "analysis.json";
 const BOOK_DIRECTORY: &str = "book/src";
 const BOOK_MOUNT: &str = "/home/agent/ava-book";
 
@@ -2298,6 +2297,9 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
         monitor: std::sync::Arc::new(crate::monitor::Monitor::new()),
     };
 
+    // Written before the turns, so the run page names the analyst while it
+    // runs; completed below with what it left.
+    write_analysis(&directory, &record)?;
     let outcome = analysis_turns(&sandbox, invocation, &mut phase, &mut record);
 
     let collected = collect_report(&holder_container(&name));
@@ -2323,10 +2325,7 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
     }
     match (&outcome, &collected) {
         (Err(error), _) | (Ok(_), Err(error)) => record.error = Some(error.to_string()),
-        (Ok(_), Ok((summary, analysis))) => {
-            record.analysis_summary = Some(summary.clone());
-            record.analysis = Some(analysis.clone());
-        }
+        (Ok(_), Ok(report)) => record.report = Some(report.clone()),
     }
     write_analysis(&directory, &record)?;
 
@@ -2362,42 +2361,95 @@ fn analysis_turns(
     })
 }
 
-/// Whether the analyst wrote both files.
+/// Whether the analyst wrote its report.
 fn report_written(holder: &str) -> std::io::Result<bool> {
     exists(&[
         "exec",
         holder,
         "test",
         "-s",
-        &format!("{WORKSPACE_STAGE}/{ANALYSIS_SUMMARY_FILE}"),
-        "-a",
-        "-s",
-        &format!("{WORKSPACE_STAGE}/{ANALYSIS_TEXT_FILE}"),
+        &format!("{WORKSPACE_STAGE}/{REPORT_FILE}"),
     ])
 }
 
-/// The summary and the analysis the analyst wrote.
-fn collect_report(holder: &str) -> std::io::Result<(String, String)> {
-    let mut texts = Vec::new();
+/// The report the analyst wrote, checked.
+fn collect_report(holder: &str) -> std::io::Result<ava_wire::Report> {
+    let text = process::run_and_assume_success(
+        "docker",
+        &[
+            "exec",
+            holder,
+            "cat",
+            &format!("{WORKSPACE_STAGE}/{REPORT_FILE}"),
+        ],
+    )
+    .map_err(|error| {
+        std::io::Error::other(format!("the analyst left no {REPORT_FILE}: {error}"))
+    })?;
 
-    for file in [ANALYSIS_SUMMARY_FILE, ANALYSIS_TEXT_FILE] {
-        let text = process::run_and_assume_success(
-            "docker",
-            &["exec", holder, "cat", &format!("{WORKSPACE_STAGE}/{file}")],
-        )
-        .map_err(|error| std::io::Error::other(format!("the analyst left no {file}: {error}")))?;
+    checked_report(&text)
+}
 
-        if text.is_empty() {
+/// The report in `text`, or why it does not pass as one: a field the analyst
+/// has to fill is empty, or a field with a closed vocabulary holds a word
+/// outside it.
+fn checked_report(text: &str) -> std::io::Result<ava_wire::Report> {
+    let report: ava_wire::Report = serde_json::from_str(text).map_err(|error| {
+        std::io::Error::other(format!("{REPORT_FILE} is not a report: {error}"))
+    })?;
+
+    let required = [
+        ("strategy", &report.strategy),
+        ("went_well", &report.went_well),
+        ("decisive", &report.decisive),
+        ("attribution", &report.attribution),
+        ("verification", &report.verification),
+        ("pacing", &report.pacing),
+        ("summary", &report.summary),
+        ("analysis", &report.analysis),
+    ];
+    for (field, value) in required {
+        if value.trim().is_empty() {
             return Err(std::io::Error::other(format!(
-                "the analyst left {file} empty"
+                "{REPORT_FILE} leaves {field} empty"
             )));
         }
-        texts.push(text);
     }
 
-    let analysis = texts.pop().expect("two files were read");
-    let summary = texts.pop().expect("two files were read");
-    Ok((summary, analysis))
+    if ava_wire::meaning(&ava_wire::ATTRIBUTIONS, &report.attribution).is_none() {
+        return Err(std::io::Error::other(format!(
+            "{REPORT_FILE} attributes the outcome to `{}`, not one of {}",
+            report.attribution,
+            words(&ava_wire::ATTRIBUTIONS)
+        )));
+    }
+    if !report.failure_mode.is_empty()
+        && ava_wire::meaning(&ava_wire::FAILURE_MODES, &report.failure_mode).is_none()
+    {
+        return Err(std::io::Error::other(format!(
+            "{REPORT_FILE} files the failure under `{}`, not one of {}",
+            report.failure_mode,
+            words(&ava_wire::FAILURE_MODES)
+        )));
+    }
+    if report.failure_mode == ava_wire::OTHER_FAILURE_MODE && report.other_failure.trim().is_empty()
+    {
+        return Err(std::io::Error::other(format!(
+            "{REPORT_FILE} files the failure as {} without naming it in other_failure",
+            ava_wire::OTHER_FAILURE_MODE
+        )));
+    }
+
+    Ok(report)
+}
+
+/// The words of a vocabulary, listed.
+fn words(vocabulary: &[(&str, &str)]) -> String {
+    vocabulary
+        .iter()
+        .map(|(word, _)| *word)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Write the analysis record.
@@ -2409,4 +2461,34 @@ fn write_analysis(directory: &std::path::Path, record: &ava_wire::Analysis) -> s
             serde_json::to_string_pretty(record).map_err(std::io::Error::other)?
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    fn report(attribution: &str, failure_mode: &str, other_failure: &str) -> String {
+        format!(
+            r#"{{"strategy": "s", "went_well": "w", "decisive": "d", "attribution": "{attribution}",
+                "verification": "v", "pacing": "p", "failure_mode": "{failure_mode}",
+                "other_failure": "{other_failure}", "summary": "short", "analysis": "long"}}"#
+        )
+    }
+
+    #[test]
+    fn a_report_passes_with_its_fields_filled() {
+        let passed = super::checked_report(&report("agent", "unbanked", "")).unwrap();
+        assert_eq!(passed.failure_mode, "unbanked");
+        assert_eq!(passed.analysis, "long");
+        assert!(super::checked_report(&report("environment", "", "")).is_ok());
+        assert!(super::checked_report(&report("mixed", "other", "the disk filled")).is_ok());
+    }
+
+    #[test]
+    fn a_report_fails_on_an_empty_field_or_a_word_outside_the_vocabulary() {
+        let empty = super::checked_report("{}").unwrap_err().to_string();
+        assert!(empty.contains("strategy"), "{empty}");
+        assert!(super::checked_report("not json").is_err());
+        assert!(super::checked_report(&report("nobody", "", "")).is_err());
+        assert!(super::checked_report(&report("agent", "bad_luck", "")).is_err());
+        assert!(super::checked_report(&report("agent", "other", "")).is_err());
+    }
 }
