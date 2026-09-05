@@ -221,7 +221,9 @@ const GRAPH_TEXT_INSET: f64 = 12.0;
 const GRAPH_LINE_ONE: f64 = 21.0;
 const GRAPH_LINE_TWO: f64 = 41.0;
 const GRAPH_DOT_LIFT: f64 = 4.0;
-const GRAPH_STATE_WIDTH: f64 = 62.0;
+/// The dot sits before the state word, whose width is estimated per character.
+const GRAPH_CHARACTER_WIDTH: f64 = 6.6;
+const GRAPH_DOT_GAP: f64 = 9.0;
 const GRAPH_FONT_SIZE: u32 = 12;
 const GRAPH_LABEL_CHARS: usize = 34;
 const GRAPH_CLASSES: &str = "font-sans";
@@ -1781,23 +1783,51 @@ pub(crate) fn tournament_page(
         usage::age(record.created_seconds),
     ));
 
-    // The lobby.
+    // The seats with their standings: one table, the ratings blank until a
+    // round finished, ranked by Bradley-Terry once one did.
     let removable = !record.played() && !playing;
-    let seat_rows: Vec<Vec<String>> = record
-        .seats
+    let rated = record.finished_rounds().next().is_some();
+    let standings = standings(&record)?;
+    let mut seats: Vec<(usize, &ava_wire::Agent)> = record.seats.iter().enumerate().collect();
+    if rated {
+        seats.sort_by_key(|(seat, agent)| {
+            let rank = standings
+                .iter()
+                .position(|standing| standing.agent == agent.label())
+                .unwrap_or(usize::MAX);
+            (rank, *seat)
+        });
+    }
+    let seat_rows: Vec<Vec<String>> = seats
         .iter()
-        .enumerate()
         .map(|(seat, agent)| {
             let played = record
                 .rounds
                 .iter()
-                .filter(|round| round.entries.iter().any(|entry| entry.seat == seat))
+                .filter(|round| round.entries.iter().any(|entry| entry.seat == *seat))
                 .count();
+            let standing = standings
+                .iter()
+                .find(|standing| standing.agent == agent.label())
+                .filter(|_| rated);
             vec![
                 (seat + 1).to_string(),
                 agent_label(&agent.harness, agent.thinking.as_deref().unwrap_or("")),
                 escape(&agent.model),
                 played.to_string(),
+                standing
+                    .map(|standing| tally_label(&standing.fights))
+                    .unwrap_or_default(),
+                standing
+                    .and_then(|standing| standing.rounds.score())
+                    .map(|score| format!("{score:.2}"))
+                    .unwrap_or_default(),
+                standing
+                    .map(|standing| rating_label(standing.elo))
+                    .unwrap_or_default(),
+                standing
+                    .map(|standing| rating_label(standing.bradley_terry))
+                    .unwrap_or_default(),
                 if removable {
                     format!(
                         "<form method=\"post\" action=\"/tournament/{}/unseat\"><input type=\"hidden\" name=\"seat\" value=\"{seat}\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
@@ -1812,11 +1842,21 @@ pub(crate) fn tournament_page(
     body.push_str(&format!(
         "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
         explained(
-            "lobby",
-            "the seats of the tournament, joining between rounds and fixed once a round was played"
+            "standings",
+            "the seats of the tournament, joining between rounds and fixed once a round was played, rated over the matches of the finished rounds between different agents and ordered by Bradley-Terry"
         ),
         table(
-            &["#SEAT", "HARNESS", "*MODEL", "#ROUNDS", ""],
+            &[
+                "#SEAT",
+                "HARNESS",
+                "*MODEL",
+                "#ROUNDS|the rounds the seat played",
+                "#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
+                "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+                "#ELO|updated in match order, anchored at 1000",
+                "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
+                "",
+            ],
             seat_rows,
             Some(NO_SEATS_NOTE),
         )
@@ -1831,47 +1871,6 @@ pub(crate) fn tournament_page(
     }
 
     body.push_str("<div data-refresh=\"rounds\">");
-
-    // The standings.
-    let standings = standings(&record)?;
-    if !standings.is_empty() {
-        let rows = standings
-            .iter()
-            .map(|standing| {
-                vec![
-                    escape(&standing.agent),
-                    standing.seats.to_string(),
-                    tally_label(&standing.fights),
-                    standing
-                        .rounds
-                        .score()
-                        .map(|score| format!("{score:.2}"))
-                        .unwrap_or_default(),
-                    rating_label(standing.elo),
-                    rating_label(standing.bradley_terry),
-                ]
-            })
-            .collect();
-        body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
-            explained(
-                "standings",
-                "derived from the matches of the finished rounds between different agents, ordered by Bradley-Terry"
-            ),
-            table(
-                &[
-                    "*AGENT",
-                    "#SEATS|the seats the agent holds, two seats of one agent count as one entry here",
-                    "#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
-                    "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
-                    "#ELO|updated in match order, anchored at 1000",
-                    "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
-                ],
-                rows,
-                None,
-            )
-        ));
-    }
 
     // The rounds, newest first.
     for (index, round) in record.rounds.iter().enumerate().rev() {
@@ -1905,7 +1904,7 @@ pub(crate) fn tournament_page(
             });
             body.push_str(&format!(
                 "<div class=\"mt-4\">{}</div>",
-                cross_table(&record, round, &pairings, ordered, live)
+                cross_table(&record, &pairings, ordered, live)
             ));
         }
     }
@@ -2186,7 +2185,10 @@ fn round_graph(
             text_x = node.x + GRAPH_TEXT_INSET,
             line_one = node.y + GRAPH_LINE_ONE,
             line_two = node.y + GRAPH_LINE_TWO,
-            dot_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET - GRAPH_STATE_WIDTH,
+            dot_x = node.x + GRAPH_NODE_WIDTH
+                - GRAPH_TEXT_INSET
+                - state.len() as f64 * GRAPH_CHARACTER_WIDTH
+                - GRAPH_DOT_GAP,
             dot_y = node.y + GRAPH_LINE_TWO - GRAPH_DOT_LIFT,
             state_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET,
         );
@@ -2207,7 +2209,6 @@ fn round_graph(
 /// The place of one agent on the leaderboard of a tournament.
 struct Standing {
     agent: String,
-    seats: usize,
     /// The fights against another agent by outcome, from the agent's view: a
     /// fight with more rounds won than lost is won.
     fights: ava_wire::Tally,
@@ -2276,11 +2277,6 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
             }
 
             Standing {
-                seats: record
-                    .seats
-                    .iter()
-                    .filter(|seat| seat.label() == agent)
-                    .count(),
                 fights,
                 rounds,
                 elo: rating(&elo, &agent),
@@ -2320,7 +2316,6 @@ fn rating_label(rating: Option<f64>) -> String {
 /// round is `live`, a pairing without rounds is an attack still going.
 fn cross_table(
     record: &ava_wire::Tournament,
-    round: &ava_wire::Round,
     pairings: &[ava_wire::Pairing],
     ordered: bool,
     live: bool,
@@ -2419,50 +2414,7 @@ fn cross_table(
         })
         .collect();
 
-    format!(
-        "<p class=\"{NOTE_CLASSES} mb-2\">{}</p>{}",
-        round_summary(round, pairings),
-        table(&headers, rows, None)
-    )
-}
-
-/// One line on what a round came to: how many of its runs left an entry and
-/// what became of the pairings.
-fn round_summary(round: &ava_wire::Round, pairings: &[ava_wire::Pairing]) -> String {
-    let entries = round
-        .entries
-        .iter()
-        .filter(|entry| entry.attempt.is_some())
-        .count();
-    let mut fought = 0;
-    let mut forfeited = 0;
-    let mut unplayed = 0;
-    let mut playing = 0;
-    for pairing in pairings {
-        match (pairing.tally.rounds(), &pairing.reason, &pairing.run) {
-            (0, None, Some(_)) => playing += 1,
-            (0, _, _) => unplayed += 1,
-            (_, Some(_), None) => forfeited += 1,
-            _ => fought += 1,
-        }
-    }
-
-    let mut parts = vec![format!(
-        "{entries} of {} runs left an entry",
-        round.entries.len()
-    )];
-    for (count, what) in [
-        (fought, "fought"),
-        (forfeited, "forfeited"),
-        (unplayed, "without a fight"),
-        (playing, "playing"),
-    ] {
-        if count > 0 {
-            parts.push(format!("{count} {what}"));
-        }
-    }
-
-    parts.join(" \u{00b7} ")
+    table(&headers, rows, None)
 }
 
 /// The colour of a tally from the view of its first side.
