@@ -58,11 +58,13 @@ const SLACK_MARKER: char = '*';
 const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
-const RUN_HEADERS: [&str; 11] = [
-    "RUN|the run directory under runs/, how long ago it started, and the tournament seat it plays",
+const RUN_HEADERS: [&str; 12] = [
+    "RUN|the run directory under runs/ and how long ago it started",
     "STATE|live or the last call while the run goes, whether a push passed the verifier once it is over",
     "ANALYSIS|whether an analyst was run over the finished run: analyzing, analyzed or failed",
     "GAME|the game that was played",
+    "TOURNAMENT|the tournament the run plays a seat in, with the seat, the round and the turn, or a dash \
+     for a run of its own",
     "MODEL|the model under test",
     "HARNESS|the harness driving the model, with the thinking level it was asked for",
     "*TIME|seconds spent of the time budget, red once the whole budget is gone",
@@ -74,6 +76,8 @@ const RUN_HEADERS: [&str; 11] = [
     "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
+/// What the tournament column shows for a run of its own.
+const NO_TOURNAMENT: &str = "-";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
 const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
 const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
@@ -473,21 +477,28 @@ impl RunEntry {
     /// The run cell of the runs table: the link with the age beneath it, and
     /// the tournament seat it plays.
     fn run_cell(&self) -> String {
-        let mut cell = format!(
+        format!(
             "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} ago</div>",
             self.link(),
             usage::age(self.run.started_seconds)
-        );
-        if let Some(placement) = &self.placement {
-            cell.push_str(&format!(
-                "<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{}</div>",
-                placement_label(
-                    placement,
-                    ava_game::find(&self.run.game).map_or(1, |game| game.turns().len())
-                )
-            ));
-        }
-        cell
+        )
+    }
+
+    /// The tournament the run plays a seat in, linked, with the seat, the
+    /// round and the turn beneath, or a dash for a run of its own.
+    fn tournament_cell(&self) -> String {
+        let Some(placement) = &self.placement else {
+            return format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>");
+        };
+
+        format!(
+            "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{}</div>",
+            tournament_link(&placement.tournament),
+            placement_role(
+                placement,
+                ava_game::find(&self.run.game).map_or(1, |game| game.turns().len())
+            )
+        )
     }
 
     /// The state of the run as a pill.
@@ -607,6 +618,7 @@ impl RunEntry {
             self.state(),
             self.analysis_cell(),
             game_label(&self.run),
+            self.tournament_cell(),
             escape(&self.run.model),
             self.agent(),
             self.time_cell(),
@@ -794,6 +806,7 @@ pub(crate) fn runs_page(
                 pill(STARTING_PILL, true, "starting"),
                 String::new(),
                 escape(&start.game),
+                format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>"),
                 escape(&start.model),
                 agent_label(&start.agent, &start.thinking),
                 String::new(),
@@ -3044,15 +3057,6 @@ fn placement_role(placement: &tournament::Placement, turns: usize) -> String {
         "seat {} in round {}{turn}",
         placement.seat + 1,
         placement.round + 1
-    )
-}
-
-/// Where a run sits in a tournament, linking the tournament.
-fn placement_label(placement: &tournament::Placement, turns: usize) -> String {
-    format!(
-        "{} of {}",
-        placement_role(placement, turns),
-        tournament_link(&placement.tournament)
     )
 }
 
