@@ -2340,8 +2340,8 @@ fn cross_table(
     )
 }
 
-/// One line on what a round came to: who left an entry and what became of
-/// the pairings.
+/// One line on what a round came to: how many of its runs left an entry and
+/// what became of the pairings.
 fn round_summary(round: &ava_wire::Round, pairings: &[ava_wire::Pairing]) -> String {
     let entries = round
         .entries
@@ -2362,7 +2362,7 @@ fn round_summary(round: &ava_wire::Round, pairings: &[ava_wire::Pairing]) -> Str
     }
 
     let mut parts = vec![format!(
-        "{entries} of {} seats left an entry",
+        "{entries} of {} runs left an entry",
         round.entries.len()
     )];
     for (count, what) in [
