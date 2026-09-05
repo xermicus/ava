@@ -199,6 +199,9 @@ pub struct Run {
     /// The commit the game folder was last changed in.
     #[serde(default)]
     pub game_version: String,
+    /// The architecture of the host the sandbox ran on, as docker reports it.
+    #[serde(default)]
+    pub architecture: String,
     /// The seconds the run was given, the last call included.
     pub limit_seconds: u64,
     pub started_seconds: u64,

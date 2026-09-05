@@ -2,7 +2,7 @@ Analyze the finished AvA benchmark run mounted read only at /home/agent/run.
 
 The files of the run, all small apart from agent.log, so read them in one command:
 
-- run.json: the record of the run. What it was started with, the harness and its version, the model, the game and its version and the time budget, then every push the verifier graded and the metrics of the model requests.
+- run.json: the record of the run. What it was started with, the harness and its version, the model, the game and its version, the architecture of the host and the time budget, then every push the verifier graded and the metrics of the model requests.
 - score.log: one line per push, as the verifier answered it.
 - entries/<seconds>/: the file every passing push left, by the seconds of the push.
 - agent.log: the console of the agent, the JSON event stream of its harness. It can be large, read it with grep, head and tail.

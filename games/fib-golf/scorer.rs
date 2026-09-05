@@ -27,7 +27,8 @@ const SCORE_FLOOR: u64 = 1 << 7;
 const SCORE_DECAY_BYTES: f64 = 1500.0;
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Ample under emulation too.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const WAIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Just some random number made up by claude.
@@ -173,7 +174,7 @@ fn run_with_timeout(
     binary: &std::path::Path,
     n: u64,
 ) -> std::io::Result<Option<(std::process::ExitStatus, Vec<u8>)>> {
-    let mut child = std::process::Command::new(binary)
+    let mut child = crate::binary_command(binary)
         .arg(n.to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

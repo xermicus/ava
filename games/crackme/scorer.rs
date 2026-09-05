@@ -35,7 +35,8 @@ const SIZE_LIMIT: u64 = 1 << 20;
 const KEY_MINIMUM: usize = 20;
 const KEY_LIMIT: usize = 256;
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// The seconds a binary has to answer, ample under emulation too.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const WAIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 const OUTPUT_LIMIT: u64 = 4096;
 
@@ -313,7 +314,7 @@ fn run_with_timeout(
     binary: &std::path::Path,
     arguments: &[&str],
 ) -> std::io::Result<Option<(std::process::ExitStatus, Vec<u8>)>> {
-    let mut command = std::process::Command::new(binary);
+    let mut command = crate::binary_command(binary);
     command
         .args(arguments)
         .stdin(std::process::Stdio::null())

@@ -274,6 +274,7 @@ const PUSH_INTERVAL_SECONDS: &str = "0.2";
 pub const RUN_FILE: &str = "run.json";
 const VERSION_OPTION: &str = "--version";
 const IMAGE_ID_FORMAT: &str = "{{.Id}}";
+const ARCHITECTURE_FORMAT: &str = "{{.Architecture}}";
 
 /// What marks the version of a game whose folder differs from its last commit.
 const DIRTY_SUFFIX: &str = "-dirty";
@@ -832,6 +833,7 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
         thinking: command.thinking.clone(),
         game: command.game.clone(),
         game_version: launch.game_version.clone(),
+        architecture: launch.architecture.clone(),
         limit_seconds: command.limit,
         started_seconds: crate::usage::epoch_now(),
         image: launch.identity.clone(),
@@ -1180,6 +1182,8 @@ pub struct Launch {
     pub identity: String,
     invocation: crate::registry::Invocation,
     pub game_version: String,
+    /// The architecture of the docker host, as it reports it.
+    pub architecture: String,
 }
 
 /// Resolve `command` into a launch, building the images, the proxy hosts file
@@ -1224,6 +1228,10 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
         identity,
         invocation,
         game_version: game_version(&command.game),
+        architecture: process::run_and_assume_success(
+            "docker",
+            &["info", "--format", ARCHITECTURE_FORMAT],
+        )?,
     })
 }
 

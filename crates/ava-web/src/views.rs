@@ -680,9 +680,14 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     body.push_str(&notice.render());
 
     body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {} {} \u{00b7} started {} ago</p>",
+        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {}{} \u{00b7} {} \u{00b7} {} {} \u{00b7} started {} ago</p>",
         escape(&entry.run.game),
         version_label(&entry.run.game_version),
+        if entry.run.architecture.is_empty() {
+            String::new()
+        } else {
+            format!(" on {}", escape(&entry.run.architecture))
+        },
         escape(&entry.run.model),
         entry.agent(),
         version_label(&entry.run.harness_version),
@@ -1603,14 +1608,13 @@ fn cross_table(
                             .join(run)
                             .join(docker::RUN_FILE)
                             .is_file();
-                        cells.push(format!(
-                            "{} <a class=\"{LINK_CLASSES} text-xs\" href=\"/run/{run}\">run</a>",
-                            if started {
+                        cells.push(played(
+                            &if started {
                                 pill(LIVE_PILL, true, "live")
                             } else {
                                 pill(STARTING_PILL, true, "queued")
                             },
-                            run = escape(run)
+                            Some(run),
                         ));
                     }
                     Some((tally, reason, run)) => {
@@ -1698,10 +1702,7 @@ fn tint(tally: &ava_wire::Tally) -> &'static str {
 fn pairing_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) -> String {
     let reason = reason.unwrap_or_default();
     if tally.rounds() == 0 {
-        return explained(
-            &format!("<span class=\"{MUTED_CLASSES}\">none</span>"),
-            reason,
-        );
+        return played(&format!("<span class=\"{MUTED_CLASSES}\">none</span>"), run);
     }
 
     let label = if run.is_none() && !reason.is_empty() {
@@ -1713,15 +1714,19 @@ fn pairing_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>
             tally_label(tally)
         )
     };
-    let played = match run {
+
+    played(&explained(&label, reason), run)
+}
+
+/// `label`, linking to the run that played the pairing when one did.
+fn played(label: &str, run: Option<&str>) -> String {
+    match run {
         Some(run) => format!(
-            " <a class=\"{LINK_CLASSES} text-xs\" href=\"/run/{run}\">run</a>",
+            "<a class=\"hover:opacity-70 transition-opacity\" href=\"/run/{run}\">{label}</a>",
             run = escape(run)
         ),
-        None => String::new(),
-    };
-
-    format!("{}{played}", explained(&label, reason))
+        None => label.to_string(),
+    }
 }
 
 /// The registry, the credentials and the docker images runs are built from.

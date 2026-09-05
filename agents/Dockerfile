@@ -23,6 +23,7 @@ RUN apt update && \
 	less \
 	locales \
 	make \
+	nasm \
 	npm \
 	pkg-config \
 	python3 \
@@ -31,6 +32,14 @@ RUN apt update && \
 	sudo \
 	wget \
 	xxd && \
+	if [ "$(dpkg --print-architecture)" != "amd64" ]; then \
+		apt install -y --no-install-recommends \
+		binutils-x86-64-linux-gnu \
+		g++-x86-64-linux-gnu \
+		gcc-x86-64-linux-gnu \
+		libc6-dev-amd64-cross \
+		qemu-user; \
+	fi && \
 	apt clean && \
 	rm -rf /var/lib/apt/lists/*
 

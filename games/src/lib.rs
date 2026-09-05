@@ -20,6 +20,33 @@ pub const GAMES: [&dyn Game; 6] = [
     &sanity_check::SanityCheck,
 ];
 
+/// The architecture the tasks ask binaries for, whatever the host runs on.
+pub const TASK_ARCHITECTURE: &str = "x86_64";
+
+/// The user mode emulator running a task binary on a host of another architecture.
+const EMULATOR: &str = "qemu-x86_64";
+
+/// Where the libraries of the task architecture live on such a host, for the
+/// emulator to load a dynamically linked binary from.
+const EMULATOR_LIBRARIES: &str = "/usr/x86_64-linux-gnu";
+const EMULATOR_LIBRARIES_OPTION: &str = "-L";
+
+/// The command running the task binary at `binary`: the binary itself on a
+/// host of the task architecture, the emulator over it anywhere else, so a
+/// verdict does not depend on the host.
+pub(crate) fn binary_command(binary: &std::path::Path) -> std::process::Command {
+    if std::env::consts::ARCH == TASK_ARCHITECTURE {
+        return std::process::Command::new(binary);
+    }
+
+    let mut command = std::process::Command::new(EMULATOR);
+    if std::path::Path::new(EMULATOR_LIBRARIES).is_dir() {
+        command.args([EMULATOR_LIBRARIES_OPTION, EMULATOR_LIBRARIES]);
+    }
+    command.arg(binary);
+    command
+}
+
 /// The points scale every game ranks in.
 ///
 /// An entry ranks within 0 and this maximum regardless of the game, which is

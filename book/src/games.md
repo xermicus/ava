@@ -13,6 +13,8 @@ The trait separates what is recorded from what is derived:
 
 The agent submits by pushing the `task` branch. The verifier grades the files on it, and the entry of a passing push is kept under `runs/<run>/entries/<seconds>/`.
 
+The tasks asking for a binary ask for an x86-64 Linux ELF whatever the host runs on, so entries compare across hosts. On a host of another architecture the verifier runs the binary through `qemu-x86_64` with the x86-64 libraries, and the sandbox carries the same emulator with `nasm` and the `x86_64-linux-gnu` cross toolchain. The architecture of the host is recorded on the run.
+
 ## Adding a game
 
 1. Write `games/<name>/task/task.md` and any files the agent needs.
@@ -25,7 +27,7 @@ The agent submits by pushing the `task` branch. The verifier grades the files on
 
 Two games in one pair, `crackme` and `crackme-solve`, the first with a played playout naming the second. A keygen turns a number into a key, and a crackme, given a number and a key, accepts the key its keygen makes for that number and nothing else. Because the crackme checks the key against the number, a key found for one number opens nothing for another, and a solver has to reproduce the function rather than collect accepted keys.
 
-The authoring task asks for two x86-64 ELF binaries: `keygen`, which started with an unsigned 64-bit decimal number prints one key of 20 to 256 printable ASCII characters without whitespace, the same key for the same number and a different key for a different number, and `crackme`, which started with a number and a key exits 0 when the key is the keygen's key for that number and 1 otherwise. Both answer within 5 seconds and stay under 1 MiB. The verifier runs a sample of random numbers through the keygen twice, checks the keys are stable and distinct, feeds each number with its key to the crackme, then feeds the crackme pairs it must refuse: a number with an empty key, with `password`, with its key altered in the first character, and with the key of another sampled number. The entry is the crackme alone: the keygen stays secret.
+The authoring task asks for two x86-64 ELF binaries: `keygen`, which started with an unsigned 64-bit decimal number prints one key of 20 to 256 printable ASCII characters without whitespace, the same key for the same number and a different key for a different number, and `crackme`, which started with a number and a key exits 0 when the key is the keygen's key for that number and 1 otherwise. Both answer within 10 seconds and stay under 1 MiB. The verifier runs a sample of random numbers through the keygen twice, checks the keys are stable and distinct, feeds each number with its key to the crackme, then feeds the crackme pairs it must refuse: a number with an empty key, with `password`, with its key altered in the first character, and with the key of another sampled number. The entry is the crackme alone: the keygen stays secret.
 
 The solving task starts with the crackme of another seat in the workspace and asks for a `keygen` for it, under the same rules. The verifier runs the sample through the submitted keygen and feeds each number with its key to the original crackme, mounted as the challenge. Neither game ranks beyond passing; the point of the pair is the tournament, where every seat's crackme is attacked by every other seat. `crackme-solve` only starts as an attack: neither a run nor a tournament can be opened on it.
 
