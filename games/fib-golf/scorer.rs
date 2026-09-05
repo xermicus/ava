@@ -1,4 +1,4 @@
-//! The fib-golf game, scored against the size of the submitted ELF.
+//! The fib-golf game, verified by running the submitted ELF and ranked by its size.
 
 const GAME_NAME: &str = "fib-golf";
 const SUBMISSION_BINARY: &str = "fibonacci";
@@ -6,10 +6,10 @@ const SEPARATOR: char = ' ';
 
 /// The first 47 Fibonacci numbers, the largest N the task asks for.
 ///
-/// The length is the bound the scorer tests up to, so it is the bound the task
-/// states. Every value here fits in a signed 32 bit integer, which leaves the
-/// width of the arithmetic a choice the submission makes rather than one the
-/// scorer forces.
+/// The length is the bound the verifier tests up to, so it is the bound the
+/// task states. Every value here fits in a signed 32 bit integer, which leaves
+/// the width of the arithmetic a choice the submission makes rather than one
+/// the verifier forces.
 const FIBONACCI: [u64; 47] = [
     0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765,
     10946, 17711, 28657, 46368, 75025, 121393, 196418, 317811, 514229, 832040, 1346269, 2178309,
@@ -17,27 +17,28 @@ const FIBONACCI: [u64; 47] = [
     267914296, 433494437, 701408733, 1134903170, 1836311903,
 ];
 
-/// The size a solving ELF earns nothing at.
-const SCORE_CEILING: u64 = 1 << 14;
+/// The size the task allows, which is the size an entry earns nothing at.
+const SIZE_LIMIT: u64 = 1 << 14;
 
-/// The size a solving ELF earns everything at.
+/// The size an entry earns everything at.
 const SCORE_FLOOR: u64 = 1 << 7;
 
 /// The points decay exponentially with the size, by e over this many bytes.
 const SCORE_DECAY_BYTES: f64 = 1500.0;
 
-/// The size a submission is rejected at. Between the ceiling and this it
-/// scores nothing and still reports whether the output was right.
-const SIZE_LIMIT: u64 = 1 << 15;
-
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Read no further than this: a file this large is no golf entry, and an
+/// endless one must not stall the verifier.
+const READ_LIMIT: u64 = 1 << 20;
+/// Ample under emulation too.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const WAIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Just some random number made up by claude.
 const OUTPUT_LIMIT: u64 = 1 << 20;
 
-/// The fib-golf game, scored against the size of the submitted ELF.
+/// The fib-golf game, verified by running the submitted ELF and ranked by its size.
 pub struct FibGolf;
 
 impl crate::Game for FibGolf {
@@ -45,20 +46,33 @@ impl crate::Game for FibGolf {
         GAME_NAME
     }
 
-    /// Score the ELF submitted as `fibonacci`.
-    fn score(&self, submission: &std::path::Path) -> std::io::Result<crate::Score> {
+    fn entry(&self) -> &'static str {
+        SUBMISSION_BINARY
+    }
+
+    /// Verify the ELF submitted as `fibonacci` by running it for every N.
+    fn verify(
+        &self,
+        submission: &std::path::Path,
+        _challenge: Option<&std::path::Path>,
+    ) -> std::io::Result<ava_wire::Verdict> {
         let binary = submission.join(SUBMISSION_BINARY);
 
-        let contents = match std::fs::read(&binary) {
-            Ok(contents) => contents,
+        let contents = match crate::read_at_most(&binary, READ_LIMIT) {
+            Ok(Some(contents)) => contents,
+            Ok(None) => {
+                return Ok(crate::failed(format!(
+                    "{SUBMISSION_BINARY} is over {READ_LIMIT} bytes, no golf entry"
+                )));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(unsolved(&format!(
-                    "no {SUBMISSION_BINARY} in the tarball, which holds {}",
+                return Ok(crate::failed(format!(
+                    "no {SUBMISSION_BINARY} in the submission, which holds {}",
                     listing(submission)
                 )));
             }
             Err(error) => {
-                return Ok(unsolved(&format!(
+                return Ok(crate::failed(format!(
                     "{SUBMISSION_BINARY} cannot be read: {error}"
                 )));
             }
@@ -67,7 +81,7 @@ impl crate::Game for FibGolf {
         let bytes = contents.len() as u64;
 
         if !contents.starts_with(&ELF_MAGIC) {
-            return Ok(unsolved(&format!(
+            return Ok(crate::failed(format!(
                 "{SUBMISSION_BINARY} is {bytes} bytes but not an ELF, it starts with {:02x?}",
                 &contents[..contents.len().min(ELF_MAGIC.len())]
             )));
@@ -77,7 +91,7 @@ impl crate::Game for FibGolf {
 
         for n in 0..=FIBONACCI.len() as u64 {
             let Ok(Some((status, output))) = run_with_timeout(&binary, n) else {
-                return Ok(unsolved(&format!(
+                return Ok(crate::failed(format!(
                     "{SUBMISSION_BINARY} did not finish within {RUN_TIMEOUT:?} at N={n}"
                 )));
             };
@@ -86,13 +100,13 @@ impl crate::Game for FibGolf {
             let correct = output.trim_ascii_end() == expected.as_bytes().trim_ascii_end();
 
             if !status.success() {
-                return Ok(unsolved(&format!(
+                return Ok(crate::failed(format!(
                     "{SUBMISSION_BINARY} exited with {status} at N={n}"
                 )));
             }
 
             if !correct {
-                return Ok(unsolved(&format!(
+                return Ok(crate::failed(format!(
                     "wrong output at N={n}, first difference at byte {}: printed {} bytes where {} were expected",
                     difference(&output, expected.as_bytes()),
                     output.len(),
@@ -101,24 +115,20 @@ impl crate::Game for FibGolf {
             }
         }
 
-        if bytes >= SIZE_LIMIT {
-            return Ok(unsolved(&format!(
-                "{SUBMISSION_BINARY} prints what it should but is {bytes} bytes, past the {SIZE_LIMIT} the task is scored within at all"
+        if bytes > SIZE_LIMIT {
+            return Ok(crate::failed(format!(
+                "{SUBMISSION_BINARY} prints what it should but is {bytes} bytes, past the {SIZE_LIMIT} the task allows"
             )));
         }
 
-        let points = earned_points(bytes);
+        Ok(ava_wire::Verdict::passed())
+    }
 
-        Ok(crate::Score {
-            game: GAME_NAME,
-            solved: true,
-            points,
-            reason: (points == 0).then(|| {
-                format!(
-                    "{SUBMISSION_BINARY} prints what it should at {bytes} bytes and earns nothing above the {SCORE_CEILING} byte ceiling"
-                )
-            }),
-        })
+    /// The points of an entry by its size: they fall off as
+    /// `e^(-(bytes - 128) / 1500)`, scaled so that 128 bytes earn everything
+    /// and the size limit earns nothing.
+    fn points(&self, entry: &std::path::Path) -> std::io::Result<Option<u64>> {
+        Ok(Some(earned_points(std::fs::metadata(entry)?.len())))
     }
 }
 
@@ -149,25 +159,13 @@ fn difference(output: &[u8], expected: &[u8]) -> usize {
         .unwrap_or(output.len().min(expected.len()))
 }
 
-/// The points for a solving ELF of `bytes`.
+/// The points for a passing ELF of `bytes`.
 fn earned_points(bytes: u64) -> u64 {
     let decay = |bytes: u64| (-((bytes - SCORE_FLOOR) as f64) / SCORE_DECAY_BYTES).exp();
-    let at_ceiling = decay(SCORE_CEILING);
-    let share = (decay(bytes.clamp(SCORE_FLOOR, SCORE_CEILING)) - at_ceiling) / (1.0 - at_ceiling);
+    let at_limit = decay(SIZE_LIMIT);
+    let share = (decay(bytes.clamp(SCORE_FLOOR, SIZE_LIMIT)) - at_limit) / (1.0 - at_limit);
 
     (crate::MAXIMUM_POINTS as f64 * share).round() as u64
-}
-
-/// The score of a submission which does not solve the task.
-fn unsolved(reason: &str) -> crate::Score {
-    log::info!("{reason}");
-
-    crate::Score {
-        game: GAME_NAME,
-        solved: false,
-        points: 0,
-        reason: Some(reason.to_string()),
-    }
 }
 
 /// The first `n` fibonacci numbers, space separated.
@@ -185,7 +183,7 @@ fn run_with_timeout(
     binary: &std::path::Path,
     n: u64,
 ) -> std::io::Result<Option<(std::process::ExitStatus, Vec<u8>)>> {
-    let mut child = std::process::Command::new(binary)
+    let mut child = crate::binary_command(binary)
         .arg(n.to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -214,4 +212,18 @@ fn run_with_timeout(
 
     let output = reader.join().expect("the reader thread does not panic")?;
     Ok(Some((status, output)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_curve_spans_the_scale() {
+        assert_eq!(
+            super::earned_points(super::SCORE_FLOOR),
+            crate::MAXIMUM_POINTS
+        );
+        assert_eq!(super::earned_points(1), crate::MAXIMUM_POINTS);
+        assert_eq!(super::earned_points(super::SIZE_LIMIT), 0);
+        assert!(super::earned_points(1000) > super::earned_points(2000));
+    }
 }

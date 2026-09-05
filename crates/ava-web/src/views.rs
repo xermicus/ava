@@ -1,18 +1,15 @@
-//! The pages of the web interface, rendered from the run artifacts on disk,
-//! the registry and the games folder.
+//! The pages of the web interface, rendered from the run and tournament
+//! records on disk, the registry and the games folder.
 
-use ava_run::{docker, process, registry, usage};
+use ava_game::scoring::Scoring;
+use ava_run::{docker, process, registry, runs, tournament, usage};
 
 const GAMES_DIRECTORY: &str = "games";
 const TASK_DIRECTORY: &str = "task";
 const TASK_FILE: &str = "task.md";
 const INSTRUCTIONS_FILE: &str = "README.md";
 
-/// Every game scores within this ceiling, which is what makes one point
-/// bar comparable across all of them.
-const POINT_CEILING: u64 = 10000;
-
-/// How many solving runs a game lists on its standings.
+/// How many passing runs a game lists on its standings.
 const STANDINGS_LIMIT: usize = 3;
 
 /// What the start panel offers preselected on a fresh page.
@@ -25,7 +22,7 @@ const DEFAULT_ANALYST_MODEL: &str = "claude-sonnet-5";
 const DEFAULT_ANALYST_THINKING: &str = "medium";
 
 /// The files of a run the raw file routes hand out, and nothing else.
-const RUN_FILES: [&str; 13] = [
+const RUN_FILES: [&str; 11] = [
     docker::MONITOR_FILE,
     docker::AGENT_LOG,
     docker::ANALYSIS_FILE,
@@ -33,13 +30,19 @@ const RUN_FILES: [&str; 13] = [
     docker::ANALYSIS_ACCESS_LOG,
     docker::ANALYSIS_ERROR_LOG,
     docker::SCORE_LOG,
-    docker::METADATA_FILE,
-    docker::SCORE_FILE,
+    docker::RUN_FILE,
     docker::ACCESS_LOG,
     docker::ERROR_LOG,
     docker::SCORE_ERROR_LOG,
-    docker::VERSION_FILE,
 ];
+
+/// The fields of the run record that are shown on their own rather than among
+/// the parameters.
+const RUN_RECORD_SECTIONS: [&str; 2] = ["attempts", "metrics"];
+
+/// The console of the fights of one round, handed out by the tournament file route.
+const ROUND_LOG_PREFIX: &str = "round-";
+const ROUND_LOG_SUFFIX: &str = ".log";
 
 /// How much of the agent console the run page shows inline.
 const CONSOLE_TAIL_BYTES: usize = 16 * 1024;
@@ -60,20 +63,23 @@ const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
 const RUN_HEADERS: [&str; 10] = [
-    "RUN|the run directory under runs/, and how long ago it started",
-    "STATE|live or the last call while the run goes, the verdict of its best push once it is over",
-    "GAME|the game that was played, and the scorer that graded it",
+    "RUN|the run directory under runs/, how long ago it started, and the tournament seat it plays",
+    "STATE|live or the last call while the run goes, whether a push passed the verifier once it is over",
+    "GAME|the game that was played",
     "MODEL|the model under test",
     "HARNESS|the harness driving the model, with the thinking level it was asked for",
     "*TIME|seconds spent of the time budget, red once the whole budget is gone",
-    "#PUSHES|the pushes to the task branch the scorer graded",
+    "#PUSHES|the pushes to the task branch the verifier graded",
     "#CUT|requests a model answered without ever reporting usage, so the stream was cut short \
      upstream",
-    "*POINTS|the best solving push, on the 0 to 10000 scale every game scores within",
+    "*POINTS|the entry of record ranked on the 0 to 10000 scale every game ranks in, once the run \
+     is over",
     "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
+const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
+const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
 const IMAGE_FORMAT: &str = "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
 const IMAGE_PREFIX: &str = "ava/";
 
@@ -128,11 +134,16 @@ const LABEL_CLASSES: &str = "block text-xs font-medium text-neutral-400 mb-1.5";
 const PILL_CLASSES: &str =
     "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium";
 const LIVE_PILL: &str = "bg-emerald-500/10 text-emerald-400";
-const SOLVED_PILL: &str = "bg-emerald-500/10 text-emerald-400";
-const UNSOLVED_PILL: &str = "bg-orange-500/10 text-orange-400";
-const FAILED_PILL: &str = "bg-red-500/10 text-red-400";
+const PASSED_PILL: &str = "bg-emerald-500/10 text-emerald-400";
+const FAILED_PILL: &str = "bg-orange-500/10 text-orange-400";
+const BROKEN_PILL: &str = "bg-red-500/10 text-red-400";
 const STARTING_PILL: &str = "bg-amber-500/10 text-amber-400";
 const NEUTRAL_PILL: &str = "bg-neutral-800 text-neutral-400";
+
+/// The tints of a tally, by who came out ahead.
+const AHEAD_CLASSES: &str = "text-emerald-400";
+const BEHIND_CLASSES: &str = "text-red-400";
+const LEVEL_CLASSES: &str = "text-neutral-300";
 
 /// The meters: a track, a fill and a mono label.
 const METER_TRACK_CLASSES: &str =
@@ -186,20 +197,31 @@ impl Notice {
     }
 }
 
-/// What the start panel shows selected, carried through the action redirect
-/// so a submission does not reset the form.
+/// What a form shows selected, carried through the action redirect so a
+/// submission does not reset it.
 #[derive(Default)]
 pub(crate) struct Selection {
-    pub agent: Option<String>,
-    pub model: Option<String>,
-    pub game: Option<String>,
-    pub thinking: Option<String>,
-    pub limit: Option<String>,
-    pub parallel: Option<String>,
-    pub analyze: Option<String>,
-    pub analyst: Option<String>,
-    pub analyst_model: Option<String>,
-    pub analyst_thinking: Option<String>,
+    pub fields: Vec<(String, String)>,
+}
+
+impl Selection {
+    /// The carried value of `field`, or `default` without one.
+    fn get<'a>(&'a self, field: &str, default: &'a str) -> &'a str {
+        self.fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or(default)
+    }
+
+    /// The carried agent under `prefix`, or the `defaults`.
+    fn agent<'a>(&'a self, prefix: &str, defaults: [&'a str; 3]) -> [&'a str; 3] {
+        let mut chosen = defaults;
+        for (field, chosen) in crate::serve::AGENT_FIELDS.iter().zip(chosen.iter_mut()) {
+            *chosen = self.get(&format!("{prefix}{field}"), chosen);
+        }
+        chosen
+    }
 }
 
 /// A run the server was asked to start whose containers are not up yet.
@@ -216,79 +238,68 @@ pub(crate) struct Pending {
 /// One run directory with everything the views read out of it.
 struct RunEntry {
     name: String,
-    metadata: serde_json::Value,
-    score: Option<serde_json::Value>,
+    run: ava_wire::Run,
     live: bool,
     /// Whether an analyst is up for the run.
     analyzing: bool,
-    /// The wall clock seconds the run actually took, for a finished run.
-    wall: Option<u64>,
     /// The newest heartbeat of the run loop, for a live run.
     monitor: Option<serde_json::Value>,
-    /// The scored pushes so far: the attempts log once collected, the output
-    /// of the scoring container while the run is live.
-    attempts: Vec<serde_json::Value>,
+    /// The pushes graded so far: the record once the run is over, the output
+    /// of the scoring container while it is live.
+    attempts: Vec<ava_wire::Attempt>,
+    /// The entry of record, once the run is over and kept one.
+    record: Option<runs::Entry>,
+    /// The tournament seat the run plays, if any.
+    placement: Option<tournament::Placement>,
 }
 
 impl RunEntry {
-    fn game(&self) -> &str {
-        text(&self.metadata, "game")
-    }
+    fn new(
+        directory: &std::path::Path,
+        run: ava_wire::Run,
+        running: &[String],
+        placements: &std::collections::HashMap<String, tournament::Placement>,
+    ) -> Self {
+        let name = directory
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| run.run.clone());
+        let live = running.contains(&docker::scorer_container(&name));
+        let record = if live {
+            None
+        } else {
+            ava_game::find(&run.game)
+                .and_then(|game| runs::entry_of_record(game, directory).ok().flatten())
+        };
 
-    fn model(&self) -> &str {
-        text(&self.metadata, "model")
-    }
-
-    fn harness(&self) -> &str {
-        text(&self.metadata, "agent")
-    }
-
-    fn thinking(&self) -> &str {
-        text(&self.metadata, "thinking")
+        Self {
+            live,
+            analyzing: running.contains(&docker::analyst_container(&name)),
+            monitor: read_json(&directory.join(docker::MONITOR_FILE)),
+            attempts: attempts_of(directory, &name, live, &run),
+            record,
+            placement: placements.get(&name).cloned(),
+            name,
+            run,
+        }
     }
 
     /// The harness with its thinking level, the way an agent is referred to.
     fn agent(&self) -> String {
-        agent_label(self.harness(), self.thinking())
+        agent_label(
+            &self.run.harness,
+            self.run.thinking.as_deref().unwrap_or(""),
+        )
     }
 
-    fn started(&self) -> u64 {
-        number(&self.metadata, "started_seconds")
+    /// Whether any push passed the verifier.
+    fn passed(&self) -> bool {
+        self.attempts.iter().any(|attempt| attempt.verdict.passed)
     }
 
-    fn limit(&self) -> u64 {
-        number(&self.metadata, "limit_seconds")
-    }
-
-    fn attempts(&self) -> u64 {
-        pointer(self.score.as_ref(), "/attempts/attempts")
-    }
-
-    fn points(&self) -> u64 {
-        pointer(self.score.as_ref(), "/attempts/points")
-    }
-
-    fn seconds(&self) -> u64 {
-        pointer(self.score.as_ref(), "/attempts/first_solved_seconds")
-    }
-
-    /// One aggregated number out of the proxy metrics of the run.
-    fn metric(&self, key: &str) -> u64 {
-        pointer(self.score.as_ref(), &format!("/metrics/{key}"))
-    }
-
-    fn solved(&self) -> bool {
-        self.score
-            .as_ref()
-            .and_then(|score| score.pointer("/attempts/solved"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    }
-
-    /// Whether the score obeys the point ceiling; one scored before the
-    /// ceiling existed does not compete on the standings.
-    fn comparable(&self) -> bool {
-        self.points() <= POINT_CEILING
+    /// The points of the entry of record, nothing for a game ranking nothing.
+    fn points(&self) -> Option<u64> {
+        self.record.as_ref().and_then(|entry| entry.points)
     }
 
     /// The run name as a link into its page.
@@ -299,19 +310,27 @@ impl RunEntry {
         )
     }
 
-    /// The run cell of the runs table: the link with the age beneath it.
+    /// The run cell of the runs table: the link with the age beneath it, and
+    /// the tournament seat it plays.
     fn run_cell(&self) -> String {
-        format!(
+        let mut cell = format!(
             "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} ago</div>",
             self.link(),
-            usage::age(self.started())
-        )
+            usage::age(self.run.started_seconds)
+        );
+        if let Some(placement) = &self.placement {
+            cell.push_str(&format!(
+                "<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{}</div>",
+                placement_label(placement)
+            ));
+        }
+        cell
     }
 
     /// The state of the run as a pill.
     fn state(&self) -> String {
         if self.live {
-            pill(
+            let live = pill(
                 LIVE_PILL,
                 true,
                 if self.last_call() {
@@ -319,15 +338,22 @@ impl RunEntry {
                 } else {
                     "live"
                 },
-            )
-        } else if self.analyzing {
+            );
+            return if self.passed() {
+                format!("{live} {}", pill(PASSED_PILL, false, "passed"))
+            } else {
+                live
+            };
+        }
+
+        if self.analyzing {
             pill(STARTING_PILL, true, "analyzing")
-        } else if self.solved() {
-            pill(SOLVED_PILL, false, "solved")
-        } else if self.score.is_some() {
-            pill(UNSOLVED_PILL, false, "unsolved")
+        } else if self.passed() {
+            pill(PASSED_PILL, false, "passed")
+        } else if self.run.finished_seconds.is_some() {
+            pill(FAILED_PILL, false, "failed")
         } else {
-            pill(FAILED_PILL, false, "no score")
+            pill(BROKEN_PILL, false, "unfinished")
         }
     }
 
@@ -350,76 +376,54 @@ impl RunEntry {
     fn elapsed(&self) -> u64 {
         match &self.monitor {
             Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
-            None => usage::epoch_now().saturating_sub(self.started()),
+            None => usage::epoch_now().saturating_sub(self.run.started_seconds),
         }
-        .min(self.limit())
-    }
-
-    /// How far into its time budget a live run is, as a meter.
-    fn elapsed_meter(&self) -> String {
-        let elapsed = self.elapsed();
-        meter(
-            elapsed,
-            self.limit(),
-            time_fill(elapsed, self.limit()),
-            &format!("{elapsed}/{}s", self.limit()),
-            ELAPSED_LABEL_WIDTH,
-        )
+        .min(self.run.limit_seconds)
     }
 
     /// The time cell of the runs table: the same meter against the budget for
-    /// every run.
+    /// every run, spent while live, taken once over, nothing for a run that broke.
     fn time_cell(&self) -> String {
-        if self.live {
-            return self.elapsed_meter();
-        }
+        let spent = if self.live {
+            self.elapsed()
+        } else if let Some(wall) = self.run.wall_seconds() {
+            wall
+        } else {
+            return String::new();
+        };
+        let limit = self.run.limit_seconds;
 
-        let wall = self.wall.unwrap_or(0);
         meter(
-            wall,
-            self.limit(),
-            time_fill(wall, self.limit()),
-            &format!("{wall}/{}s", self.limit()),
+            spent,
+            limit,
+            time_fill(spent, limit),
+            &format!("{spent}/{limit}s"),
             ELAPSED_LABEL_WIDTH,
         )
-    }
-
-    /// The pushes cell of the runs table: what was scored so far while live,
-    /// the count of record once scored, nothing for a run that left neither.
-    fn pushes_cell(&self) -> String {
-        if self.live || !self.attempts.is_empty() {
-            return self.attempts.len().to_string();
-        }
-
-        match self.score {
-            Some(_) => self.attempts().to_string(),
-            None => String::new(),
-        }
     }
 
     /// The requests a model answered without ever reporting their usage.
     ///
     /// Blank when there were none. It is what tells a run that spent its
     /// budget on streams which never finished apart from one where the model
-    /// simply did not solve the task, since both score zero.
+    /// simply did not pass the task, since both rank nowhere.
     fn truncated_cell(&self) -> String {
-        match self.metric("truncated_requests") {
-            0 => String::new(),
-            cut => cut.to_string(),
+        match self
+            .run
+            .metrics
+            .as_ref()
+            .map(|metrics| metrics.truncated_requests)
+        {
+            Some(0) | None => String::new(),
+            Some(cut) => cut.to_string(),
         }
     }
 
-    /// The points cell of the runs table: the best solving push so far while
-    /// live, the points of record once scored.
+    /// The points cell of the runs table: the entry of record ranked, once
+    /// the run is over. The entries stay in the scoring container while it plays.
     fn points_cell(&self) -> String {
-        if self.live {
-            return points_meter(
-                best_push(&self.attempts).map_or(0, |push| number(push, "points")),
-            );
-        }
-
-        match self.score {
-            Some(_) => points_meter(self.points()),
+        match self.points() {
+            Some(points) => points_meter(points),
             None => String::new(),
         }
     }
@@ -441,11 +445,11 @@ impl RunEntry {
         vec![
             self.run_cell(),
             self.state(),
-            escape(self.game()),
-            escape(self.model()),
+            escape(&self.run.game),
+            escape(&self.run.model),
             self.agent(),
             self.time_cell(),
-            self.pushes_cell(),
+            self.attempts.len().to_string(),
             self.truncated_cell(),
             self.points_cell(),
             self.stop_form(),
@@ -469,10 +473,10 @@ pub(crate) fn runs_page(
         let appeared = runs
             .iter()
             .filter(|run| {
-                run.harness() == start.agent
-                    && run.model() == start.model
-                    && run.game() == start.game
-                    && run.started() + 1 >= start.started
+                run.run.harness == start.agent
+                    && run.run.model == start.model
+                    && run.run.game == start.game
+                    && run.run.started_seconds + 1 >= start.started
             })
             .count() as u64;
 
@@ -515,32 +519,16 @@ pub(crate) fn runs_page(
 /// hold, with the carried `selection` or the defaults preselected.
 fn start_panel(selection: &Selection) -> std::io::Result<String> {
     let registry = registry::load()?;
-
-    let harnesses = registry
-        .harnesses
-        .iter()
-        .map(|harness| harness.name.as_str())
-        .collect::<Vec<_>>();
-    let models = registry
-        .models
-        .iter()
-        .map(|model| model.name.as_str())
-        .collect::<Vec<_>>();
-    let games = games()?;
+    let games = startable_games()?;
     let games = games.iter().map(String::as_str).collect::<Vec<_>>();
 
-    let mut levels = vec![""];
-    levels.extend(registry::THINKING_LEVELS);
-
     let limit = selection
-        .limit
-        .as_deref()
-        .and_then(|value| value.parse::<u64>().ok())
+        .get("limit", "")
+        .parse::<u64>()
         .unwrap_or(docker::Agent::DEFAULT_LIMIT_SECONDS);
     let parallel = selection
-        .parallel
-        .as_deref()
-        .and_then(|value| value.parse::<u64>().ok())
+        .get("parallel", "")
+        .parse::<u64>()
         .unwrap_or(docker::Agent::DEFAULT_PARALLEL_RUNS);
     let last_call = docker::LAST_CALL_SECONDS;
     let seconds_label = explained(
@@ -551,80 +539,94 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
     Ok(format!(
         "<p class=\"{FIRST_TITLE_CLASSES}\">new run</p>\
          <form method=\"post\" action=\"/start\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
-         {}{}{}{}\
+         {}{}\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{seconds_label}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
          <label class=\"w-20\"><span class=\"{LABEL_CLASSES}\">parallel</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" value=\"{parallel}\" min=\"1\"></label>\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
-         <input type=\"checkbox\" name=\"force\" class=\"h-4 w-4 rounded accent-indigo-500\">\
+         <input type=\"checkbox\" name=\"force\" class=\"h-4 w-4 rounded accent-indigo-500\"{force}>\
          <span class=\"{NOTE_CLASSES}\">rebuild images</span></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">start</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
          <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
          <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyze the run</label>\
-         <div class=\"hidden peer-checked:contents\">{}{}{}</div>\
+         <div class=\"hidden peer-checked:contents\">{}{}</div>\
          </div>\
          </form>",
-        select(
-            "agent",
-            "agent",
-            &harnesses,
-            selection.agent.as_deref().unwrap_or("")
+        agent_fields(
+            &registry,
+            "",
+            selection.agent("", ["", "", DEFAULT_THINKING])
         ),
-        select(
-            "model",
-            "model",
-            &models,
-            selection.model.as_deref().unwrap_or("")
+        select("game", "game", &games, selection.get("game", DEFAULT_GAME)),
+        agent_fields(
+            &registry,
+            crate::serve::ANALYST_PREFIX,
+            selection.agent(
+                crate::serve::ANALYST_PREFIX,
+                [
+                    DEFAULT_ANALYST,
+                    DEFAULT_ANALYST_MODEL,
+                    DEFAULT_ANALYST_THINKING
+                ]
+            )
         ),
-        select(
-            "game",
-            "game",
-            &games,
-            selection.game.as_deref().unwrap_or(DEFAULT_GAME)
-        ),
-        select(
-            "thinking",
-            "thinking",
-            &levels,
-            selection.thinking.as_deref().unwrap_or(DEFAULT_THINKING)
-        ),
-        select(
-            "analyst",
-            "analyst",
-            &harnesses,
-            selection.analyst.as_deref().unwrap_or(DEFAULT_ANALYST)
-        ),
-        select(
-            "analyst_model",
-            "model",
-            &models,
-            selection
-                .analyst_model
-                .as_deref()
-                .unwrap_or(DEFAULT_ANALYST_MODEL)
-        ),
-        select(
-            "analyst_thinking",
-            "thinking",
-            &levels,
-            selection
-                .analyst_thinking
-                .as_deref()
-                .unwrap_or(DEFAULT_ANALYST_THINKING)
-        ),
-        analyze = if selection.analyze.as_deref() == Some("on") {
-            " checked"
-        } else {
-            ""
-        },
+        analyst_seconds_field(selection, crate::serve::ANALYST_PREFIX),
+        force = checked(selection.get("force", "") == "on"),
+        analyze = checked(selection.get("analyze", "") == "on"),
     ))
+}
+
+/// The attribute marking a checkbox checked.
+fn checked(on: bool) -> &'static str {
+    if on { " checked" } else { "" }
 }
 
 /// The form starting an analysis of the run.
 fn analysis_panel(name: &str) -> std::io::Result<String> {
     let registry = registry::load()?;
+
+    Ok(format!(
+        "<form method=\"post\" action=\"/run/{}/analyze\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
+         {}{}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">analyze</button></form>",
+        escape(name),
+        agent_fields(
+            &registry,
+            "",
+            [
+                DEFAULT_ANALYST,
+                DEFAULT_ANALYST_MODEL,
+                DEFAULT_ANALYST_THINKING
+            ]
+        ),
+        analyst_seconds_field(&Selection::default(), ""),
+    ))
+}
+
+/// The field choosing the seconds the analyst under `prefix` is given.
+fn analyst_seconds_field(selection: &Selection, prefix: &str) -> String {
+    let name = format!("{prefix}seconds");
+    let seconds = selection
+        .get(&name, "")
+        .parse::<u64>()
+        .unwrap_or(docker::Analyst::DEFAULT_LIMIT_SECONDS);
+
+    format!(
+        "<label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"{name}\" value=\"{seconds}\" min=\"{}\"></label>",
+        explained(
+            "seconds",
+            "the seconds the analyst is given per run, one turn"
+        ),
+        docker::LAST_CALL_SECONDS,
+    )
+}
+
+/// The dropdowns choosing an agent, the way one is chosen everywhere: the
+/// harness, the model and the thinking level, named under `prefix` in the
+/// form, with `selected` marked.
+fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 3]) -> String {
     let harnesses: Vec<&str> = registry
         .harnesses
         .iter()
@@ -638,14 +640,30 @@ fn analysis_panel(name: &str) -> std::io::Result<String> {
     let mut levels = vec![""];
     levels.extend(registry::THINKING_LEVELS);
 
-    Ok(format!(
-        "<form method=\"post\" action=\"/run/{}/analyze\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
-         {}{}{}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">analyze</button></form>",
-        escape(name),
-        select("agent", "agent", &harnesses, DEFAULT_ANALYST),
-        select("model", "model", &models, DEFAULT_ANALYST_MODEL),
-        select("thinking", "thinking", &levels, DEFAULT_ANALYST_THINKING),
-    ))
+    let [harness_field, model_field, thinking_field] = crate::serve::AGENT_FIELDS;
+    let [harness, model, thinking] = selected;
+
+    format!(
+        "{}{}{}",
+        select(
+            &format!("{prefix}{harness_field}"),
+            harness_field,
+            &harnesses,
+            harness
+        ),
+        select(
+            &format!("{prefix}{model_field}"),
+            model_field,
+            &models,
+            model
+        ),
+        select(
+            &format!("{prefix}{thinking_field}"),
+            thinking_field,
+            &levels,
+            thinking
+        ),
+    )
 }
 
 /// A dropdown named `name` under `label`, offering `options` with `selected`
@@ -666,29 +684,12 @@ fn select(name: &str, label: &str, options: &[&str], selected: &str) -> String {
     rendered
 }
 
-/// One run: its state and figures first, the pushes, the console, then the rest.
+/// One run: its state and figures first, the entries, the pushes, the console,
+/// then the rest.
 pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     let directory = run_directory(name)?;
-
-    let metadata = read_json(&directory.join(docker::METADATA_FILE)).unwrap_or_default();
-    let score = read_json(&directory.join(docker::SCORE_FILE));
-    let running = live_runs();
-    let live = running
-        .iter()
-        .any(|container| container == &docker::scorer_container(name));
-    let analyzing = running
-        .iter()
-        .any(|container| container == &docker::analyst_container(name));
-    let entry = RunEntry {
-        name: name.to_string(),
-        live,
-        wall: wall_seconds(&directory, number(&metadata, "started_seconds")),
-        monitor: read_json(&directory.join(docker::MONITOR_FILE)),
-        attempts: attempts_of(&directory, name, live),
-        analyzing,
-        metadata,
-        score,
-    };
+    let run = runs::read(&directory)?;
+    let entry = RunEntry::new(&directory, run, &live_runs(), &tournament::placements()?);
 
     let mut body = format!(
         "<div data-refresh=\"run\"><div class=\"flex items-center gap-3\">\
@@ -700,12 +701,32 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     body.push_str(&notice.render());
 
     body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} \u{00b7} {} \u{00b7} {} \u{00b7} started {} ago</p>",
-        escape(entry.game()),
-        escape(entry.model()),
+        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {}{} \u{00b7} {} \u{00b7} {} {} \u{00b7} started {} ago</p>",
+        escape(&entry.run.game),
+        version_label(&entry.run.game_version),
+        if entry.run.architecture.is_empty() {
+            String::new()
+        } else {
+            format!(" on {}", escape(&entry.run.architecture))
+        },
+        escape(&entry.run.model),
         entry.agent(),
-        usage::age(entry.started()),
+        version_label(&entry.run.harness_version),
+        usage::age(entry.run.started_seconds),
     ));
+    if let Some(placement) = &entry.placement {
+        body.push_str(&format!(
+            "<p class=\"{NOTE_CLASSES} mt-1\">{}</p>",
+            placement_label(placement)
+        ));
+    }
+    if let Some(challenge) = &entry.run.challenge {
+        body.push_str(&format!(
+            "<p class=\"{NOTE_CLASSES} mt-1\">attacking the entry <a class=\"{LINK_CLASSES}\" href=\"/run/{run}\">{run}</a> kept at {}s</p>",
+            challenge.attempt,
+            run = escape(&challenge.run)
+        ));
+    }
 
     if !entry.live {
         let report = directory.join(docker::ANALYSIS_FILE);
@@ -713,7 +734,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         let failed = analysis
             .as_ref()
             .is_some_and(|analysis| analysis.get(docker::ANALYSIS_ERROR).is_some());
-        let analyzed = match modified_seconds(&report) {
+        let analyzed = match runs::modified_seconds(&report) {
             Some(written) if failed => format!("failed {} ago", usage::age(written)),
             Some(written) => format!("analyzed {} ago", usage::age(written)),
             None => "not analyzed yet".to_string(),
@@ -736,23 +757,31 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                 ));
             }
         }
-        if !analyzing {
+        if !entry.analyzing {
             body.push_str(&analysis_panel(name)?);
         }
     }
 
-    let solved_at = match (entry.live, best_push(&entry.attempts)) {
-        (true, Some(push)) => format!("{}s", number(push, "seconds")),
-        (false, _) if entry.solved() => format!("{}s", entry.seconds()),
-        _ => "not solved".to_string(),
+    let entry_at = match &entry.record {
+        Some(record) => format!("{}s", record.seconds),
+        None if entry.live => String::new(),
+        None => "no entry".to_string(),
+    };
+    let metric = |value: fn(&ava_wire::Metrics) -> u64| {
+        entry
+            .run
+            .metrics
+            .as_ref()
+            .map(|metrics| value(metrics).to_string())
+            .unwrap_or_default()
     };
     let tiles = [
         ("points", entry.points_cell()),
-        ("pushes", entry.pushes_cell()),
-        ("solved at", solved_at),
+        ("pushes", entry.attempts.len().to_string()),
+        ("entry at", entry_at),
         ("time", entry.time_cell()),
-        ("requests", entry.metric("requests").to_string()),
-        ("output tokens", entry.metric("output_tokens").to_string()),
+        ("requests", metric(|metrics| metrics.requests)),
+        ("output tokens", metric(|metrics| metrics.output_tokens)),
     ];
     body.push_str("<div class=\"mt-6 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3\">");
     for (label, value) in tiles {
@@ -762,23 +791,60 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     }
     body.push_str("</div>");
 
+    if let Some(game) = ava_game::find(&entry.run.game)
+        && !entry.live
+    {
+        let kept = runs::entries(game, &directory)?;
+        if !kept.is_empty() {
+            let record = entry.record.as_ref().map(|record| record.seconds);
+            let rows = kept
+                .iter()
+                .map(|kept| {
+                    vec![
+                        kept.seconds.to_string(),
+                        kept.bytes.to_string(),
+                        kept.points.map(points_meter).unwrap_or_default(),
+                        if record == Some(kept.seconds) {
+                            pill(PASSED_PILL, false, "entry of record")
+                        } else {
+                            String::new()
+                        },
+                        format!(
+                            "<a class=\"{LINK_CLASSES}\" href=\"/run/{}/entries/{}/{}\">{}</a>",
+                            escape(name),
+                            kept.seconds,
+                            escape(game.entry()),
+                            escape(game.entry())
+                        ),
+                    ]
+                })
+                .collect();
+            body.push_str(&format!(
+                "<p class=\"{TITLE_CLASSES}\">{}</p>",
+                explained(
+                    "entries",
+                    "what the passing pushes left, ranked as the game ranks them today"
+                )
+            ));
+            body.push_str(&table(
+                &["#SECONDS", "#BYTES", "*POINTS", "", "FILE"],
+                rows,
+                None,
+            ));
+        }
+    }
+
     let pushes = attempt_rows(&entry.attempts);
     if !pushes.is_empty() {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">pushes</p>"));
-        body.push_str(&table(
-            &["#SECONDS", "STATE", "POINTS", "*REASON"],
-            pushes,
-            None,
-        ));
+        body.push_str(&table(&["#SECONDS", "STATE", "*REASON"], pushes, None));
     }
 
-    if let Some(metrics) = entry
-        .score
-        .as_ref()
-        .and_then(|report| report.get("metrics"))
-    {
+    if let Some(metrics) = &entry.run.metrics {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">metrics</p>"));
-        body.push_str(&object_table(metrics));
+        body.push_str(&object_table(
+            &serde_json::to_value(metrics).unwrap_or_default(),
+        ));
     }
 
     if let Ok(tail) = console_tail(&directory.join(docker::AGENT_LOG)) {
@@ -803,9 +869,15 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         "<p class=\"{TITLE_CLASSES}\">files</p><p class=\"flex flex-wrap gap-x-4 gap-y-1\">{files}</p>"
     ));
 
+    let mut parameters = serde_json::to_value(&entry.run).unwrap_or_default();
+    if let Some(object) = parameters.as_object_mut() {
+        for section in RUN_RECORD_SECTIONS {
+            object.remove(section);
+        }
+    }
     body.push_str(&format!(
         "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">parameters</summary><div class=\"mt-3\">{}</div></details>",
-        object_table(&entry.metadata)
+        object_table(&parameters)
     ));
     body.push_str("</div>");
 
@@ -816,16 +888,16 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
 pub(crate) fn scoreboard_page() -> std::io::Result<String> {
     struct Standing {
         runs: u64,
-        solved: u64,
-        points: u64,
-        seconds: u64,
+        passed: u64,
+        /// The best entry of record, with the seconds it arrived at.
+        best: Option<(Option<u64>, u64)>,
     }
 
     let runs = collect_runs()?;
     let mut standings: Vec<(String, String, String, Standing)> = Vec::new();
 
-    for run in runs.iter().filter(|run| run.score.is_some()) {
-        let key = (run.game().to_string(), run.model().to_string(), run.agent());
+    for run in runs.iter().filter(|run| run.run.finished_seconds.is_some()) {
+        let key = (run.run.game.clone(), run.run.model.clone(), run.agent());
 
         let standing = match standings
             .iter_mut()
@@ -839,9 +911,8 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
                     key.2,
                     Standing {
                         runs: 0,
-                        solved: 0,
-                        points: 0,
-                        seconds: 0,
+                        passed: 0,
+                        best: None,
                     },
                 ));
                 &mut standings.last_mut().expect("just pushed").3
@@ -849,17 +920,24 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         };
 
         standing.runs += 1;
-        standing.solved += u64::from(run.solved());
-        if run.comparable() && run.points() > standing.points {
-            standing.points = run.points();
-            standing.seconds = run.seconds();
+        standing.passed += u64::from(run.passed());
+        if let Some(record) = &run.record
+            && standing
+                .best
+                .is_none_or(|(points, _)| record.points > points)
+        {
+            standing.best = Some((record.points, record.seconds));
         }
     }
 
     standings.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then(right.3.points.cmp(&left.3.points))
+        left.0.cmp(&right.0).then(
+            right
+                .3
+                .best
+                .map(|(points, _)| points)
+                .cmp(&left.3.best.map(|(points, _)| points)),
+        )
     });
 
     let rows = standings
@@ -870,21 +948,31 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
                 escape(model),
                 agent.clone(),
                 standing.runs.to_string(),
-                standing.solved.to_string(),
-                points_meter(standing.points),
-                standing.seconds.to_string(),
+                standing.passed.to_string(),
+                standing
+                    .best
+                    .and_then(|(points, _)| points.map(points_meter))
+                    .unwrap_or_default(),
+                standing
+                    .best
+                    .map(|(_, seconds)| seconds.to_string())
+                    .unwrap_or_default(),
             ]
         })
         .collect();
 
     let body = format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">scoreboard <span class=\"{NOTE_CLASSES} font-normal\">the best run of every pairing</span></p>{}",
+        "<p class=\"{FIRST_TITLE_CLASSES}\">{}</p>{}",
+        explained(
+            "scoreboard",
+            "the best entry of every pairing, ranked as the games rank today"
+        ),
         table(
             &[
-                "GAME", "MODEL", "HARNESS", "#RUNS", "#SOLVED", "*BEST", "#SECONDS",
+                "GAME", "MODEL", "HARNESS", "#RUNS", "#PASSED", "*BEST", "#SECONDS",
             ],
             rows,
-            Some("nothing scored yet"),
+            Some("nothing played yet"),
         )
     );
 
@@ -897,24 +985,30 @@ pub(crate) fn games_page() -> std::io::Result<String> {
     let mut body = String::new();
 
     for (index, game) in games()?.into_iter().enumerate() {
-        let played: Vec<&RunEntry> = runs.iter().filter(|run| run.game() == game).collect();
-        let solved = played.iter().filter(|run| run.solved()).count();
-        let mut standing: Vec<&&RunEntry> = played
+        let played: Vec<&RunEntry> = runs.iter().filter(|run| run.run.game == game).collect();
+        let passed = played.iter().filter(|run| run.passed()).count();
+        let mut standing: Vec<(&RunEntry, &runs::Entry)> = played
             .iter()
-            .filter(|run| run.solved() && run.comparable())
+            .filter_map(|run| run.record.as_ref().map(|record| (*run, record)))
             .collect();
-        standing.sort_by_key(|run| std::cmp::Reverse(run.points()));
+        standing.sort_by_key(|(_, record)| std::cmp::Reverse((record.points, record.seconds)));
 
+        let playout = ava_game::find(&game)
+            .filter(|game| game.playout() == ava_game::Playout::Automated)
+            .map(|_| "the entries fight each other in tournaments")
+            .unwrap_or_default();
         let record = match standing.first() {
-            Some(best) => format!(
-                "{} runs, {solved} solved, the record is {} by {} on {}",
-                played.len(),
-                best.points(),
-                escape(best.model()),
-                best.agent()
-            ),
+            Some((best, record)) => match record.points {
+                Some(points) => format!(
+                    "{} runs, {passed} passed, the record is {points} by {} on {}",
+                    played.len(),
+                    escape(&best.run.model),
+                    best.agent()
+                ),
+                None => format!("{} runs, {passed} passed", played.len()),
+            },
             None if played.is_empty() => "not played yet".to_string(),
-            None => format!("{} runs, none solving under the ceiling", played.len()),
+            None => format!("{} runs, none passing", played.len()),
         };
 
         let title_classes = if index == 0 {
@@ -924,7 +1018,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         };
         body.push_str(&format!(
             "<p class=\"{title_classes}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{record}</span></p>",
-            escape(&game)
+            explained(&escape(&game), playout)
         ));
 
         let task = std::fs::read_to_string(
@@ -938,12 +1032,12 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         let standings: Vec<Vec<String>> = standing
             .iter()
             .take(STANDINGS_LIMIT)
-            .map(|run| {
+            .map(|(run, record)| {
                 vec![
-                    escape(run.model()),
+                    escape(&run.run.model),
                     run.agent(),
-                    points_meter(run.points()),
-                    run.seconds().to_string(),
+                    record.points.map(points_meter).unwrap_or_default(),
+                    record.seconds.to_string(),
                     run.link(),
                 ]
             })
@@ -972,6 +1066,695 @@ pub(crate) fn games_page() -> std::io::Result<String> {
     Ok(page("games", &body))
 }
 
+/// The tournaments: the form opening one, and every tournament on disk.
+pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
+    let games: Vec<&str> = ava_game::GAMES
+        .iter()
+        .map(|game| game.name())
+        .filter(|game| ava_game::attacked_by(game).is_none())
+        .collect();
+    let limit = selection
+        .get("limit", "")
+        .parse::<u64>()
+        .unwrap_or(docker::Agent::DEFAULT_LIMIT_SECONDS);
+    let last_call = docker::LAST_CALL_SECONDS;
+    let combats = selection
+        .get("combats", "")
+        .parse::<u64>()
+        .unwrap_or(tournament::DEFAULT_COMBATS);
+
+    let mut body = format!(
+        "<p class=\"{FIRST_TITLE_CLASSES}\">new tournament</p>\
+         <form method=\"post\" action=\"/tournaments/create\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
+         <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">name</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"name\" value=\"{}\" placeholder=\"letters, digits, dashes\" required></label>\
+         {}\
+         <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
+         <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"combats\" value=\"{combats}\" min=\"1\"></label>\
+         <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">open</button>\
+         <div class=\"w-full flex flex-wrap items-end gap-4\">\
+         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
+         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyze every run of a round</label>\
+         <div class=\"hidden peer-checked:contents\">{}{}</div>\
+         </div>\
+         </form>",
+        escape(selection.get("name", "")),
+        select(
+            "game",
+            "game",
+            &games,
+            selection.get("game", games.first().copied().unwrap_or_default())
+        ),
+        explained(
+            "seconds",
+            &format!("the budget of every run, the {last_call} second last call included"),
+        ),
+        explained(
+            "combats",
+            "the combats every fight of an automated playout plays, each best of three rounds",
+        ),
+        agent_fields(
+            &registry::load()?,
+            crate::serve::ANALYST_PREFIX,
+            selection.agent(
+                crate::serve::ANALYST_PREFIX,
+                [
+                    DEFAULT_ANALYST,
+                    DEFAULT_ANALYST_MODEL,
+                    DEFAULT_ANALYST_THINKING
+                ]
+            )
+        ),
+        analyst_seconds_field(selection, crate::serve::ANALYST_PREFIX),
+        analyze = checked(selection.get("analyze", "") == "on"),
+    );
+
+    let tournaments = tournament::list()?;
+    let rows = tournaments
+        .iter()
+        .map(|record| {
+            vec![
+                format!(
+                    "<a class=\"{LINK_CLASSES}\" href=\"/tournament/{name}\">{name}</a><div class=\"text-xs {MUTED_CLASSES} mt-0.5\">opened {} ago</div>",
+                    usage::age(record.created_seconds),
+                    name = escape(&record.name)
+                ),
+                tournament_state(record),
+                escape(&record.game),
+                record.seats.len().to_string(),
+                record.rounds.len().to_string(),
+                format!("{}s", record.limit_seconds),
+                record.combats.to_string(),
+            ]
+        })
+        .collect();
+
+    body.push_str("<div data-refresh=\"tournaments\">");
+    body.push_str(&notice.render());
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">tournaments <span class=\"{NOTE_CLASSES} font-normal\">{} on disk</span></p>{}",
+        tournaments.len(),
+        table(
+            &["NAME", "STATE", "GAME", "#SEATS", "#ROUNDS", "*SECONDS", "#COMBATS"],
+            rows,
+            Some(NO_TOURNAMENTS_NOTE),
+        )
+    ));
+    body.push_str("</div>");
+
+    Ok(page("tournaments", &body))
+}
+
+/// The state of a tournament as a pill: playing, open, or how far it got.
+fn tournament_state(record: &ava_wire::Tournament) -> String {
+    if tournament::playing(&record.name) {
+        return pill(
+            LIVE_PILL,
+            true,
+            &format!("playing round {}", record.rounds.len()),
+        );
+    }
+
+    match record.rounds.last() {
+        None => pill(NEUTRAL_PILL, false, "open"),
+        Some(round) if round.finished_seconds.is_none() => pill(
+            BROKEN_PILL,
+            false,
+            &format!("round {} broke off", record.rounds.len()),
+        ),
+        Some(_) => pill(
+            NEUTRAL_PILL,
+            false,
+            &format!("{} rounds played", record.rounds.len()),
+        ),
+    }
+}
+
+/// One tournament: its lobby, its standings and every round it played.
+pub(crate) fn tournament_page(
+    name: &str,
+    notice: &Notice,
+    selection: &Selection,
+) -> std::io::Result<String> {
+    let record = tournament::load(name)?;
+    let playing = tournament::playing(name);
+    let running = live_runs();
+    let registry = registry::load()?;
+    let playout = ava_game::find(&record.game).map(|game| game.playout());
+    let compared = playout == Some(ava_game::Playout::Single);
+    let ordered = matches!(playout, Some(ava_game::Playout::Played { .. }));
+
+    let play_form = if playing || record.seats.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<form method=\"post\" action=\"/tournament/{}/play\" class=\"flex items-end gap-3\">\
+             <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+             <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" min=\"1\" placeholder=\"all\"></label>\
+             <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">play round {}</button></form>",
+            escape(name),
+            explained(
+                "parallel",
+                "the most runs the round starts at once, every run of a phase at once when empty"
+            ),
+            record.rounds.len() + 1
+        )
+    };
+
+    // The forms stay outside the refreshed regions, so what is chosen in them
+    // survives the refresh.
+    let mut body = format!(
+        "<div class=\"flex items-center gap-3\">\
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span><span data-refresh=\"state\">{}</span><span class=\"grow\"></span>{play_form}</div>",
+        escape(name),
+        tournament_state(&record),
+    );
+    body.push_str(&notice.render());
+    body.push_str(&format!(
+        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {}s a run \u{00b7} {} combats a fight{} \u{00b7} opened {} ago</p>",
+        escape(&record.game),
+        version_label(&record.game_version),
+        escape(&record.pairing),
+        record.limit_seconds,
+        record.combats,
+        record
+            .analyst
+            .as_ref()
+            .map(|analyst| format!(
+                " \u{00b7} analyzed by {} in {}s",
+                escape(&analyst.label()),
+                record.analyst_seconds
+            ))
+            .unwrap_or_default(),
+        usage::age(record.created_seconds),
+    ));
+
+    // The lobby.
+    let removable = !record.played() && !playing;
+    let seat_rows: Vec<Vec<String>> = record
+        .seats
+        .iter()
+        .enumerate()
+        .map(|(seat, agent)| {
+            let played = record
+                .rounds
+                .iter()
+                .filter(|round| round.entries.iter().any(|entry| entry.seat == seat))
+                .count();
+            vec![
+                (seat + 1).to_string(),
+                agent_label(&agent.harness, agent.thinking.as_deref().unwrap_or("")),
+                escape(&agent.model),
+                played.to_string(),
+                if removable {
+                    format!(
+                        "<form method=\"post\" action=\"/tournament/{}/unseat\"><input type=\"hidden\" name=\"seat\" value=\"{seat}\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
+                        escape(name)
+                    )
+                } else {
+                    String::new()
+                },
+            ]
+        })
+        .collect();
+    body.push_str(&format!(
+        "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
+        explained(
+            "lobby",
+            "the seats of the tournament, joining between rounds and fixed once a round was played"
+        ),
+        table(
+            &["#SEAT", "HARNESS", "*MODEL", "#ROUNDS", ""],
+            seat_rows,
+            Some(NO_SEATS_NOTE),
+        )
+    ));
+    if removable {
+        body.push_str(&format!(
+            "<form method=\"post\" action=\"/tournament/{}/seat\" class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
+             {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
+            escape(name),
+            agent_fields(&registry, "", selection.agent("", ["", "", DEFAULT_THINKING])),
+        ));
+    }
+
+    body.push_str("<div data-refresh=\"rounds\">");
+
+    // The standings.
+    let standings = standings(&record)?;
+    if !standings.is_empty() {
+        let rows = standings
+            .iter()
+            .map(|standing| {
+                vec![
+                    escape(&standing.agent),
+                    standing.seats.to_string(),
+                    tally_label(&standing.fights),
+                    standing
+                        .rounds
+                        .score()
+                        .map(|score| format!("{score:.2}"))
+                        .unwrap_or_default(),
+                    rating_label(standing.elo),
+                    rating_label(standing.bradley_terry),
+                ]
+            })
+            .collect();
+        body.push_str(&format!(
+            "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
+            explained(
+                "standings",
+                &format!(
+                    "derived from the matches of the finished rounds between different agents{}, ordered by Bradley-Terry",
+                    if compared {
+                        ", the entries compared by their points"
+                    } else {
+                        ""
+                    }
+                )
+            ),
+            table(
+                &[
+                    "*AGENT",
+                    "#SEATS|the seats the agent holds, two seats of one agent count as one entry here",
+                    "#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
+                    "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+                    "#ELO|updated in match order, anchored at 1000",
+                    "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
+                ],
+                rows,
+                None,
+            )
+        ));
+    }
+
+    // The rounds, newest first.
+    for (index, round) in record.rounds.iter().enumerate().rev() {
+        let number = index + 1;
+        let state = if round.finished_seconds.is_some() {
+            format!(
+                "finished {} ago",
+                usage::age(round.finished_seconds.unwrap_or_default())
+            )
+        } else if playing && index + 1 == record.rounds.len() {
+            "playing".to_string()
+        } else {
+            "broke off".to_string()
+        };
+        body.push_str(&format!(
+            "<p class=\"{TITLE_CLASSES}\">round {number} <span class=\"{NOTE_CLASSES} font-normal\">started {} ago, {state}</span></p>",
+            usage::age(round.started_seconds)
+        ));
+
+        let entry_rows: Vec<Vec<String>> = round
+            .entries
+            .iter()
+            .map(|entry| {
+                let agent = record.seats.get(entry.seat);
+                let run =
+                    runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(&entry.run)).ok();
+                let live = running.contains(&docker::scorer_container(&entry.run));
+                let state = match (&run, live) {
+                    (_, true) => pill(LIVE_PILL, true, "live"),
+                    (Some(run), false) if run.passed() => pill(PASSED_PILL, false, "passed"),
+                    (Some(run), false) if run.finished_seconds.is_some() => {
+                        pill(FAILED_PILL, false, "failed")
+                    }
+                    (Some(_), false) => pill(BROKEN_PILL, false, "unfinished"),
+                    (None, false) if playing && index + 1 == record.rounds.len() => {
+                        pill(STARTING_PILL, true, "queued")
+                    }
+                    (None, false) => pill(BROKEN_PILL, false, "missing"),
+                };
+                vec![
+                    (entry.seat + 1).to_string(),
+                    agent
+                        .map(|agent| escape(&agent.label()))
+                        .unwrap_or_default(),
+                    format!(
+                        "<a class=\"{LINK_CLASSES}\" href=\"/run/{run}\">{run}</a>",
+                        run = escape(&entry.run)
+                    ),
+                    state,
+                    match entry.attempt {
+                        Some(seconds) => format!("{seconds}s"),
+                        None if live => String::new(),
+                        None => "none".to_string(),
+                    },
+                ]
+            })
+            .collect();
+        body.push_str(&table(
+            &[
+                "#SEAT",
+                "*AGENT",
+                "RUN",
+                "STATE",
+                "ENTRY|the passing push whose entry fights, by its seconds",
+            ],
+            entry_rows,
+            None,
+        ));
+
+        let pairings = tournament::pairings(&record, round)?;
+        if !pairings.is_empty() {
+            body.push_str(&format!(
+                "<div class=\"mt-3\">{}</div>",
+                cross_table(
+                    &record,
+                    round,
+                    &pairings,
+                    ordered,
+                    playing && index + 1 == record.rounds.len()
+                )
+            ));
+        }
+    }
+
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">files</p><p class=\"flex flex-wrap gap-x-4 gap-y-1\">{}</p>",
+        tournament_files(name)
+            .iter()
+            .map(|file| {
+                format!(
+                    "<a class=\"{LINK_CLASSES}\" href=\"/tournament/{}/{file}\">{file}</a>",
+                    escape(name)
+                )
+            })
+            .collect::<String>()
+    ));
+    body.push_str("</div>");
+
+    Ok(page(name, &body))
+}
+
+/// The place of one agent on the leaderboard of a tournament.
+struct Standing {
+    agent: String,
+    seats: usize,
+    /// The fights against another agent by outcome, from the agent's view: a
+    /// fight with more rounds won than lost is won.
+    fights: ava_wire::Tally,
+    /// The rounds across those fights, from the agent's view, whose share
+    /// won is the score.
+    rounds: ava_wire::Tally,
+    elo: Option<f64>,
+    bradley_terry: Option<f64>,
+}
+
+/// The standings of a tournament, every agent its seats hold, rated over the
+/// matches of the finished rounds, Bradley-Terry first.
+fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
+    let matches = tournament::matches(record)?;
+    let mut pairings = Vec::new();
+    for round in record.finished_rounds() {
+        pairings.extend(tournament::pairings(record, round)?);
+    }
+    let elo = ava_game::scoring::Elo.leaderboard(&matches);
+    let bradley_terry = ava_game::scoring::BradleyTerry.leaderboard(&matches);
+    let rating = |leaderboard: &[ava_game::scoring::Rating], agent: &str| {
+        leaderboard
+            .iter()
+            .find(|rating| rating.agent == agent)
+            .map(|rating| rating.rating)
+    };
+
+    let mut agents: Vec<String> = Vec::new();
+    for seat in &record.seats {
+        let label = seat.label();
+        if !agents.contains(&label) {
+            agents.push(label);
+        }
+    }
+
+    let mut standings: Vec<Standing> = agents
+        .into_iter()
+        .map(|agent| {
+            let mut fights = ava_wire::Tally::default();
+            let mut rounds = ava_wire::Tally::default();
+            for pairing in &pairings {
+                let first = record.seats.get(pairing.first).map(ava_wire::Agent::label);
+                let second = record.seats.get(pairing.second).map(ava_wire::Agent::label);
+                if first == second || pairing.tally.rounds() == 0 {
+                    continue;
+                }
+                let view = if first.as_deref() == Some(&agent) {
+                    pairing.tally
+                } else if second.as_deref() == Some(&agent) {
+                    ava_wire::Tally {
+                        won: pairing.tally.lost,
+                        drawn: pairing.tally.drawn,
+                        lost: pairing.tally.won,
+                    }
+                } else {
+                    continue;
+                };
+                rounds.won += view.won;
+                rounds.drawn += view.drawn;
+                rounds.lost += view.lost;
+                match view.won.cmp(&view.lost) {
+                    std::cmp::Ordering::Greater => fights.won += 1,
+                    std::cmp::Ordering::Equal => fights.drawn += 1,
+                    std::cmp::Ordering::Less => fights.lost += 1,
+                }
+            }
+
+            Standing {
+                seats: record
+                    .seats
+                    .iter()
+                    .filter(|seat| seat.label() == agent)
+                    .count(),
+                fights,
+                rounds,
+                elo: rating(&elo, &agent),
+                bradley_terry: rating(&bradley_terry, &agent),
+                agent,
+            }
+        })
+        .collect();
+
+    standings.sort_by(|left, right| {
+        right
+            .bradley_terry
+            .partial_cmp(&left.bradley_terry)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.agent.cmp(&right.agent))
+    });
+
+    Ok(standings)
+}
+
+/// A rating rounded to the point, or nothing for an agent without matches.
+/// A tally as won-drawn-lost.
+fn tally_label(tally: &ava_wire::Tally) -> String {
+    format!("{}-{}-{}", tally.won, tally.drawn, tally.lost)
+}
+
+fn rating_label(rating: Option<f64>) -> String {
+    rating
+        .map(|rating| format!("{}", rating.round() as i64))
+        .unwrap_or_default()
+}
+
+/// The `pairings` of one round as a cross table: the tally of the row's seat
+/// against the column's seat, and its total across the row. An `ordered`
+/// playout pairs every seat with every other twice, once attacking and once
+/// defending, so the row is the attacker and nothing is mirrored. While the
+/// round is `live`, a pairing without rounds is an attack still going.
+fn cross_table(
+    record: &ava_wire::Tournament,
+    round: &ava_wire::Round,
+    pairings: &[ava_wire::Pairing],
+    ordered: bool,
+    live: bool,
+) -> String {
+    let seats = round.entries.len();
+    let mut headers: Vec<String> = vec![if ordered {
+        "*SEAT|the seat of the row attacks the entry of the column".to_string()
+    } else {
+        "*SEAT".to_string()
+    }];
+    headers.extend((1..=seats).map(|seat| format!("#{seat}")));
+    headers.push(
+        "#TOTAL|fights won, drawn and lost across the row, forfeits included, pairings without a fight left out"
+            .to_string(),
+    );
+    let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
+
+    let rows = (0..seats)
+        .map(|row| {
+            let mut total = ava_wire::Tally::default();
+            let mut cells = vec![format!(
+                "{} {}",
+                row + 1,
+                record
+                    .seats
+                    .get(row)
+                    .map(|agent| format!(
+                        "<span class=\"{MUTED_CLASSES}\">{}</span>",
+                        escape(&agent.label())
+                    ))
+                    .unwrap_or_default()
+            )];
+
+            for column in 0..seats {
+                if row == column {
+                    cells.push(format!("<span class=\"{MUTED_CLASSES}\">\u{00b7}</span>"));
+                    continue;
+                }
+
+                let fought = pairings.iter().find_map(|pairing| {
+                    if pairing.first == row && pairing.second == column {
+                        Some((
+                            pairing.tally,
+                            pairing.reason.as_deref(),
+                            pairing.run.as_deref(),
+                        ))
+                    } else if !ordered && pairing.first == column && pairing.second == row {
+                        Some((
+                            ava_wire::Tally {
+                                won: pairing.tally.lost,
+                                drawn: pairing.tally.drawn,
+                                lost: pairing.tally.won,
+                            },
+                            pairing.reason.as_deref(),
+                            pairing.run.as_deref(),
+                        ))
+                    } else {
+                        None
+                    }
+                });
+
+                match fought {
+                    Some((tally, None, Some(run))) if live && tally.rounds() == 0 => {
+                        let started = std::path::Path::new(docker::RUN_DIRECTORY)
+                            .join(run)
+                            .join(docker::RUN_FILE)
+                            .is_file();
+                        cells.push(played(
+                            &if started {
+                                pill(LIVE_PILL, true, "live")
+                            } else {
+                                pill(STARTING_PILL, true, "queued")
+                            },
+                            Some(run),
+                        ));
+                    }
+                    Some((tally, reason, run)) => {
+                        match tally.won.cmp(&tally.lost) {
+                            _ if tally.rounds() == 0 => {}
+                            std::cmp::Ordering::Greater => total.won += 1,
+                            std::cmp::Ordering::Equal => total.drawn += 1,
+                            std::cmp::Ordering::Less => total.lost += 1,
+                        }
+                        cells.push(pairing_cell(&tally, reason, run));
+                    }
+                    None => cells.push(String::new()),
+                }
+            }
+
+            cells.push(format!(
+                "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+                tint(&total),
+                tally_label(&total)
+            ));
+            cells
+        })
+        .collect();
+
+    format!(
+        "<p class=\"{NOTE_CLASSES} mb-2\">{}</p>{}",
+        round_summary(round, pairings),
+        table(&headers, rows, None)
+    )
+}
+
+/// One line on what a round came to: who left an entry and what became of
+/// the pairings.
+fn round_summary(round: &ava_wire::Round, pairings: &[ava_wire::Pairing]) -> String {
+    let entries = round
+        .entries
+        .iter()
+        .filter(|entry| entry.attempt.is_some())
+        .count();
+    let mut fought = 0;
+    let mut forfeited = 0;
+    let mut unplayed = 0;
+    let mut playing = 0;
+    for pairing in pairings {
+        match (pairing.tally.rounds(), &pairing.reason, &pairing.run) {
+            (0, None, Some(_)) => playing += 1,
+            (0, _, _) => unplayed += 1,
+            (_, Some(_), None) => forfeited += 1,
+            _ => fought += 1,
+        }
+    }
+
+    let mut parts = vec![format!(
+        "{entries} of {} seats left an entry",
+        round.entries.len()
+    )];
+    for (count, what) in [
+        (fought, "fought"),
+        (forfeited, "forfeited"),
+        (unplayed, "without a fight"),
+        (playing, "playing"),
+    ] {
+        if count > 0 {
+            parts.push(format!("{count} {what}"));
+        }
+    }
+
+    parts.join(" \u{00b7} ")
+}
+
+/// The colour of a tally from the view of its first side.
+fn tint(tally: &ava_wire::Tally) -> &'static str {
+    match tally.won.cmp(&tally.lost) {
+        std::cmp::Ordering::Greater => AHEAD_CLASSES,
+        std::cmp::Ordering::Less => BEHIND_CLASSES,
+        std::cmp::Ordering::Equal => LEVEL_CLASSES,
+    }
+}
+
+/// A tally as `won-drawn-lost`, tinted by who came out ahead, with the reason
+/// behind it as a tooltip when there is one and the run that played it linked.
+/// One pairing of the cross table, from the view of the row: the tally of a
+/// fight with its run, `forfeit` tinted by who took it, or `none` for a
+/// pairing that saw no fight, the reason behind the hover either way.
+fn pairing_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) -> String {
+    let reason = reason.unwrap_or_default();
+    if tally.rounds() == 0 {
+        return played(&format!("<span class=\"{MUTED_CLASSES}\">none</span>"), run);
+    }
+
+    let label = if run.is_none() && !reason.is_empty() {
+        format!("<span class=\"{}\">forfeit</span>", tint(tally))
+    } else {
+        format!(
+            "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+            tint(tally),
+            tally_label(tally)
+        )
+    };
+
+    played(&explained(&label, reason), run)
+}
+
+/// `label`, linking to the run that played the pairing when one did.
+fn played(label: &str, run: Option<&str>) -> String {
+    match run {
+        Some(run) => format!(
+            "<a class=\"hover:opacity-70 transition-opacity\" href=\"/run/{run}\">{label}</a>",
+            run = escape(run)
+        ),
+        None => label.to_string(),
+    }
+}
+
 /// The registry, the credentials and the docker images runs are built from.
 pub(crate) fn setup_page() -> std::io::Result<String> {
     let registry = registry::load()?;
@@ -991,9 +1774,9 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     let mut failures: Vec<String> = Vec::new();
     for (backend, usage) in registry.backends.iter().zip(&usage) {
         let state = if std::env::var(&backend.key).is_ok() {
-            pill(SOLVED_PILL, false, "set")
+            pill(PASSED_PILL, false, "set")
         } else {
-            pill(FAILED_PILL, false, "missing")
+            pill(BROKEN_PILL, false, "missing")
         };
         let recorded = &usage.recorded;
         backend_rows.push(vec![
@@ -1069,7 +1852,11 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         .collect();
 
     let mut body = format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">backends <span class=\"{NOTE_CLASSES} font-normal\">with the key of each and the usage recorded over every run on disk</span></p>"
+        "<p class=\"{FIRST_TITLE_CLASSES}\">{}</p>",
+        explained(
+            "backends",
+            "with the key of each and the usage recorded over every run on disk"
+        )
     );
     body.push_str(&table(
         &[
@@ -1090,7 +1877,8 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         None,
     ));
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as each backend reports them when asked: {}</span></p>",
+        "<p class=\"{TITLE_CLASSES}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{}</span></p>",
+        explained("limits", "as each backend reports them when asked"),
         sources.join(", ")
     ));
     body.push_str(&table(
@@ -1156,6 +1944,15 @@ pub(crate) fn error_page(message: &str) -> String {
 }
 
 /// The known game folders, sorted.
+/// The games a run or a tournament can be started on: every game but the ones
+/// only starting as an attack on the entry of another.
+pub(crate) fn startable_games() -> std::io::Result<Vec<String>> {
+    Ok(games()?
+        .into_iter()
+        .filter(|game| ava_game::attacked_by(game).is_none())
+        .collect())
+}
+
 pub(crate) fn games() -> std::io::Result<Vec<String>> {
     let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)
         .map_err(|error| at_path(GAMES_DIRECTORY, error))?
@@ -1177,6 +1974,26 @@ pub(crate) fn run_file(name: &str, file: &str) -> Option<Vec<u8>> {
     std::fs::read(run_directory(name).ok()?.join(file)).ok()
 }
 
+/// The entry a run kept from the attempt at `seconds`, which is the entry file
+/// of its game and nothing else.
+pub(crate) fn run_entry(name: &str, seconds: &str, file: &str) -> Option<Vec<u8>> {
+    let seconds: u64 = seconds.parse().ok()?;
+    let directory = run_directory(name).ok()?;
+    let run = runs::read(&directory).ok()?;
+    let game = ava_game::find(&run.game)?;
+    if file != game.entry() {
+        return None;
+    }
+
+    std::fs::read(
+        directory
+            .join(docker::ENTRIES_DIRECTORY)
+            .join(seconds.to_string())
+            .join(file),
+    )
+    .ok()
+}
+
 /// The directory of the named run, refusing any name that is not a plain
 /// directory entry under the run directory.
 pub(crate) fn run_directory(name: &str) -> std::io::Result<std::path::PathBuf> {
@@ -1190,6 +2007,43 @@ pub(crate) fn run_directory(name: &str) -> std::io::Result<std::path::PathBuf> {
     }
 
     Ok(directory)
+}
+
+/// The files of a tournament the file route hands out: the record and the
+/// console of every round.
+fn tournament_files(name: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(tournament::directory(name)) else {
+        return Vec::new();
+    };
+
+    let mut files: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|file| tournament_file_allowed(file))
+        .collect();
+    files.sort();
+    files
+}
+
+/// Whether `file` is one the tournament file route hands out.
+fn tournament_file_allowed(file: &str) -> bool {
+    file == tournament::RECORD_FILE
+        || file
+            .strip_prefix(ROUND_LOG_PREFIX)
+            .and_then(|rest| rest.strip_suffix(ROUND_LOG_SUFFIX))
+            .is_some_and(|number| {
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+/// The contents of one of the files of a tournament.
+pub(crate) fn tournament_file(name: &str, file: &str) -> Option<Vec<u8>> {
+    tournament::load(name).ok()?;
+    if !tournament_file_allowed(file) {
+        return None;
+    }
+
+    std::fs::read(tournament::directory(name).join(file)).ok()
 }
 
 /// Whether an analyst is up for the named run.
@@ -1267,46 +2121,34 @@ fn live_runs() -> Vec<String> {
 
 /// Every run on disk, newest first, marked live while its scoring container is up,
 /// which outlives the agent container restarting between turns.
-///
-/// A run directory that is not there holds no runs, which is what a fresh
-/// checkout looks like until the first run creates it.
 fn collect_runs() -> std::io::Result<Vec<RunEntry>> {
     let running = live_runs();
+    let placements = tournament::placements()?;
 
-    let mut runs = Vec::new();
-    for directory in docker::run_directories()? {
-        let Some(name) = directory.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Some(metadata) = read_json(&directory.join(docker::METADATA_FILE)) else {
-            continue;
-        };
+    let mut runs: Vec<RunEntry> = runs::all()?
+        .into_iter()
+        .map(|(directory, run)| RunEntry::new(&directory, run, &running, &placements))
+        .collect();
 
-        let scorer = docker::scorer_container(name);
-        let live = running.iter().any(|container| container == &scorer);
-        runs.push(RunEntry {
-            live,
-            score: read_json(&directory.join(docker::SCORE_FILE)),
-            wall: wall_seconds(&directory, number(&metadata, "started_seconds")),
-            monitor: read_json(&directory.join(docker::MONITOR_FILE)),
-            attempts: attempts_of(&directory, name, live),
-            analyzing: running
-                .iter()
-                .any(|container| container == &docker::analyst_container(name)),
-            metadata,
-            name: name.to_string(),
-        });
-    }
-
-    runs.sort_by_key(|run| std::cmp::Reverse(number(&run.metadata, "started_seconds")));
+    runs.sort_by_key(|run| std::cmp::Reverse(run.run.started_seconds));
 
     Ok(runs)
 }
 
-/// The scored pushes of a run: the collected attempts log once the run is
-/// over, the output of the scoring container while it is live, since that
-/// output is the very log collected at the end.
-fn attempts_of(directory: &std::path::Path, name: &str, live: bool) -> Vec<serde_json::Value> {
+/// The graded pushes of a run: the record once the run is over, the output of
+/// the scoring container while it is live, since that output is the very log
+/// collected at the end, and that log itself for a run that broke before its
+/// record was completed.
+fn attempts_of(
+    directory: &std::path::Path,
+    name: &str,
+    live: bool,
+    run: &ava_wire::Run,
+) -> Vec<ava_wire::Attempt> {
+    if !live && !run.attempts.is_empty() {
+        return run.attempts.clone();
+    }
+
     let contents = if live {
         SNAPSHOT
             .lock()
@@ -1327,41 +2169,19 @@ fn attempts_of(directory: &std::path::Path, name: &str, live: bool) -> Vec<serde
         .collect()
 }
 
-/// The best solving push among `attempts`, the earliest one breaking ties.
-fn best_push(attempts: &[serde_json::Value]) -> Option<&serde_json::Value> {
+/// The graded pushes as table rows.
+fn attempt_rows(attempts: &[ava_wire::Attempt]) -> Vec<Vec<String>> {
     attempts
         .iter()
-        .filter(|push| {
-            push.get("solved")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        })
-        .max_by_key(|push| {
-            (
-                number(push, "points"),
-                std::cmp::Reverse(number(push, "seconds")),
-            )
-        })
-}
-
-/// The scored pushes as table rows.
-fn attempt_rows(attempts: &[serde_json::Value]) -> Vec<Vec<String>> {
-    attempts
-        .iter()
-        .map(|push| {
-            let solved = push
-                .get("solved")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+        .map(|attempt| {
             vec![
-                number(push, "seconds").to_string(),
-                if solved {
-                    pill(SOLVED_PILL, false, "solved")
+                attempt.seconds.to_string(),
+                if attempt.verdict.passed {
+                    pill(PASSED_PILL, false, "passed")
                 } else {
-                    pill(UNSOLVED_PILL, false, "unsolved")
+                    pill(FAILED_PILL, false, "failed")
                 },
-                points_meter(number(push, "points")),
-                escape(text(push, "reason")),
+                escape(attempt.verdict.reason.as_deref().unwrap_or_default()),
             ]
         })
         .collect()
@@ -1427,13 +2247,6 @@ fn number(value: &serde_json::Value, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn pointer(value: Option<&serde_json::Value>, path: &str) -> u64 {
-    value
-        .and_then(|value| value.pointer(path))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
-}
-
 /// The last `CONSOLE_TAIL_BYTES` of the file at `path`, read without the rest.
 fn console_tail(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     let mut file = std::fs::File::open(path)?;
@@ -1446,27 +2259,6 @@ fn console_tail(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     let mut tail = Vec::new();
     std::io::Read::read_to_end(&mut file, &mut tail)?;
     Ok(tail)
-}
-
-/// The wall clock seconds a finished run took, from its start to the moment
-/// its report was written, since nothing records the end explicitly.
-fn wall_seconds(directory: &std::path::Path, started: u64) -> Option<u64> {
-    let finished = [docker::SCORE_FILE, docker::AGENT_LOG]
-        .iter()
-        .find_map(|file| modified_seconds(&directory.join(file)))?;
-
-    Some(finished.saturating_sub(started))
-}
-
-/// The epoch second the file at `path` was last written, if it is there.
-fn modified_seconds(path: &std::path::Path) -> Option<u64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    Some(
-        modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs(),
-    )
 }
 
 /// The limit rows of one backend out of its `name=value` pairs.
@@ -1516,9 +2308,9 @@ fn status_pill(status: &str) -> String {
     }
 
     let tint = match status {
-        "allowed" => SOLVED_PILL,
+        "allowed" => PASSED_PILL,
         "allowed_warning" => STARTING_PILL,
-        "rejected" => FAILED_PILL,
+        "rejected" => BROKEN_PILL,
         _ => NEUTRAL_PILL,
     };
     let note = if note.is_empty() {
@@ -1540,6 +2332,36 @@ fn agent_label(harness: &str, thinking: &str) -> String {
         "<span class=\"whitespace-nowrap\">{} <span class=\"{MUTED_CLASSES}\">{}</span></span>",
         escape(harness),
         escape(thinking)
+    )
+}
+
+/// A version muted beside the thing it versions, or nothing when none was recorded.
+fn version_label(version: &str) -> String {
+    if version.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "<span class=\"{MUTED_CLASSES} {MONO_CLASSES} text-xs\">{}</span>",
+        escape(version)
+    )
+}
+
+/// Where a run sits in a tournament, linking the tournament.
+fn placement_label(placement: &tournament::Placement) -> String {
+    let role = match placement.attacking {
+        Some(defender) => format!(
+            "seat {} attacking seat {}",
+            placement.seat + 1,
+            defender + 1
+        ),
+        None => format!("seat {}", placement.seat + 1),
+    };
+
+    format!(
+        "{role} in round {} of <a class=\"{LINK_CLASSES}\" href=\"/tournament/{name}\">{name}</a>",
+        placement.round + 1,
+        name = escape(&placement.tournament)
     )
 }
 
@@ -1579,7 +2401,7 @@ fn time_fill(spent: u64, limit: u64) -> &'static str {
 fn points_meter(points: u64) -> String {
     meter(
         points,
-        POINT_CEILING,
+        ava_game::MAXIMUM_POINTS,
         POINTS_FILL,
         &points.to_string(),
         POINTS_LABEL_WIDTH,

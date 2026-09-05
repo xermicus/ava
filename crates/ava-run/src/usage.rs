@@ -76,7 +76,7 @@ pub struct Recorded {
 }
 
 impl Recorded {
-    fn add(&mut self, metrics: &Metrics, started: u64) {
+    fn add(&mut self, metrics: &ava_wire::Metrics, started: u64) {
         self.runs += 1;
         self.requests += metrics.requests;
         self.input_tokens += metrics.input_tokens;
@@ -95,29 +95,6 @@ impl Recorded {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct Metadata {
-    started_seconds: u64,
-}
-
-#[derive(serde::Deserialize)]
-struct Report {
-    metrics: Option<Metrics>,
-}
-
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct Metrics {
-    hosts: Vec<String>,
-    requests: u64,
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: u64,
-    cache_write_tokens: u64,
-    ratelimits: String,
-    gateway_cost: f64,
-}
-
 /// The recorded usage of every backend, in registry order. A run counts
 /// towards every backend whose host it requested.
 pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
@@ -127,29 +104,18 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
         .map(|_| Recorded::default())
         .collect();
 
-    for directory in crate::docker::run_directories()? {
-        let Some(metadata) = read_json::<Metadata>(&directory.join(crate::docker::METADATA_FILE))
-        else {
-            continue;
-        };
-        let Some(Report {
-            metrics: Some(metrics),
-        }) = read_json(&directory.join(crate::docker::SCORE_FILE))
-        else {
+    for (_, run) in crate::runs::all()? {
+        let Some(metrics) = run.metrics else {
             continue;
         };
         for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
             if metrics.hosts.contains(&backend.host) {
-                usage.add(&metrics, metadata.started_seconds);
+                usage.add(&metrics, run.started_seconds);
             }
         }
     }
 
     Ok(recorded)
-}
-
-fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
 /// Ask `backend` for its limits, as the `name=value` pairs the proxy captures.

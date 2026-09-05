@@ -1,8 +1,8 @@
 //! The `remote` sub command: the git remote of one run, served on the score socket.
 //!
 //! A thin CGI shim around `git http-backend`: the sandbox pushes and fetches
-//! over plain HTTP through the proxy, and the scoring happens in the receive
-//! hooks of the repository, not here. The `score` host scores a posted tar
+//! over plain HTTP through the proxy, and the verifying happens in the receive
+//! hooks of the repository, not here. The `score` host verifies a posted tar
 //! without recording it. Requests are answered one at a time, which makes one
 //! answered request the proof that a scoring in flight has finished.
 
@@ -44,6 +44,9 @@ const SCORER_HOST: &str = "score";
 
 /// Written by the scorer entrypoint next to the repository.
 const GAME_FILE: &str = "game";
+
+/// Mounted next to the repository when the run attacks the entry of another.
+const CHALLENGE_DIRECTORY: &str = "challenge";
 
 /// One scratch directory is enough, requests are answered one at a time.
 const SCRATCH_PREFIX: &str = "ava-score-";
@@ -153,17 +156,25 @@ fn score(request: &mut tiny_http::Request, root: &str) -> std::io::Result<Answer
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(scratch.join(crate::score::SUBMISSION_DIRECTORY))?;
 
-    let answer = unpack_and_score(&scratch, &tarball, game.trim());
+    let challenge = std::path::Path::new(root).join(CHALLENGE_DIRECTORY);
+    let answer = unpack_and_score(
+        &scratch,
+        &tarball,
+        game.trim(),
+        challenge.is_dir().then_some(challenge.as_path()),
+    );
     let _ = std::fs::remove_dir_all(&scratch);
 
     answer
 }
 
-/// Unpack `tarball` under `scratch` and run the scorer over it.
+/// Unpack `tarball` under `scratch` and run the verifier over it, against the
+/// `challenge` when the run attacks one.
 fn unpack_and_score(
     scratch: &std::path::Path,
     tarball: &[u8],
     game: &str,
+    challenge: Option<&std::path::Path>,
 ) -> std::io::Result<Answer> {
     let archive = scratch.join(TARBALL_FILE);
     std::fs::write(&archive, tarball)?;
@@ -184,12 +195,15 @@ fn unpack_and_score(
         ));
     }
 
-    let scored = std::process::Command::new("timeout")
+    let mut verifier = std::process::Command::new("timeout");
+    verifier
         .arg(SCORE_TIMEOUT_SECONDS)
         .arg(std::env::current_exe()?)
-        .args(["score", "--game", game])
-        .current_dir(scratch)
-        .output()?;
+        .args(["score", "--game", game]);
+    if let Some(challenge) = challenge {
+        verifier.arg("--challenge").arg(challenge);
+    }
+    let scored = verifier.current_dir(scratch).output()?;
 
     let _ = std::io::stderr().write_all(&scored.stderr);
 

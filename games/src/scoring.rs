@@ -1,8 +1,5 @@
-//! Rating systems turning played matches into a leaderboard.
+//! Pairing the seats of a tournament and rating the matches they played.
 
-const HALF_FORFEITED: f64 = 0.0;
-const HALF_DRAWN: f64 = 0.5;
-const HALF_STUMPED: f64 = 1.0;
 const ANCHOR_RATING: f64 = 1000.0;
 const RATING_SCALE: f64 = 400.0;
 const LOGISTIC_BASE: f64 = 10.0;
@@ -10,32 +7,17 @@ const K_FACTOR: f64 = 32.0;
 const VIRTUAL_DRAW: f64 = 0.5;
 const FIT_ITERATIONS: u32 = 100;
 
-/// One half of a match: one agent authored the puzzle, the other attempted it.
-#[derive(Debug)]
-pub struct Half {
-    /// The verifier accepted the reference solution the generator submitted.
-    pub valid: bool,
-    /// A fresh generator instance solved its own puzzle from the solver's view.
-    pub generator_solved: bool,
-    /// The solver passed the verifier within its budget.
-    pub solver_solved: bool,
-}
-
-/// A played match: both agents generated one puzzle and solved one.
-#[derive(Debug)]
+/// A played match between two agents.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Match {
-    /// The agent generating in the first half.
     pub first: String,
-    /// The agent generating in the second half.
     pub second: String,
-    /// The half where `first` generated and `second` solved.
-    pub first_half: Half,
-    /// The half where `second` generated and `first` solved.
-    pub second_half: Half,
+    /// The score of `first` in `[0, 1]`: one for a win, half for a draw.
+    pub score: f64,
 }
 
 /// An agent's place on the leaderboard.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rating {
     /// The rated agent.
     pub agent: String,
@@ -52,24 +34,31 @@ pub trait Scoring {
     fn leaderboard(&self, matches: &[Match]) -> Vec<Rating>;
 }
 
-/// The score of one match for the `first` agent, in [0, 1].
-///
-/// A generator takes a half by stumping the solver with a puzzle it solved
-/// itself. An invalid puzzle, or one the generator cannot solve from the
-/// solver's view, forfeits the half. Both sides solving is a draw.
-pub fn match_score(played: &Match) -> f64 {
-    (half_score(&played.first_half) + (1.0 - half_score(&played.second_half))) / 2.0
+/// Every pair of `seats` once, the first seat of each pair the lower one.
+pub fn round_robin(seats: usize) -> Vec<(usize, usize)> {
+    (0..seats)
+        .flat_map(|first| (first + 1..seats).map(move |second| (first, second)))
+        .collect()
 }
 
-fn half_score(half: &Half) -> f64 {
-    if !half.valid || !half.generator_solved {
-        return HALF_FORFEITED;
-    }
-    if half.solver_solved {
-        HALF_DRAWN
-    } else {
-        HALF_STUMPED
-    }
+/// The matches `pairings` make between the agents `seats` hold, in the order
+/// given: one per pairing that saw a round.
+pub fn matches<'a>(
+    seats: &[ava_wire::Agent],
+    pairings: impl IntoIterator<Item = &'a ava_wire::Pairing>,
+) -> Vec<Match> {
+    pairings
+        .into_iter()
+        .filter_map(|pairing| {
+            let first = seats.get(pairing.first)?;
+            let second = seats.get(pairing.second)?;
+            Some(Match {
+                first: first.label(),
+                second: second.label(),
+                score: pairing.tally.score()?,
+            })
+        })
+        .collect()
 }
 
 /// Bradley-Terry ratings fitted over the whole match history.
@@ -103,9 +92,8 @@ impl Scoring for BradleyTerry {
                 continue;
             }
 
-            let score = match_score(played);
-            wins[first][second] += score;
-            wins[second][first] += 1.0 - score;
+            wins[first][second] += played.score;
+            wins[second][first] += 1.0 - played.score;
         }
 
         for (agent, row) in wins.iter_mut().enumerate() {
@@ -167,7 +155,7 @@ impl Scoring for Elo {
 
             let advantage = (ratings[second] - ratings[first]) / RATING_SCALE;
             let expected = 1.0 / (1.0 + LOGISTIC_BASE.powf(advantage));
-            let shift = K_FACTOR * (match_score(played) - expected);
+            let shift = K_FACTOR * (played.score - expected);
             ratings[first] += shift;
             ratings[second] -= shift;
         }
@@ -183,7 +171,7 @@ impl Scoring for Elo {
 }
 
 /// Every agent appearing in `matches`, in order of appearance.
-fn participants(matches: &[Match]) -> Vec<String> {
+pub fn participants(matches: &[Match]) -> Vec<String> {
     let mut agents: Vec<String> = Vec::new();
 
     for played in matches {
@@ -222,4 +210,52 @@ fn ranked(mut leaderboard: Vec<Rating>) -> Vec<Rating> {
             .expect("ratings are finite")
     });
     leaderboard
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BradleyTerry, Elo, Match, Scoring};
+
+    fn played(first: &str, second: &str, score: f64) -> Match {
+        Match {
+            first: first.to_string(),
+            second: second.to_string(),
+            score,
+        }
+    }
+
+    #[test]
+    fn round_robin_pairs_every_seat_once() {
+        assert_eq!(super::round_robin(1), Vec::<(usize, usize)>::new());
+        assert_eq!(super::round_robin(3), vec![(0, 1), (0, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn the_winner_leads_under_both_systems() {
+        let matches = [
+            played("a", "b", 1.0),
+            played("b", "c", 1.0),
+            played("a", "c", 1.0),
+        ];
+
+        for leaderboard in [
+            Elo.leaderboard(&matches),
+            BradleyTerry.leaderboard(&matches),
+        ] {
+            let order: Vec<&str> = leaderboard
+                .iter()
+                .map(|rating| rating.agent.as_str())
+                .collect();
+            assert_eq!(order, ["a", "b", "c"]);
+        }
+    }
+
+    #[test]
+    fn matches_between_the_same_agent_move_nothing() {
+        let matches = [played("a", "a", 1.0), played("a", "a", 0.0)];
+
+        for rating in Elo.leaderboard(&matches) {
+            assert_eq!(rating.rating, super::ANCHOR_RATING);
+        }
+    }
 }

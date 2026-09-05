@@ -1,9 +1,17 @@
-//! The `score` sub command: scoring submissions and aggregating proxy metrics.
+//! The `score` sub command: verifying a submission, fighting two entries and
+//! aggregating the logs of a run.
 
-/// Where the scorer expects the submission, relative to the working directory.
+/// Where the verifier expects the submission, relative to the working directory.
 pub const SUBMISSION_DIRECTORY: &str = "submission";
 
+/// The directories under a fight directory holding the entry of each seat.
+pub const FIRST_DIRECTORY: &str = "first";
+pub const SECOND_DIRECTORY: &str = "second";
+
 const SUCCESS_STATUS: u32 = 200;
+
+/// The combats a fight plays unless the command asks for more.
+const DEFAULT_COMBATS: u64 = 1;
 
 /// What the proxy logs for a request it finished serving.
 const COMPLETED: &str = "OK";
@@ -15,15 +23,21 @@ const COMPLETED: &str = "OK";
 /// magnitude apart and leaves the exact share uncritical.
 const BUFFERED_HEADER_SHARE: f64 = 0.95;
 
-/// The submission scoring command.
+/// The scoring command.
 #[derive(Debug, Default)]
 pub struct Score {
     /// The proxy access log to aggregate into metrics.
     pub metrics: Option<String>,
-    /// The game scoring the submission.
+    /// The game verifying the submission or fighting the entries.
     pub game: Option<String>,
-    /// The live scoring log to aggregate into attempts.
+    /// The attempts log to read.
     pub attempts: Option<String>,
+    /// The directory holding the two entries to fight, under `first` and `second`.
+    pub fight: Option<String>,
+    /// The combats the fight plays.
+    pub combats: Option<u64>,
+    /// The directory holding the entry the submission attacks.
+    pub challenge: Option<String>,
 }
 
 /// One request as the proxy sidecar logged it.
@@ -33,7 +47,7 @@ struct Record {
     status: u32,
     /// What the proxy logged for the completion of the request. Empty means the
     /// client went away before the answer was fully written, which is what the
-    /// restart at the end of a phase does to whatever request is in flight. A
+    /// restart at the end of a turn does to whatever request is in flight. A
     /// log written before the proxy recorded it holds no answer either way, so
     /// it reads as completed and reports nothing abandoned.
     #[serde(default = "completed")]
@@ -65,147 +79,99 @@ struct Record {
     gateway_cost: String,
 }
 
-/// The aggregate over every request in one proxy access log.
-#[derive(Default, serde::Serialize)]
-struct Metrics {
-    requests: u64,
-    /// The requests answered with a non-200 status.
-    failed_requests: u64,
-    /// The requests a model answered in full without ever reporting its usage,
-    /// so the stream was cut short upstream.
-    truncated_requests: u64,
-    /// The requests the client abandoned before the answer was written. The
-    /// restart at the end of a phase leaves one of these behind whenever the
-    /// agent had a request in flight, so these are expected rather than a
-    /// fault of the upstream.
-    aborted_requests: u64,
-    /// The answers an upstream withheld until it had generated all of them, so
-    /// nothing reached the harness while the model worked. Time to the first
-    /// token is the whole generation time for these, not a latency.
-    buffered_requests: u64,
-    /// Every distinct host that was requested.
-    hosts: Vec<String>,
-    /// Every distinct model identifier seen in a response body.
-    served_models: Vec<String>,
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: u64,
-    cache_write_tokens: u64,
-    /// Content delta events counted as the streams passed, the approximate
-    /// volume of the requests whose usage report never arrived.
-    streamed_deltas: u64,
-    /// The account limits of the newest answer that reported them.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    ratelimits: String,
-    /// The cost the gateway reported, summed over the answers that carried one.
-    gateway_cost: f64,
-    request_bytes: u64,
-    response_bytes: u64,
-    request_seconds: f64,
-    /// The mean time to the first generated token, over the requests reporting one.
-    mean_first_token_seconds: f64,
-}
-
-/// One attempt the scoring server recorded.
-#[derive(serde::Deserialize)]
-struct Attempt {
-    seconds: u64,
-    solved: bool,
-    points: u64,
-}
-
-/// The attempts of one run; the best solving one is the submission of record.
-#[derive(serde::Serialize)]
-struct Attempts {
-    attempts: u64,
-    solved: bool,
-    points: u64,
-    /// Seconds to the best solving attempt, breaking point ties.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    first_solved_seconds: Option<u64>,
-}
-
-/// The parameters one run was played with, repeated in its report.
-#[derive(serde::Serialize)]
-pub struct Run<'a> {
-    pub harness: &'a str,
-    pub harness_version: &'a str,
-    pub model: &'a str,
-    pub game: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<&'a str>,
-    pub limit_seconds: u64,
-}
-
 /// The document `score` prints, holding whatever was requested.
 #[derive(serde::Serialize)]
-struct Report<'a> {
+struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
-    run: Option<Run<'a>>,
+    verdict: Option<ava_wire::Verdict>,
+    /// The file the game keeps as the entry of a passing submission.
     #[serde(skip_serializing_if = "Option::is_none")]
-    score: Option<ava_game::Score>,
+    entry: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    metrics: Option<Metrics>,
+    fight: Option<ava_wire::Tally>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    attempts: Option<Attempts>,
+    metrics: Option<ava_wire::Metrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attempts: Option<Vec<ava_wire::Attempt>>,
 }
 
 /// Run the score sub command and print the requested reports as one JSON document.
 pub fn run(command: &Score) -> std::io::Result<i32> {
-    println!("{}", report(command, None)?);
+    let mut report = Report {
+        verdict: None,
+        entry: None,
+        fight: None,
+        metrics: None,
+        attempts: None,
+    };
+
+    if let Some(name) = &command.game {
+        let game = find(name)?;
+
+        match &command.fight {
+            Some(directory) => {
+                let directory = std::path::Path::new(directory);
+                let tally = game.fight(
+                    &directory.join(FIRST_DIRECTORY).join(game.entry()),
+                    &directory.join(SECOND_DIRECTORY).join(game.entry()),
+                    command.combats.unwrap_or(DEFAULT_COMBATS),
+                )?;
+                log::info!(
+                    "the {name} fight went {} won, {} drawn, {} lost for the first entry",
+                    tally.won,
+                    tally.drawn,
+                    tally.lost
+                );
+                report.fight = Some(tally);
+            }
+            None => {
+                let verdict = game.verify(
+                    std::path::Path::new(SUBMISSION_DIRECTORY),
+                    command.challenge.as_deref().map(std::path::Path::new),
+                )?;
+                log::info!(
+                    "the {name} submission {}",
+                    if verdict.passed { "passed" } else { "failed" }
+                );
+                report.verdict = Some(verdict);
+                report.entry = Some(game.entry());
+            }
+        }
+    }
+
+    if let Some(log) = &command.metrics {
+        report.metrics = Some(aggregate_metrics(log)?);
+    }
+
+    if let Some(log) = &command.attempts {
+        report.attempts = Some(read_attempts(log)?);
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(std::io::Error::other)?
+    );
 
     Ok(0)
 }
 
-/// The document holding whatever reports `command` requested, opened by the
-/// `run` parameters when the caller knows them.
-pub fn report(command: &Score, run: Option<Run>) -> std::io::Result<String> {
-    let score = match &command.game {
-        Some(name) => {
-            let game = ava_game::find(name).ok_or_else(|| {
-                let known: Vec<&str> = ava_game::GAMES.iter().map(|game| game.name()).collect();
-                std::io::Error::other(format!(
-                    "unknown game `{name}`, known are: {}",
-                    known.join(", ")
-                ))
-            })?;
-            let score = game.score(std::path::Path::new(SUBMISSION_DIRECTORY))?;
-            log::info!(
-                "the {name} submission is {}, at {} points",
-                if score.solved { "solved" } else { "unsolved" },
-                score.points
-            );
-            Some(score)
-        }
-        None => None,
-    };
-
-    let metrics = match &command.metrics {
-        Some(log) => Some(aggregate(log)?),
-        None => None,
-    };
-
-    let attempts = match &command.attempts {
-        Some(log) => Some(aggregate_attempts(log)?),
-        None => None,
-    };
-
-    let report = Report {
-        run,
-        score,
-        metrics,
-        attempts,
-    };
-
-    serde_json::to_string_pretty(&report).map_err(std::io::Error::other)
+/// The game registered under `name`, or the error naming the known ones.
+pub fn find(name: &str) -> std::io::Result<&'static dyn ava_game::Game> {
+    ava_game::find(name).ok_or_else(|| {
+        let known: Vec<&str> = ava_game::GAMES.iter().map(|game| game.name()).collect();
+        std::io::Error::other(format!(
+            "unknown game `{name}`, known are: {}",
+            known.join(", ")
+        ))
+    })
 }
 
-/// Aggregate the access log at `log` into one [`Metrics`].
-fn aggregate(log: &str) -> std::io::Result<Metrics> {
+/// Aggregate the proxy access log at `log` into one [`ava_wire::Metrics`].
+pub fn aggregate_metrics(log: &str) -> std::io::Result<ava_wire::Metrics> {
     let contents = std::fs::read_to_string(log)
         .map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
 
-    let mut metrics = Metrics::default();
+    let mut metrics = ava_wire::Metrics::default();
     let mut first_token_seconds = 0f64;
     let mut streamed_requests = 0u64;
 
@@ -301,42 +267,30 @@ fn seconds(field: &str) -> f64 {
         .unwrap_or_default()
 }
 
-/// Aggregate the scoring log at `log` into one [`Attempts`].
-fn aggregate_attempts(log: &str) -> std::io::Result<Attempts> {
+/// Every attempt in the attempts log at `log`, in the order they were graded.
+pub fn read_attempts(log: &str) -> std::io::Result<Vec<ava_wire::Attempt>> {
     let contents = std::fs::read_to_string(log)
         .map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
 
-    let mut report = Attempts {
-        attempts: 0,
-        solved: false,
-        points: 0,
-        first_solved_seconds: None,
-    };
-
-    for line in contents.lines().filter(|line| line.starts_with('{')) {
-        let attempt: Attempt = serde_json::from_str(line)
-            .map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
-
-        report.attempts += 1;
-        if !attempt.solved || attempt.points == 0 {
-            continue;
-        }
-
-        if !report.solved || attempt.points > report.points {
-            report.solved = true;
-            report.points = attempt.points;
-            report.first_solved_seconds = Some(attempt.seconds);
-        }
-    }
+    let attempts = contents
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| {
+            serde_json::from_str(line)
+                .map_err(|error| std::io::Error::other(format!("{log}: {error}")))
+        })
+        .collect::<std::io::Result<Vec<ava_wire::Attempt>>>()?;
 
     log::info!(
-        "{log}: {} attempts, the best one {} at {} points",
-        report.attempts,
-        if report.solved { "solved" } else { "unsolved" },
-        report.points
+        "{log}: {} attempts, {} passed",
+        attempts.len(),
+        attempts
+            .iter()
+            .filter(|attempt| attempt.verdict.passed)
+            .count()
     );
 
-    Ok(report)
+    Ok(attempts)
 }
 
 fn record_distinct(seen: &mut Vec<String>, value: &str) {

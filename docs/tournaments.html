@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Architecture - AvA book</title>
+        <title>Tournaments - AvA book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,102 +174,39 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
-<p>The architecture follows these principles:</p>
+                        <h1 id="tournaments"><a class="header" href="#tournaments">Tournaments</a></h1>
+<p>A tournament is a lobby of seats playing rounds of one game. Any game can be played: what a round does with the entries depends on the playout of the game, described under <a href="#the-pairings">the pairings</a>. Seating two of the same agent is allowed, and the standings rate agents, so their pairings against each other count for nothing.</p>
+<h2 id="the-lobby"><a class="header" href="#the-lobby">The lobby</a></h2>
+<p><code>ava tournament -n &lt;name&gt; -g &lt;game&gt; -t &lt;seconds&gt; -c &lt;combats&gt;</code> opens a tournament, or the tournaments page of the web interface does. The game, the seconds every run is given and the combats every fight plays, 5 unless chosen otherwise, are fixed at that point, and so is the analyst: <code>--analyst harness/model[/thinking]</code> with <code>--analyst-seconds</code>, or the analyze checkbox of the form with its seconds field, has every run of a round analyzed the moment it is over, the runs of the seats and the runs of the attacks alike, in parallel with what the round still plays and under the same cap. A failed analysis fails nothing, the run page offers it again.</p>
+<p>A seat holds an agent: a harness on a model at a thinking level. <code>-s harness/model</code> or <code>-s harness/model/thinking</code> seats one, repeatable, or the seat row on the tournament page does. Two seats may hold the same agent, which doubles its games a round; the standings rate agents, so the two seats are one entry there. The lobby is open until the first round is played and fixed from then on: seats neither join nor leave, since the rounds reference seats by their number and every round is played by the same lobby. A new agent gets a new tournament.</p>
+<h2 id="a-round"><a class="header" href="#a-round">A round</a></h2>
+<p>A round is every seat playing a run of the game, all at once, then every pairing of the entries they kept fighting. <code>ava tournament -n &lt;name&gt;</code> plays one, and the play round button on the tournament page does. <code>-j &lt;runs&gt;</code>, or the field beside the button, caps how many runs a phase has going at once; without it every run of a phase starts together, which for a played round is one per ordered pair of seats. A queued attack shows as queued in the cross table until its run starts. The runs are ordinary runs: they show up in the runs table like any other, naming the tournament, round and seat they play, and their pages are the run pages.</p>
+<p>The round is written to the record the moment its runs are named, so the tournament page links the runs while they play. Once every run is over, the entry of record of each is picked: the entry ranking highest, the newest on ties, which for a pass or fail game is the last passing push. Then the pairings of the round robin are played, every pair of seats once. The record is written after every pairing, so a round that breaks off leaves what it had, and only a finished round counts for the standings.</p>
+<h2 id="the-pairings"><a class="header" href="#the-pairings">The pairings</a></h2>
 <ul>
-<li>Benchmarks should be reproducible</li>
-<li>Benchmarks should be secure
+<li>Automated playout, the r2wars games: the scorer fights the two entries over the combats the tournament fixed. Each fight is staged into the scorer image of the game with no network and the entries mounted read only, and its rounds are tallied from the view of the first seat. The console of the fights is <code>tournaments/&lt;name&gt;/round-&lt;number&gt;.log</code>. A seat that left no passing entry forfeits its pairings, which are recorded as one round lost with the reason. A pairing whose fight failed is recorded with no rounds and the reason, and counts for nothing.</li>
+<li>Single playout, fib-golf and sanity-check: the entries stand alone, so nothing is fought and nothing is recorded beyond the entries. The pairings are derived when the standings are shown, by comparing the points of the two entries of record: more points win the pairing, equal points draw it, as does a game ranking nothing, a missing entry forfeits it. A changed curve changes who won without touching the record.</li>
+<li>Played playout, the crackme games: one seat’s entry is another seat’s task. Every seat attacks the entry of every other seat in a run of the challenge game, all at once: the attacker’s harness starts on the challenge task with the defender’s entry seeded into its workspace, and the verifier checks its pushes against that entry, mounted into the scoring container. The pairing is recorded as one round to the attacker when a push passed and one round to the defender otherwise, with the run that played it, so the cross table links every attack. The pairings are every ordered pair of seats, since each seat attacks and defends, and the attacks on a seat that left no entry are forfeited to the attacker, or recorded with no rounds when the attacker left none either. A played round starts one run per ordered pair, six for three seats.</li>
+</ul>
+<h2 id="the-standings"><a class="header" href="#the-standings">The standings</a></h2>
+<p>The record holds tallies, or for a single playout the entries the tallies are compared from. Everything else is derived when the tournament page renders: the matches of the finished rounds between different agents, each scored for the first seat as the rounds won plus half the rounds drawn over the rounds played, and the two ratings over those matches. Elo walks the matches in the order they were fought and moves after every one. Bradley-Terry fits the whole history at once and orders the standings. Both are anchored at 1000. The standings list every agent’s fights as won-drawn-lost, a fight with more rounds won than lost is won, and its score, the rounds won plus half the rounds drawn over the rounds played. The cross table of every round shows the tally of the row’s seat against the column’s seat, <code>forfeit</code> for a pairing one side did not field an entry for and <code>none</code> for one that saw no fight, with the reason behind a tooltip, the cell linking to the run that played the pairing when one did, and a total of the row’s fights as won-drawn-lost. A line above it counts the seats that left an entry and what became of the pairings.</p>
+<h2 id="files"><a class="header" href="#files">Files</a></h2>
 <ul>
-<li>Agents under test can’t cheat</li>
-<li>Evaluation of potentially untrusted code submissions is contained</li>
+<li><code>tournaments/&lt;name&gt;/tournament.json</code> is the record described in the <a href="data_model.html">data model</a>.</li>
+<li><code>tournaments/&lt;name&gt;/round-&lt;number&gt;.log</code> is what the fights of the round printed.</li>
+<li><code>tournaments/&lt;name&gt;/playing</code> holds the pid of the process playing a round while it does, which is how the web interface knows a round the command line plays is going on.</li>
+<li>The runs of the rounds are under <code>runs/</code>, like every run.</li>
 </ul>
-</li>
-<li>KISS - explainable to a fellow engineer in a few sentences</li>
-</ul>
-<h2 id="running-benchmarks"><a class="header" href="#running-benchmarks">Running benchmarks</a></h2>
-<p>A run pairs a model with a harness, lets that agent attempt a task and scores the submission.</p>
-<h3 id="components"><a class="header" href="#components">Components</a></h3>
-<p><code>ava</code> manages the entire lifecycle, either from the CLI or web interface.</p>
-<p>The agent as well as the task evaluation are sandboxed within a docker container.
-The sandbox docker container has no network access.
-A unix socket that connects to the <code>ava-proxy</code> sidecar is mounted in.
-<code>ava-proxy</code> reverse-proxies to the LLM backend, allowing the agent to access LLMs.</p>
-<p>The benchmark task is mounted into the containers.
-The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is verified on the spot and the entry of every passing push is kept. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket verifies a posted tar without recording it.
-The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.</p>
-<p>Each game implements a verifier, for security reasons it’s evaluated in a container too.
-The verifier checks the submission however it wishes and records a verdict, never points.
-<code>ava</code> collects the entries and the metrics from the side-car logs after the run.
-The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.</p>
-<h3 id="sequence-diagram-of-a-benchmark-run"><a class="header" href="#sequence-diagram-of-a-benchmark-run">Sequence diagram of a benchmark run</a></h3>
-<pre><code class="language-text">  +-----+         +---------+      +-----------+    +--------+      +-------------+
-  | ava |         | sandbox |      | ava-proxy |    | scorer |      | LLM backend |
-  +-----+         +---------+      +-----------+    +--------+      +-------------+
-     |                 |                 |               |                 |
-     | start proxy     |                 |               |                 |
-     |-----------------------------------&gt;               |                 |
-     | start scorer    |                 |               |                 |
-     |---------------------------------------------------&gt;                 |
-     | start agent     |                 |               |                 |
-     |-----------------&gt;                 |               |                 |
-     |                 |                 |               |                 |
-     |                 | llm request     |               |                 |
-     |                 |-----------------&gt;               |                 |
-     |                 |                 | llm request   |                 |
-     |                 |                 |---------------------------------&gt;
-     |                 |                 | response      |                 |
-     |                 |                 &lt;---------------------------------|
-     |                 | response        |               |                 |
-     |                 &lt;-----------------|               |                 |
-     |                 |                 |               |                 |
-     |                 | submission      |               |                 |
-     |                 |-----------------&gt;               |                 |
-     |                 |                 | submission    |                 |
-     |                 |                 |---------------&gt;                 |
-     |                 |                 |               |--. run the game verifier
-     |                 |                 |               |&lt;-'              |
-     |                 |                 | verdict       |                 |
-     |                 |                 &lt;---------------|                 |
-     |                 | verdict         |               |                 |
-     |                 &lt;-----------------|               |                 |
-     |                 |                 |               |                 |
-     | turn over       |                 |               |                 |
-     &lt;-----------------|                 |               |                 |
-     |--. start the next turn until the clock runs out                     |
-     |&lt;-'              |                 |               |                 |
-     | start agent     |                 |               |                 |
-     |-----------------&gt;                 |               |                 |
-     |                 |                 |               |                 |
-     |                 | ... as above ...|               |                 |
-     |                 |                 |               |                 |
-     | turn over       |                 |               |                 |
-     &lt;-----------------|                 |               |                 |
-     |--. the clock ran out, so start the last call                        |
-     |&lt;-'              |                 |               |                 |
-     | start agent     |                 |               |                 |
-     |-----------------&gt;                 |               |                 |
-     |                 |                 |               |                 |
-     | turn over       |                 |               |                 |
-     &lt;-----------------|                 |               |                 |
-     |--. collect the logs and the entries, complete runs/&lt;run&gt;/run.json   |
-     |&lt;-'              |                 |               |                 |
-</code></pre>
-<h2 id="game-definitions"><a class="header" href="#game-definitions">Game definitions</a></h2>
-<p>Benchmarks are implemented as games. A game verifies what an agent left and ranks the entries it kept, and a game with an automated playout fights two entries against each other, which is what tournaments are made of.</p>
-<h3 id="verdicts-fights-and-metrics"><a class="header" href="#verdicts-fights-and-metrics">Verdicts, fights and metrics</a></h3>
-<p>The sidecar dumps each request to a JSON access log, which <code>ava</code> collects into <code>runs/&lt;run&gt;/proxy.access.log</code>.</p>
-<p>Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics.</p>
-<p>The verifier is <code>ava score</code>, running in the scoring container without network access: <code>--game</code> verifies the submission left in <code>submission/</code> with the named game and prints the verdict with the name of the entry file, which the receive hook keeps for a passing push. <code>--game</code> with <code>--fight &lt;directory&gt;</code> fights the entries under <code>first/</code> and <code>second/</code> of that directory over <code>--combats</code>, one unless given, and prints the tally, which is how a tournament plays a pairing: one container of the scorer image per fight, no network, the entries mounted read only. <code>--metrics</code> and <code>--attempts</code> aggregate the collected logs after the run into the run record.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="tournaments.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="games.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="data_model.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="architecture.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -279,11 +216,11 @@ The metrics also record which models were accessed through the proxy, exposing a
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="tournaments.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="games.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="data_model.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="architecture.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

@@ -65,6 +65,9 @@ scoreboard</a>
 <a href="/games" data-page="games" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
 games</a>
+<a href="/tournaments" data-page="tournaments" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4"/><path d="M12 13v4M9 20h6M10 17h4"/></svg>
+tournaments</a>
 <a href="/setup" data-page="setup" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
 setup</a>
@@ -110,7 +113,15 @@ async function refresh() {
 setInterval(() => refresh().catch(() => {}), REFRESH_MILLISECONDS);
 
 /* Mark the section the page belongs to in the navigation. */
-const SECTIONS = { "": "runs", run: "runs", scoreboard: "scoreboard", games: "games", setup: "setup" };
+const SECTIONS = {
+    "": "runs",
+    run: "runs",
+    scoreboard: "scoreboard",
+    games: "games",
+    tournaments: "tournaments",
+    tournament: "tournaments",
+    setup: "setup",
+};
 const active = document.querySelector(
     `nav a[data-page="${SECTIONS[location.pathname.split("/")[1]]}"]`,
 );

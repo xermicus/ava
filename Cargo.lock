@@ -81,8 +81,8 @@ dependencies = [
 name = "ava-game"
 version = "0.1.0"
 dependencies = [
+ "ava-wire",
  "log",
- "serde",
 ]
 
 [[package]]
@@ -91,6 +91,7 @@ version = "0.1.0"
 dependencies = [
  "ava-game",
  "ava-scorer",
+ "ava-wire",
  "log",
  "serde",
  "serde_json",
@@ -101,6 +102,7 @@ name = "ava-scorer"
 version = "0.1.0"
 dependencies = [
  "ava-game",
+ "ava-wire",
  "log",
  "serde",
  "serde_json",
@@ -111,10 +113,20 @@ dependencies = [
 name = "ava-web"
 version = "0.1.0"
 dependencies = [
+ "ava-game",
  "ava-run",
+ "ava-wire",
  "log",
  "serde_json",
  "tiny_http",
+]
+
+[[package]]
+name = "ava-wire"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

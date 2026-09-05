@@ -21,12 +21,12 @@ A unix socket that connects to the `ava-proxy` sidecar is mounted in.
 `ava-proxy` reverse-proxies to the LLM backend, allowing the agent to access LLMs.
 
 The benchmark task is mounted into the containers.
-The proxy routes the `git` host to a bare repository in a container without network, which is how an agent submits: every push to the `task` branch is scored on the spot and the best solving one counts. `ava remote` serves that repository over the score socket, a CGI shim around `git http-backend` answering one request at a time. The `score` host on the same socket scores a posted tar without recording it.
+The proxy routes the `git` host to a bare repository in a container without network, which is how an agent submits: every push to the `task` branch is verified on the spot and the entry of every passing push is kept. `ava remote` serves that repository over the score socket, a CGI shim around `git http-backend` answering one request at a time. The `score` host on the same socket verifies a posted tar without recording it.
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.
 
-Each benchmark implements a scorer, for security reasons it's evaluated in a container too.
-The verifier checks the score of the submission however it wishes.
-`ava` collects the metrics from the `ava-proxy` side-car logs after the run.
+Each game implements a verifier, for security reasons it's evaluated in a container too.
+The verifier checks the submission however it wishes and records a verdict, never points.
+`ava` collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.
 
 ### Sequence diagram of a benchmark run
@@ -56,11 +56,11 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 |----------------->               |                 |
      |                 |                 | submission    |                 |
      |                 |                 |--------------->                 |
-     |                 |                 |               |--. run the game scorer
+     |                 |                 |               |--. run the game verifier
      |                 |                 |               |<-'              |
-     |                 |                 | score report  |                 |
+     |                 |                 | verdict       |                 |
      |                 |                 <---------------|                 |
-     |                 | score report    |               |                 |
+     |                 | verdict         |               |                 |
      |                 <-----------------|               |                 |
      |                 |                 |               |                 |
      | turn over       |                 |               |                 |
@@ -81,19 +81,19 @@ The metrics also record which models were accessed through the proxy, exposing a
      |                 |                 |               |                 |
      | turn over       |                 |               |                 |
      <-----------------|                 |               |                 |
-     |--. collect the logs, aggregate runs/<run>/score.json                |
+     |--. collect the logs and the entries, complete runs/<run>/run.json   |
      |<-'              |                 |               |                 |
 ```
 
 ## Game definitions
 
-Benchmarks are implemented as games with agent vs. agent playouts.
+Benchmarks are implemented as games. A game verifies what an agent left and ranks the entries it kept, and a game with an automated playout fights two entries against each other, which is what tournaments are made of.
 
-### Scoring and metrics
+### Verdicts, fights and metrics
 
 The sidecar dumps each request to a JSON access log, which `ava` collects into `runs/<run>/proxy.access.log`.
 
 Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics.
 
-The verifier is `ava score`, running in the scoring container without network access: `--game` scores the submission left in `submission/` with the named game. `--metrics` and `--attempts` aggregate the collected logs after the run. The reports are printed as one JSON document, which `ava` stores as `runs/<run>/score.json`.
+The verifier is `ava score`, running in the scoring container without network access: `--game` verifies the submission left in `submission/` with the named game and prints the verdict with the name of the entry file, which the receive hook keeps for a passing push. `--game` with `--fight <directory>` fights the entries under `first/` and `second/` of that directory over `--combats`, one unless given, and prints the tally, which is how a tournament plays a pairing: one container of the scorer image per fight, no network, the entries mounted read only. `--metrics` and `--attempts` aggregate the collected logs after the run into the run record.
 

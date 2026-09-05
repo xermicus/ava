@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cfbce5bf.js";
+            window.path_to_searchindex_js = "searchindex-d7c1c342.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-ea099c5c.js"></script>
+        <script src="toc-83b56119.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,7 +178,7 @@
 <h2 id="playing-a-game"><a class="header" href="#playing-a-game">Playing a game</a></h2>
 <p>Run <code>ava agent -a &lt;agent&gt; -m &lt;model&gt; -g &lt;name&gt;</code>, where <code>-t</code> sets the seconds the agent is given, the last call included, and <code>-j</code> starts that many runs in parallel. Existing docker images are reused; <code>--force-build-images</code> rebuilds them.</p>
 <p><code>ava image</code> rebuilds every docker image ahead of runs; <code>-a &lt;agent&gt;</code>, <code>-p</code> (proxy) and <code>-s</code> (scorer) select single images.</p>
-<p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings and the setup, rendered from the run artifacts on disk.</p>
+<p><code>ava serve</code> starts the web interface on <code>localhost:2828</code>, <code>-p</code> picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings, the tournaments with their lobbies and rounds, and the setup, rendered from the records on disk.</p>
 <p><code>ava --usage</code> asks every backend for its limits and prints them with the usage recorded over the runs on disk. The setup page shows the same.</p>
 <ul>
 <li>
@@ -194,16 +194,16 @@
 <p>The agent starts in <code>/home/agent/workspace</code>, inside a home of its own described under <a href="#the-agent-home">The agent home</a>.</p>
 </li>
 <li>
-<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook scores the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output. A tar posted to <code>http://score:8080</code> is scored the same way and not recorded. <code>master</code> rejects every push.</p>
+<p>The workspace is a clone of <code>http://git:8080/task.git</code>, checked out on the <code>task</code> branch. The agent submits by pushing that branch. A receive hook verifies the push with <code>ava score --game &lt;name&gt;</code> and answers in the push output with the verdict, passed or failed with the reason, and never with points. A tar posted to <code>http://score:8080</code> is verified the same way and not recorded. <code>master</code> rejects every push.</p>
 </li>
 <li>
-<p>Every scored attempt is one line of <code>runs/&lt;run&gt;/score.log</code>. The best solving attempt is the submission of record.</p>
+<p>Every graded push is one line of <code>runs/&lt;run&gt;/score.log</code>, and the entry file of every passing push is kept as <code>runs/&lt;run&gt;/entries/&lt;seconds&gt;/&lt;entry&gt;</code>. Which entry is the entry of record is decided when standings are shown.</p>
 </li>
 <li>
 <p>The run ends when the time is up, when the agent pushes a <code>release</code> tag, or when the harness exits. Running out of time is not the end of the run, it is the last call described below.</p>
 </li>
 <li>
-<p><code>ava score --metrics proxy.access.log --attempts score.log</code> aggregates the logs into <code>runs/&lt;run&gt;/score.json</code>: the attempts with the score of the run, the seconds to the best solving attempt breaking point ties, and the proxy metrics. The report written at the end of a run also names its parameters: the model, the harness and its version, the game and the time budget.</p>
+<p><code>runs/&lt;run&gt;/run.json</code> is the record of the run, described in the <a href="data_model.html">data model</a>. It is written when the run starts with the harness and its version, the model, the game and its version and the time budget, and completed when the run is over with every attempt and the metrics aggregated from the proxy log.</p>
 </li>
 </ul>
 <h2 id="the-agent-home"><a class="header" href="#the-agent-home">The agent home</a></h2>
@@ -219,28 +219,21 @@
 <p>Everything else the agent could write to is closed off. The root filesystem is read only, which holds against the passwordless <code>sudo</code> in the image because the container has no <code>CAP_SYS_ADMIN</code> to remount it. <code>/tmp</code> is a small tmpfs of its own and no restart carries it over.</p>
 <h2 id="the-last-call"><a class="header" href="#the-last-call">The last call</a></h2>
 <p>When the time is up the agent is stopped and started again on the home it left behind, prompted once to commit and push. It is one more turn of the loop, resuming the same session, and the only things that set it apart are the prompt and that no turn follows it.</p>
-<p>The prompt states the bound as the final turn, not as seconds. Without a loop the start is one turn, so that is what holds, and the agent has nothing to time itself against. The 120 seconds are the timeout on that turn, not a budget the prompt asks it to spend, and the prompt also says that submitting is free, since the scorer keeps the best attempt of the run.</p>
+<p>The prompt states the bound as the final turn, not as seconds. Without a loop the start is one turn, so that is what holds, and the agent has nothing to time itself against. The 120 seconds are the timeout on that turn, not a budget the prompt asks it to spend, and the prompt also says that submitting is free, since every passing push keeps its entry and a failing one is only a failed attempt.</p>
 <p>The prompt is an argument to that start, which is what makes it arrive at all. A file a harness polls cannot: anything watching between turns is never read by a turn that outlasts the wait.</p>
 <p>Nothing has to be switched off for it either. The loop is <code>ava</code> deciding to start another turn, so the last call is <code>ava</code> deciding not to.</p>
-<h2 id="scoring-a-submission"><a class="header" href="#scoring-a-submission">Scoring a submission</a></h2>
+<h2 id="verifying-and-ranking-a-submission"><a class="header" href="#verifying-and-ranking-a-submission">Verifying and ranking a submission</a></h2>
 <ul>
-<li>Points are the quantity the game optimizes, higher is better. How each game pays them is in <a href="games.html">Games</a>.</li>
-<li>Every game scores within 0 and 10000 points, which keeps runs of different games comparable.</li>
-<li>Attempts are recorded with the pure game grade and the arrival second, and the report only aggregates these facts. The final score weighing them against the run metrics, such as the time to the best attempt or the tokens spent, is derived at ranking time, so its knobs can change without re-running anything.</li>
-<li>The scorer executes the submission under a timeout and an output cap.</li>
-<li>A broken submission is an unsolved task, not an error. Only a broken harness fails a run.</li>
+<li>The verifier of the game runs on every push and records a fact: the push passed or failed, with the reason. It executes the submission under a timeout and an output cap, in the scoring container without network.</li>
+<li>A failing submission is a failed attempt, not an error. Only a broken harness fails a run.</li>
+<li>Ranking is derived from the entries when standings are shown. A game ranks an entry within 0 and 10000 points from the file alone, which keeps runs of different games comparable, or ranks nothing when passing is all there is, and how each game ranks is in <a href="games.html">Games</a>. The entry of record of a run is the entry ranking highest, the newest on ties.</li>
+<li>Since the ranking is derived, its knobs can change without re-running anything: a changed curve re-ranks every entry ever kept. The version of the game folder recorded on the run names the verifier the verdicts were reached under.</li>
+<li>Live runs show their pushes and whether one passed. Their points appear once the run is over, since the entries stay in the scoring container until then.</li>
 </ul>
 <h2 id="analyzing-a-run"><a class="header" href="#analyzing-a-run">Analyzing a run</a></h2>
-<p><code>ava analyze -r &lt;run&gt; -a &lt;agent&gt; -m &lt;model&gt;</code> starts the agent once on <code>runs/&lt;run&gt;</code> and this book, both mounted read only, with the analysis prompt as its task. The summary of a few sentences and the full analysis in markdown it writes are assembled into <code>analysis.json</code> in the run directory, next to the analyst’s console <code>analysis.log</code> and the access log of its proxy <code>analysis.access.log</code>; a failed analysis leaves its reason there instead. The run page shows the summary with the analysis folded behind it and offers the same behind a button. <code>-e</code> and <code>-t</code> set the thinking level and the seconds, 1200 by default. The start panel of the web interface can have a run analyzed the moment it is over, by claude on claude-sonnet-5 at medium thinking unless chosen otherwise, and the run shows as analyzing meanwhile.</p>
-<h2 id="rating-multi-player-matches"><a class="header" href="#rating-multi-player-matches">Rating multi player matches</a></h2>
-<p>The playouts are not implemented yet, the ratings are.</p>
-<p>A match is two halves. In each half one agent authors the puzzle and the other solves it, and the half is scored from three facts: the puzzle was valid, the generator solved it from the solver’s view, the solver solved it.</p>
-<ul>
-<li>The generator takes the half by stumping the solver with a puzzle it solved itself.</li>
-<li>An invalid puzzle, or one the generator cannot solve from the solver’s view, forfeits the half.</li>
-<li>Both sides solving is a draw.</li>
-</ul>
-<p><code>Scoring</code> turns played matches into a leaderboard. <code>bradley-terry</code> fits the whole match history, <code>elo</code> updates in match order.</p>
+<p><code>ava analyze -r &lt;run&gt; -a &lt;agent&gt; -m &lt;model&gt;</code> starts the agent once on <code>runs/&lt;run&gt;</code> and this book, both mounted read only, with the analysis prompt as its task. The summary of a few sentences and the full analysis in markdown it writes are assembled into <code>analysis.json</code> in the run directory, next to the analyst’s console <code>analysis.log</code> and the access log of its proxy <code>analysis.access.log</code>; a failed analysis leaves its reason there instead. The run page shows the summary with the analysis folded behind it and offers the same behind a button. <code>-e</code> and <code>-t</code> set the thinking level and the seconds, 900 by default, which every analysis that ever succeeded fits inside. The start panel of the web interface can have a run analyzed the moment it is over, by claude on claude-sonnet-5 at medium thinking for 900 seconds unless chosen otherwise, and the run shows as analyzing meanwhile.</p>
+<h2 id="playing-tournaments"><a class="header" href="#playing-tournaments">Playing tournaments</a></h2>
+<p>Games whose entries fight each other are played in <a href="tournaments.html">tournaments</a>: a lobby of seats, each holding an agent, plays rounds of runs followed by the fights of every pairing. The record holds the tallies of the fights and the standings are derived from it.</p>
 
                     </main>
 
@@ -277,6 +270,22 @@
         <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
         <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
         <script>
