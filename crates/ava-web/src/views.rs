@@ -550,15 +550,43 @@ fn analysis_of(directory: &std::path::Path, analyzing: bool) -> Analysis {
         return Analysis::Analyzing;
     }
 
-    let report = directory.join(docker::ANALYSIS_FILE);
-    let Some(written) = runs::modified_seconds(&report) else {
+    let Some(written) = runs::modified_seconds(&directory.join(docker::ANALYSIS_FILE)) else {
         return Analysis::None;
     };
 
-    match read_json(&report) {
-        Some(report) if report.get(docker::ANALYSIS_ERROR).is_some() => Analysis::Failed(written),
-        _ => Analysis::Done(written),
+    match runs::analysis(directory) {
+        Ok(Some(report)) if report.error.is_none() => Analysis::Done(written),
+        _ => Analysis::Failed(written),
     }
+}
+
+/// The analyst, its version, turns and tokens.
+fn analyst_note(report: &ava_wire::Analysis) -> String {
+    let Some(analyst) = &report.analyst else {
+        return String::new();
+    };
+
+    let turns = if report.turns == 1 { "turn" } else { "turns" };
+    let mut parts = vec![
+        escape(&analyst.label()),
+        escape(&report.harness_version),
+        format!("{} {turns}", report.turns),
+    ];
+    if let Some(metrics) = &report.metrics {
+        parts.push(format!("{} output tokens", metrics.output_tokens));
+        if metrics.gateway_cost > 0.0 {
+            parts.push(usage::money(metrics.gateway_cost));
+        }
+    }
+
+    format!(
+        "<p class=\"text-xs {MUTED_CLASSES} mb-2\">{}</p>",
+        parts
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" \u{00b7} ")
+    )
 }
 
 /// The summary without the heading an analyst puts over it, since the card
@@ -922,24 +950,25 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             Analysis::None => "not analyzed yet".to_string(),
         };
         let title = format!("analysis <span class=\"{NOTE_CLASSES} font-normal\">{state}</span>");
-        match read_json(&directory.join(docker::ANALYSIS_FILE)) {
-            Some(report) if report.get(docker::ANALYSIS_ERROR).is_some() => {
-                body.push_str(&format!(
+        match runs::analysis(&directory)? {
+            None => body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">{title}</p>")),
+            Some(report) => match &report.error {
+                Some(error) => body.push_str(&format!(
                     "<p class=\"{TITLE_CLASSES}\">{title}</p>\
                      <p class=\"mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-300\">{}</p>",
-                    escape(text(&report, docker::ANALYSIS_ERROR))
-                ));
-            }
-            Some(report) => {
-                body.push_str(&format!(
+                    escape(error)
+                )),
+                None => body.push_str(&format!(
                     "<details open data-fold=\"analysis\"><summary class=\"{COLLAPSIBLE_TITLE_CLASSES}\">{title}</summary>\
-                     <div class=\"{CARD_CLASSES} {FULL_WIDTH_PROSE} px-4 py-3 mb-4\">{}\
+                     <div class=\"{CARD_CLASSES} {FULL_WIDTH_PROSE} px-4 py-3 mb-4\">{}{}\
                      <details class=\"mt-3\" data-fold=\"full-analysis\"><summary class=\"{SUMMARY_CLASSES}\">the full analysis</summary><div class=\"mt-2\">{}</div></details></div></details>",
-                    ava_markdown::render(summary_body(text(&report, "analysis_summary"))),
-                    ava_markdown::render(text(&report, "analysis"))
-                ));
-            }
-            None => body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">{title}</p>")),
+                    analyst_note(&report),
+                    ava_markdown::render(summary_body(
+                        report.analysis_summary.as_deref().unwrap_or_default()
+                    )),
+                    ava_markdown::render(report.analysis.as_deref().unwrap_or_default())
+                )),
+            },
         }
         if !entry.analyzing() {
             body.push_str(&analysis_panel(name)?);
@@ -1949,6 +1978,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             ),
             state,
             recorded.runs.to_string(),
+            recorded.analyses.to_string(),
             recorded.requests.to_string(),
             recorded.input_tokens.to_string(),
             recorded.output_tokens.to_string(),
@@ -2012,7 +2042,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         "<p class=\"{FIRST_TITLE_CLASSES}\">{}</p>",
         explained(
             "backends",
-            "with the key of each and the usage recorded over every run on disk"
+            "with the key of each and the usage recorded over every run and analysis on disk"
         )
     );
     body.push_str(&table(
@@ -2023,6 +2053,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             "KEY",
             "*STATE",
             "#RUNS",
+            "#ANALYSES",
             "#REQUESTS",
             "#INPUT",
             "#OUTPUT",
@@ -2411,13 +2442,6 @@ fn read_json(path: &std::path::Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn text<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
-    value
-        .get(key)
-        .and_then(|field| field.as_str())
-        .unwrap_or("")
-}
-
 fn number(value: &serde_json::Value, key: &str) -> u64 {
     value
         .get(key)
@@ -2607,7 +2631,7 @@ fn joined(parts: &[&str]) -> String {
 /// A state pill, with a pulsing dot for a state still changing.
 fn pill(tint: &str, pulsing: bool, label: &str) -> String {
     let dot = if pulsing {
-        "<span class=\"h-1.5 w-1.5 rounded-full bg-current animate-pulse\"></span>"
+        "<span class=\"h-1.5 w-1.5 translate-y-px rounded-full bg-current animate-pulse\"></span>"
     } else {
         ""
     };

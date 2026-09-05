@@ -34,6 +34,25 @@ pub fn read(directory: &std::path::Path) -> std::io::Result<ava_wire::Run> {
     Ok(run)
 }
 
+/// The analysis record of the run in `directory`, if any.
+pub fn analysis(directory: &std::path::Path) -> std::io::Result<Option<ava_wire::Analysis>> {
+    let path = directory.join(crate::docker::ANALYSIS_FILE);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(std::io::Error::other(format!(
+                "{}: {error}",
+                path.display()
+            )));
+        }
+    };
+
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| std::io::Error::other(format!("{}: {error}", path.display())))
+}
+
 /// Every run on disk with a readable record, together with its directory, in
 /// no particular order.
 pub fn all() -> std::io::Result<Vec<(std::path::PathBuf, ava_wire::Run)>> {

@@ -256,6 +256,37 @@ impl Run {
     }
 }
 
+/// The analysis of a run, kept as `runs/<run>/analysis.json`.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Analysis {
+    pub version: u32,
+    /// The agent that analyzed the run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analyst: Option<Agent>,
+    /// The version of the harness.
+    pub harness_version: String,
+    /// The id of the image.
+    pub image: String,
+    /// The seconds the analyst was given.
+    pub limit_seconds: u64,
+    pub started_seconds: u64,
+    pub finished_seconds: u64,
+    /// The turns the analyst took.
+    pub turns: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Metrics>,
+    /// The summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_summary: Option<String>,
+    /// The analysis in markdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<String>,
+    /// Why the analysis failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// A tournament, kept as `tournaments/<name>/tournament.json`: the seats and
 /// every round they played.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -366,6 +397,20 @@ mod tests {
         assert_eq!(run.harness, "pi");
         assert!(run.attempts.is_empty());
         assert!(run.metrics.is_none());
+    }
+
+    #[test]
+    fn a_legacy_analysis_report_reads_its_texts() {
+        let report = r#"{"analysis_summary": "short", "analysis": "long"}"#;
+        let analysis: super::Analysis = serde_json::from_str(report).unwrap();
+
+        assert_eq!(analysis.version, super::UNVERSIONED);
+        assert!(analysis.analyst.is_none());
+        assert_eq!(analysis.analysis_summary.as_deref(), Some("short"));
+        assert!(analysis.error.is_none());
+
+        let failed: super::Analysis = serde_json::from_str(r#"{"error": "no files"}"#).unwrap();
+        assert_eq!(failed.error.as_deref(), Some("no files"));
     }
 
     #[test]

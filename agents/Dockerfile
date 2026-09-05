@@ -52,10 +52,6 @@ RUN sed -i -E "s/ ALL$/ NOPASSWD: ALL/g" /etc/sudoers && \
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
 	locale-gen
 
-COPY ava-bridge ava-analyst /usr/local/bin/
-
-RUN chmod 755 /usr/local/bin/ava-bridge /usr/local/bin/ava-analyst
-
 USER agent
 WORKDIR /home/agent
 
@@ -71,5 +67,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
 	--default-toolchain 1.98.0
 
 RUN mkdir -p ${AGENT_HOME}/workspace
+
+COPY --chmod=755 ava-bridge /usr/local/bin/
 
 CMD ["/bin/bash"]

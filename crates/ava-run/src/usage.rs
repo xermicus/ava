@@ -46,9 +46,10 @@ const NOTHING_REPORTED: &str = "nothing reported";
 const STATE_HEADERS: [&str; 7] = [
     "BACKEND", "SOURCE", "WINDOW", "USED", "LEFT", "STATUS", "RESETS",
 ];
-const RECORDED_HEADERS: [&str; 8] = [
+const RECORDED_HEADERS: [&str; 9] = [
     "BACKEND",
     "RUNS",
+    "ANALYSES",
     "REQUESTS",
     "INPUT",
     "OUTPUT",
@@ -61,10 +62,11 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_HOUR: u64 = 3_600;
 const SECONDS_PER_MINUTE: u64 = 60;
 
-/// The usage of a backend over the runs on disk.
+/// The usage of a backend over the runs and the analyses on disk.
 #[derive(Default)]
 pub struct Recorded {
     pub runs: u64,
+    pub analyses: u64,
     pub requests: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -77,7 +79,6 @@ pub struct Recorded {
 
 impl Recorded {
     fn add(&mut self, metrics: &ava_wire::Metrics, started: u64) {
-        self.runs += 1;
         self.requests += metrics.requests;
         self.input_tokens += metrics.input_tokens;
         self.output_tokens += metrics.output_tokens;
@@ -95,8 +96,7 @@ impl Recorded {
     }
 }
 
-/// The recorded usage of every backend, in registry order. A run counts
-/// towards every backend whose host it requested.
+/// The recorded usage of every backend, in registry order.
 pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
     let mut recorded: Vec<Recorded> = registry
         .backends
@@ -104,13 +104,26 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
         .map(|_| Recorded::default())
         .collect();
 
-    for (_, run) in crate::runs::all()? {
-        let Some(metrics) = run.metrics else {
+    for (directory, run) in crate::runs::all()? {
+        if let Some(metrics) = &run.metrics {
+            for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
+                if metrics.hosts.contains(&backend.host) {
+                    usage.runs += 1;
+                    usage.add(metrics, run.started_seconds);
+                }
+            }
+        }
+
+        let Ok(Some(analysis)) = crate::runs::analysis(&directory) else {
+            continue;
+        };
+        let Some(metrics) = &analysis.metrics else {
             continue;
         };
         for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
             if metrics.hosts.contains(&backend.host) {
-                usage.add(&metrics, run.started_seconds);
+                usage.analyses += 1;
+                usage.add(metrics, analysis.started_seconds);
             }
         }
     }
@@ -514,6 +527,7 @@ fn recorded_row(name: &str, recorded: &Recorded) -> Vec<String> {
     vec![
         name.to_string(),
         recorded.runs.to_string(),
+        recorded.analyses.to_string(),
         recorded.requests.to_string(),
         recorded.input_tokens.to_string(),
         recorded.output_tokens.to_string(),

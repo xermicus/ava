@@ -43,6 +43,15 @@ impl Agent {
 
         Ok(limit)
     }
+
+    /// The agent of the command.
+    pub fn agent(&self) -> ava_wire::Agent {
+        ava_wire::Agent {
+            harness: self.name.clone(),
+            model: self.model.clone(),
+            thinking: self.thinking.clone(),
+        }
+    }
 }
 
 impl Default for Agent {
@@ -96,16 +105,24 @@ impl Analyst {
     /// The seconds an analyst is given unless one is chosen.
     pub const DEFAULT_LIMIT_SECONDS: u64 = ava_wire::DEFAULT_ANALYST_SECONDS;
 
-    /// `limit` as the seconds an analyst may be given: the analysis is one
-    /// turn without a last call, so it gets at least what the last call gets.
+    /// `limit` as the seconds an analyst may be given: at least a last call.
     pub fn checked_limit(limit: u64) -> std::io::Result<u64> {
         if limit < LAST_CALL_SECONDS {
             return Err(std::io::Error::other(format!(
-                "the analyst is one turn, so it gets at least {LAST_CALL_SECONDS} seconds"
+                "the analyst gets at least {LAST_CALL_SECONDS} seconds"
             )));
         }
 
         Ok(limit)
+    }
+
+    /// The agent of the analyst.
+    pub fn agent(&self) -> ava_wire::Agent {
+        ava_wire::Agent {
+            harness: self.name.clone(),
+            model: self.model.clone(),
+            thinking: self.thinking.clone(),
+        }
     }
 }
 
@@ -137,13 +154,17 @@ const SCORE_SOCKET_PATH: &str = "/run/ava/score.sock";
 const PROXY_CONTAINER_PREFIX: &str = "ava-proxy-";
 pub const SCORER_CONTAINER_PREFIX: &str = "ava-scorer-";
 const SANDBOX_CONTAINER_PREFIX: &str = "ava-agent-";
-const ANALYST_CONTAINER_PREFIX: &str = "ava-analyst-";
 
+/// The suffix naming the containers and volumes of an analysis.
 const ANALYSIS_SUFFIX: &str = "-analysis";
 const RUN_MOUNT: &str = "/home/agent/run";
 
 /// The files the analysis writes into the run directory.
 const ANALYSIS_PREFIX: &str = "analysis";
+
+/// The files the analyst writes into its workspace.
+const ANALYSIS_SUMMARY_FILE: &str = "analysis_summary.md";
+const ANALYSIS_TEXT_FILE: &str = "analysis.md";
 const BOOK_DIRECTORY: &str = "book/src";
 const BOOK_MOUNT: &str = "/home/agent/ava-book";
 
@@ -238,15 +259,6 @@ pub const ANALYSIS_FILE: &str = "analysis.json";
 pub const ANALYSIS_LOG: &str = "analysis.log";
 pub const ANALYSIS_ACCESS_LOG: &str = "analysis.access.log";
 pub const ANALYSIS_ERROR_LOG: &str = "analysis.error.log";
-
-/// The files the analyst writes, by the field each becomes in the report.
-const ANALYSIS_PARTS: [(&str, &str); 2] = [
-    ("analysis_summary", "analysis_summary.md"),
-    ("analysis", "analysis.md"),
-];
-
-/// The field a report holds instead when the analysis failed.
-pub const ANALYSIS_ERROR: &str = "error";
 const RECORD_BUFFER_BYTES: usize = 8 * 1024;
 
 /// The bytes `agent.log` may reach, ended by a line saying it was cut.
@@ -282,10 +294,6 @@ const TASK_BRANCH: &str = "task";
 /// The entrypoint every harness image starts through, which forwards the git
 /// host onto the proxy socket.
 const BRIDGE: &str = "ava-bridge";
-
-/// The entrypoint an analyst starts through instead: the proxy forward alone.
-const ANALYST: &str = "ava-analyst";
-const ENTRYPOINT_FORMAT: &str = "{{json .Config.Entrypoint}}";
 
 /// The message on the commit ava makes on the agent's behalf.
 const LAST_CHANCE_MESSAGE: &str = "last chance";
@@ -400,9 +408,14 @@ pub fn sandbox_container(run: &str) -> String {
     format!("{SANDBOX_CONTAINER_PREFIX}{run}")
 }
 
-/// The container analyzing one run.
+/// The name of the analysis of `run`.
+fn analysis_name(run: &str) -> String {
+    format!("{run}{ANALYSIS_SUFFIX}")
+}
+
+/// The holder container of the analysis of `run`.
 pub fn analyst_container(run: &str) -> String {
-    format!("{ANALYST_CONTAINER_PREFIX}{run}")
+    holder_container(&analysis_name(run))
 }
 
 /// The volume carrying the socket between one sandbox and its proxy.
@@ -442,8 +455,8 @@ fn holder_container(run: &str) -> String {
 ///
 /// Every harness gets this same text, because the loop is `ava` starting the
 /// harness again rather than anything a harness does to itself.
-fn loop_prompt(turn: u32) -> String {
-    format!("Loop iteration {turn}.\n\n{TASK_PROMPT}")
+fn loop_prompt(turn: u32, task: &str) -> String {
+    format!("Loop iteration {turn}.\n\n{task}")
 }
 
 /// The prompt the agent is restarted on once its time is up.
@@ -1558,8 +1571,7 @@ fn run_sandbox(
     staging: &std::path::Path,
     invocation: crate::registry::Invocation,
 ) -> std::io::Result<i32> {
-    let container = sandbox_container(run);
-    let registry = crate::registry::load()?;
+    let sandbox = Sandbox::run(command, image, run, staging);
     let loop_limit = loop_seconds(command.limit);
     let mut phase = Phase {
         limit: loop_limit,
@@ -1575,47 +1587,12 @@ fn run_sandbox(
     if loop_limit == 0 {
         log::info!("{run}: the budget covers the last call and nothing before it");
         phase.turn = 0;
-        return last_call(command, image, run, staging, &container, &phase);
+        return last_call(&sandbox, &phase);
     }
 
-    let mut turn = invocation;
-
-    loop {
-        let entered = std::time::Instant::now();
-        let ending = start_sandbox(command, image, run, staging, &turn, &phase, &container)?;
-
-        let code = match ending {
-            Ending::Done(code) => return Ok(code),
-            Ending::OutOfTime(_) => {
-                return last_call(command, image, run, staging, &container, &phase);
-            }
-            Ending::TurnOver(code) => code,
-        };
-
-        let Some(left) = phase.remaining() else {
-            log::info!("{run}: the clock ran out as the turn ended, going to the last call");
-            return last_call(command, image, run, staging, &container, &phase);
-        };
-
-        // A harness failing at startup would otherwise spin through the clock.
-        let spent = entered.elapsed().as_secs();
-        if spent < TURN_RETRY_SECONDS {
-            log::warn!(
-                "{run}: turn {} ended after {spent} seconds with {code}, waiting to start the next",
-                phase.turn
-            );
-            std::thread::sleep(std::time::Duration::from_secs(TURN_RETRY_SECONDS));
-        }
-
-        phase.turn += 1;
-        phase.limit = left;
-        turn = registry.invocation(
-            &command.name,
-            &command.model,
-            &loop_prompt(phase.turn),
-            command.thinking.as_deref(),
-            crate::registry::Start::Resume,
-        )?;
+    match turn_loop(&sandbox, invocation, &mut phase, &|| Ok(true))? {
+        Ending::Done(code) => Ok(code),
+        Ending::OutOfTime(_) | Ending::TurnOver(_) => last_call(&sandbox, &phase),
     }
 }
 
@@ -1624,24 +1601,17 @@ fn run_sandbox(
 /// The home is a volume, so the harness session and the workspace are both
 /// still there and this turn continues the conversation like any other. The
 /// only thing that sets it apart is the prompt and that no turn follows it.
-fn last_call(
-    command: &Agent,
-    image: &str,
-    run: &str,
-    staging: &std::path::Path,
-    container: &str,
-    task: &Phase,
-) -> std::io::Result<i32> {
+fn last_call(sandbox: &Sandbox, task: &Phase) -> std::io::Result<i32> {
     let prompt = last_call_prompt();
     let invocation = crate::registry::load()?.invocation(
-        &command.name,
-        &command.model,
+        &sandbox.agent.harness,
+        &sandbox.agent.model,
         &prompt,
-        command.thinking.as_deref(),
+        sandbox.agent.thinking.as_deref(),
         crate::registry::Start::Resume,
     )?;
 
-    log::info!("{run}: starting the agent for the last call");
+    log::info!("{}: starting the agent for the last call", sandbox.name);
 
     let phase = Phase {
         limit: LAST_CALL_SECONDS,
@@ -1653,11 +1623,11 @@ fn last_call(
         monitor: task.monitor.clone(),
     };
 
-    let ending = start_sandbox(command, image, run, staging, &invocation, &phase, container);
+    let ending = start_sandbox(sandbox, &invocation, &phase);
 
     // Whatever the agent left is worth submitting even when the last call
     // itself never got going.
-    last_chance(run, image);
+    last_chance(&sandbox.name, &sandbox.image);
 
     match ending? {
         Ending::TurnOver(code) | Ending::Done(code) | Ending::OutOfTime(code) => Ok(code),
@@ -1676,24 +1646,109 @@ enum Ending {
     OutOfTime(i32),
 }
 
-/// Start one sandbox on `image`, wait for it and report why it stopped.
+/// A sandbox: a run's or an analyst's.
+struct Sandbox {
+    agent: ava_wire::Agent,
+    task: &'static str,
+    /// What the sidecars and volumes are named after.
+    name: String,
+    /// The run directory the console goes to.
+    directory: String,
+    console: &'static str,
+    heartbeat: Option<&'static str>,
+    image: String,
+    staging: std::path::PathBuf,
+    mounts: Vec<String>,
+    /// Whether a scoring container serves the sandbox.
+    scored: bool,
+}
+
+impl Sandbox {
+    /// The sandbox of a run.
+    fn run(command: &Agent, image: &str, run: &str, staging: &std::path::Path) -> Self {
+        Self {
+            agent: command.agent(),
+            task: TASK_PROMPT,
+            name: run.to_string(),
+            directory: run.to_string(),
+            console: AGENT_LOG,
+            heartbeat: Some(MONITOR_FILE),
+            image: image.to_string(),
+            staging: staging.to_path_buf(),
+            mounts: Vec::new(),
+            scored: true,
+        }
+    }
+
+    fn container(&self) -> String {
+        sandbox_container(&self.name)
+    }
+}
+
+/// Start turns until the clock runs out or `unfinished` says no.
+fn turn_loop(
+    sandbox: &Sandbox,
+    first: crate::registry::Invocation,
+    phase: &mut Phase,
+    unfinished: &dyn Fn() -> std::io::Result<bool>,
+) -> std::io::Result<Ending> {
+    let registry = crate::registry::load()?;
+    let mut turn = first;
+
+    loop {
+        let entered = std::time::Instant::now();
+        let ending = start_sandbox(sandbox, &turn, phase)?;
+        let Ending::TurnOver(code) = ending else {
+            return Ok(ending);
+        };
+
+        if !unfinished()? {
+            return Ok(Ending::Done(code));
+        }
+
+        let Some(left) = phase.remaining() else {
+            log::info!("{}: the clock ran out as the turn ended", sandbox.name);
+            return Ok(Ending::OutOfTime(code));
+        };
+
+        // A harness failing at startup would otherwise spin through the clock.
+        let spent = entered.elapsed().as_secs();
+        if spent < TURN_RETRY_SECONDS {
+            log::warn!(
+                "{}: turn {} ended after {spent} seconds with {code}, waiting to start the next",
+                sandbox.name,
+                phase.turn
+            );
+            std::thread::sleep(std::time::Duration::from_secs(TURN_RETRY_SECONDS));
+        }
+
+        phase.turn += 1;
+        phase.limit = left;
+        turn = registry.invocation(
+            &sandbox.agent.harness,
+            &sandbox.agent.model,
+            &loop_prompt(phase.turn, sandbox.task),
+            sandbox.agent.thinking.as_deref(),
+            crate::registry::Start::Resume,
+        )?;
+    }
+}
+
+/// Start one turn and wait for it.
 fn start_sandbox(
-    command: &Agent,
-    image: &str,
-    run: &str,
-    staging: &std::path::Path,
+    sandbox: &Sandbox,
     invocation: &crate::registry::Invocation,
     phase: &Phase,
-    container: &str,
 ) -> std::io::Result<Ending> {
-    let agent = command.name.as_str();
+    let harness = sandbox.agent.harness.as_str();
+    let container = sandbox.container();
 
-    let mut sandbox = std::process::Command::new("docker");
-    sandbox.args([
+    let mut docker = std::process::Command::new("docker");
+    docker.args([
         "run",
         "--rm",
         "--name",
-        container,
+        &container,
         "--network",
         "none",
         "--ulimit",
@@ -1706,50 +1761,67 @@ fn start_sandbox(
         "--workdir",
         SANDBOX_WORKSPACE,
         "--volume",
-        &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(run)),
+        &format!(
+            "{}:{SOCKET_DIRECTORY}{READ_ONLY}",
+            socket_volume(&sandbox.name)
+        ),
     ]);
 
-    sandbox.args(home_mounts(run));
+    docker.args(home_mounts(&sandbox.name));
 
-    sandbox.args(["--hostname", agent]);
-    sandbox.args(["--add-host", &format!("{agent}:{SANDBOX_LOOPBACK}")]);
+    docker.args(["--hostname", harness]);
+    docker.args(["--add-host", &format!("{harness}:{SANDBOX_LOOPBACK}")]);
 
     for host in &invocation.hosts {
-        sandbox.args(["--add-host", &format!("{host}:{SANDBOX_LOOPBACK}")]);
+        docker.args(["--add-host", &format!("{host}:{SANDBOX_LOOPBACK}")]);
     }
 
-    sandbox.args(["--add-host", &format!("{GIT_HOST}:{SANDBOX_LOOPBACK}")]);
-    sandbox.args(["--add-host", &format!("{SCORER_HOST}:{SANDBOX_LOOPBACK}")]);
+    if sandbox.scored {
+        docker.args(["--add-host", &format!("{GIT_HOST}:{SANDBOX_LOOPBACK}")]);
+        docker.args(["--add-host", &format!("{SCORER_HOST}:{SANDBOX_LOOPBACK}")]);
+    }
+
+    for mount in &sandbox.mounts {
+        docker.args(["--volume", mount]);
+    }
 
     for (path, contents) in &invocation.files {
-        sandbox.args(["--volume", &staged_mount(staging, path, contents)?]);
+        docker.args(["--volume", &staged_mount(&sandbox.staging, path, contents)?]);
     }
 
     for (name, value) in &invocation.variables {
-        sandbox.args(["--env", name]);
-        sandbox.env(name, value);
+        docker.args(["--env", name]);
+        docker.env(name, value);
     }
 
     // Every turn starts a container of the same name, and `--rm` frees that
     // name a moment after the client exits rather than before, so the name is
     // cleared here instead of raced for.
-    remove_container(container);
+    remove_container(&container);
 
-    log::info!("starting the sandbox {container} from {image}");
-    log::debug!("{agent} arguments: {:?}", invocation.arguments);
+    log::info!("starting the sandbox {container} from {}", sandbox.image);
+    log::debug!("{harness} arguments: {:?}", invocation.arguments);
 
-    sandbox.stdout(std::process::Stdio::piped());
-    sandbox.stderr(std::process::Stdio::piped());
+    docker.stdout(std::process::Stdio::piped());
+    docker.stderr(std::process::Stdio::piped());
 
     // The client gets its own process group, so signals aimed at the terminal
     // cannot kill it and the run ends only when ava ends it.
-    std::os::unix::process::CommandExt::process_group(&mut sandbox, 0);
+    std::os::unix::process::CommandExt::process_group(&mut docker, 0);
 
-    let mut child = sandbox.arg(image).args(&invocation.arguments).spawn()?;
+    let mut child = docker
+        .arg(&sandbox.image)
+        .args(&invocation.arguments)
+        .spawn()?;
 
     phase.monitor.restart();
-    let readers = record_output(&mut child, run, AGENT_LOG, &phase.monitor)?;
-    let ending = await_sandbox(child, container, run, phase)?;
+    let readers = record_output(
+        &mut child,
+        &sandbox.directory,
+        sandbox.console,
+        &phase.monitor,
+    )?;
+    let ending = await_sandbox(child, sandbox, phase)?;
 
     for reader in readers {
         reader.join().expect("the reader threads do not panic")?;
@@ -1901,7 +1973,11 @@ struct Heartbeat {
 }
 
 /// Write the state of the run loop under the run, best effort.
-fn record_heartbeat(run: &str, phase: &Phase) {
+fn record_heartbeat(sandbox: &Sandbox, phase: &Phase) {
+    let Some(file) = sandbox.heartbeat else {
+        return;
+    };
+
     let heartbeat = Heartbeat {
         elapsed_seconds: phase.started.elapsed().as_secs(),
         limit_seconds: phase.run_limit,
@@ -1914,8 +1990,8 @@ fn record_heartbeat(run: &str, phase: &Phase) {
     if let Ok(contents) = serde_json::to_string(&heartbeat) {
         let _ = std::fs::write(
             std::path::Path::new(RUN_DIRECTORY)
-                .join(run)
-                .join(MONITOR_FILE),
+                .join(&sandbox.directory)
+                .join(file),
             contents,
         );
     }
@@ -1937,24 +2013,25 @@ fn record_heartbeat(run: &str, phase: &Phase) {
 /// client too and killing it never killed the container.
 fn await_sandbox(
     mut client: std::process::Child,
-    container: &str,
-    run: &str,
+    sandbox: &Sandbox,
     phase: &Phase,
 ) -> std::io::Result<Ending> {
     let monitor = phase.monitor.as_ref();
+    let name = sandbox.name.as_str();
+    let container = sandbox.container();
     let entered = std::time::Instant::now();
     let deadline = entered + std::time::Duration::from_secs(phase.limit);
     let mut next_status = entered + STATUS_INTERVAL;
     let mut warned_silence = std::time::Duration::ZERO;
     let mut warned_looping = false;
     let mut out_of_time = false;
-    let scorer = scorer_container(run);
+    let scorer = scorer_container(name);
     log::info!(
-        "{run}: turn {} of the agent has {} seconds",
+        "{name}: turn {} of the agent has {} seconds",
         phase.turn,
         phase.limit
     );
-    record_heartbeat(run, phase);
+    record_heartbeat(sandbox, phase);
 
     loop {
         let exited = client.try_wait()?;
@@ -1963,15 +2040,15 @@ fn await_sandbox(
             log::warn!("the run was interrupted, killing {container}");
         } else if let Some(status) = exited {
             log::info!(
-                "{run}: turn {} of the agent exited with {status}",
+                "{name}: turn {} of the agent exited with {status}",
                 phase.turn
             );
             return Ok(Ending::TurnOver(status.code().unwrap_or(1)));
-        } else if exists(&["exec", &scorer, "test", "-f", DONE_MARKER])? {
-            log::info!("{run}: the agent reported itself done, stopping {container}");
+        } else if sandbox.scored && exists(&["exec", &scorer, "test", "-f", DONE_MARKER])? {
+            log::info!("{name}: the agent reported itself done, stopping {container}");
         } else if std::time::Instant::now() >= deadline {
             log::warn!(
-                "{run}: the agent ran out of time after {} seconds, stopping it",
+                "{name}: the agent ran out of time after {} seconds, stopping it",
                 phase.limit
             );
             out_of_time = true;
@@ -1982,7 +2059,7 @@ fn await_sandbox(
                 warned_silence = std::time::Duration::ZERO;
             } else if silence - warned_silence >= SILENCE_WARNING {
                 log::warn!(
-                    "{run}: the agent printed nothing for {} seconds, maybe a thinking request runs long",
+                    "{name}: the agent printed nothing for {} seconds, maybe a thinking request runs long",
                     silence.as_secs()
                 );
                 warned_silence = silence;
@@ -1990,7 +2067,7 @@ fn await_sandbox(
 
             if !warned_looping && monitor.doom_looping() {
                 log::warn!(
-                    "{run}: the agent repeated one output line {} times in a row, it may be stuck in a loop",
+                    "{name}: the agent repeated one output line {} times in a row, it may be stuck in a loop",
                     crate::monitor::REPEATED_LINE_THRESHOLD
                 );
                 warned_looping = true;
@@ -1998,14 +2075,14 @@ fn await_sandbox(
 
             if std::time::Instant::now() >= next_status {
                 log::info!(
-                    "{run}: turn {}, {}s of {}s, {} KiB from the agent, the last output {}s ago",
+                    "{name}: turn {}, {}s of {}s, {} KiB from the agent, the last output {}s ago",
                     phase.turn,
                     phase.started.elapsed().as_secs(),
                     phase.run_limit,
                     monitor.output_bytes() / KIBIBYTE,
                     silence.as_secs()
                 );
-                record_heartbeat(run, phase);
+                record_heartbeat(sandbox, phase);
                 next_status += STATUS_INTERVAL;
             }
 
@@ -2014,7 +2091,7 @@ fn await_sandbox(
         }
 
         let _ = std::process::Command::new("docker")
-            .args(["kill", container])
+            .args(["kill", &container])
             .output();
         let code = client.wait()?.code().unwrap_or(1);
 
@@ -2116,20 +2193,26 @@ fn docker_build_captured(tag: &str, arguments: &[&str]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Mount a read only copy of the run's files without what the analysis writes.
-fn staged_run_mount(run: &str, staging: &std::path::Path) -> std::io::Result<String> {
-    let copy = staging.join(RUN_DIRECTORY);
-    std::fs::create_dir_all(&copy)?;
+/// Read only mounts of the run files and the book.
+fn analysis_mounts(run: &str) -> std::io::Result<Vec<String>> {
+    let directory = std::env::current_dir()?.join(RUN_DIRECTORY).join(run);
+    let mut mounts = Vec::new();
 
-    for entry in std::fs::read_dir(std::path::Path::new(RUN_DIRECTORY).join(run))? {
+    for entry in std::fs::read_dir(&directory)? {
         let entry = entry?;
         let name = entry.file_name();
-        if entry.file_type()?.is_file() && !name.to_string_lossy().starts_with(ANALYSIS_PREFIX) {
-            std::fs::copy(entry.path(), copy.join(&name))?;
+        let name = name.to_string_lossy();
+        if name.starts_with(ANALYSIS_PREFIX) {
+            continue;
         }
+        mounts.push(format!(
+            "{}:{RUN_MOUNT}/{name}{READ_ONLY}",
+            entry.path().display()
+        ));
     }
+    mounts.push(read_only_mount(BOOK_DIRECTORY, BOOK_MOUNT)?);
 
-    Ok(format!("{}:{RUN_MOUNT}{READ_ONLY}", copy.display()))
+    Ok(mounts)
 }
 
 fn read_only_mount(source: &str, target: &str) -> std::io::Result<String> {
@@ -2147,9 +2230,7 @@ fn exists(arguments: &[&str]) -> std::io::Result<bool> {
 
 /// Analyze a finished run with an agent into `runs/<run>/analysis.json`.
 ///
-/// One start of the harness, like a turn, on the run directory and the book
-/// mounted read only, without a git or score host. The report is copied out of
-/// the container once it exits.
+/// Turns of the harness on the run and the book, without a git or score host.
 pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
     let run = command.run.as_str();
     let directory = std::path::Path::new(RUN_DIRECTORY).join(run);
@@ -2159,78 +2240,97 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
 
     let analyst = &command.analyst;
     Analyst::checked_limit(analyst.limit)?;
+    let agent = analyst.agent();
     let registry = crate::registry::load()?;
     let invocation = registry.invocation(
-        &analyst.name,
-        &analyst.model,
+        &agent.harness,
+        &agent.model,
         ANALYSIS_PROMPT,
-        analyst.thinking.as_deref(),
+        agent.thinking.as_deref(),
         crate::registry::Start::Task,
     )?;
 
     build_image(BASE_IMAGE, BASE_CONTEXT, false)?;
-    let image = format!("{AGENT_IMAGE_PREFIX}{}", analyst.name);
-    build_image(&image, &format!("{AGENT_CONTEXT}/{}", analyst.name), false)?;
+    let harness = format!("{AGENT_IMAGE_PREFIX}{}", agent.harness);
+    build_image(
+        &harness,
+        &format!("{AGENT_CONTEXT}/{}", agent.harness),
+        false,
+    )?;
     std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
     build_image(PROXY_IMAGE, PROXY_CONTEXT, false)?;
     ensure_egress_network()?;
 
-    let harness = harness_command(&image)?;
-    let sidecar = format!("{run}{ANALYSIS_SUFFIX}");
-    let staging = std::env::temp_dir().join(STAGING_DIRECTORY).join(&sidecar);
-    let container = analyst_container(run);
-    remove_container(&container);
+    let name = analysis_name(run);
+    let identity = image_id(&harness)?;
+    let image = pin_image(&identity, &agent.harness, &name)?;
     let _ = std::fs::remove_file(directory.join(ANALYSIS_LOG));
 
-    log::info!("analyzing {run} with {} on {}", analyst.name, analyst.model);
+    log::info!("analyzing {run} with {}", agent.label());
 
-    let status = start_proxy(&sidecar).and_then(|()| {
-        run_analyst(
-            command,
-            &image,
-            &harness,
-            &sidecar,
-            &staging,
-            &invocation,
-            &container,
-        )
-    });
+    let sandbox = Sandbox {
+        agent: agent.clone(),
+        task: ANALYSIS_PROMPT,
+        name: name.clone(),
+        directory: run.to_string(),
+        console: ANALYSIS_LOG,
+        heartbeat: None,
+        image: image.clone(),
+        staging: std::env::temp_dir().join(STAGING_DIRECTORY).join(&name),
+        mounts: analysis_mounts(run)?,
+        scored: false,
+    };
+    let mut record = ava_wire::Analysis {
+        version: ava_wire::VERSION,
+        analyst: Some(agent),
+        image: identity,
+        limit_seconds: analyst.limit,
+        started_seconds: crate::usage::epoch_now(),
+        ..Default::default()
+    };
+    let mut phase = Phase {
+        limit: analyst.limit,
+        started: std::time::Instant::now(),
+        loop_limit: analyst.limit,
+        run_limit: analyst.limit,
+        last_call: false,
+        turn: 1,
+        monitor: std::sync::Arc::new(crate::monitor::Monitor::new()),
+    };
 
-    let collected = collect_report(&container, &staging);
+    let outcome = analysis_turns(&sandbox, invocation, &mut phase, &mut record);
+
+    let collected = collect_report(&holder_container(&name));
     let logged = collect_logs(
         run,
-        &proxy_container(&sidecar),
+        &proxy_container(&name),
         ANALYSIS_ACCESS_LOG,
         ANALYSIS_ERROR_LOG,
     );
-
-    remove_container(&container);
-    remove_sidecars(&sidecar);
-
-    let report = match &collected {
-        Ok(analysis) => analysis.clone(),
-        Err(error) => {
-            let mut failure = serde_json::Map::new();
-            failure.insert(
-                ANALYSIS_ERROR.to_string(),
-                serde_json::Value::String(error.to_string()),
-            );
-            serde_json::Value::Object(failure)
-        }
-    };
-    std::fs::write(
-        directory.join(ANALYSIS_FILE),
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&report).map_err(std::io::Error::other)?
-        ),
-    )?;
-
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)?;
+    remove_sidecars(&name);
+    unpin_image(&image);
+    if sandbox.staging.exists() {
+        std::fs::remove_dir_all(&sandbox.staging)?;
     }
 
-    let code = status?;
+    record.turns = phase.turn;
+    record.finished_seconds = crate::usage::epoch_now();
+    if logged.is_ok() {
+        record.metrics = ava_scorer::score::aggregate_metrics(
+            &directory.join(ANALYSIS_ACCESS_LOG).display().to_string(),
+        )
+        .ok();
+    }
+    match (&outcome, &collected) {
+        (Err(error), _) | (Ok(_), Err(error)) => record.error = Some(error.to_string()),
+        (Ok(_), Ok((summary, analysis))) => {
+            record.analysis_summary = Some(summary.clone());
+            record.analysis = Some(analysis.clone());
+        }
+    }
+    write_analysis(&directory, &record)?;
+
+    let code = outcome?;
     logged?;
     collected.map_err(|error| std::io::Error::other(format!("{run}: {error}")))?;
     log::info!(
@@ -2241,163 +2341,72 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
     Ok(code)
 }
 
-/// The report assembled from the files the analyst wrote, copied out of
-/// `container` through `staging`.
-fn collect_report(
-    container: &str,
-    staging: &std::path::Path,
-) -> std::io::Result<serde_json::Value> {
-    std::fs::create_dir_all(staging)?;
-    let mut report = serde_json::Map::new();
+/// The sidecars and turns of an analysis.
+fn analysis_turns(
+    sandbox: &Sandbox,
+    first: crate::registry::Invocation,
+    phase: &mut Phase,
+    record: &mut ava_wire::Analysis,
+) -> std::io::Result<i32> {
+    record.harness_version = harness_version(&sandbox.image)?;
+    start_proxy(&sandbox.name)?;
+    prepare_agent_home(&sandbox.name, &sandbox.image)?;
 
-    for (field, file) in ANALYSIS_PARTS {
-        let copy = staging.join(file);
-        process::run_and_assume_success(
+    let holder = holder_container(&sandbox.name);
+    let ending = turn_loop(sandbox, first, phase, &|| {
+        report_written(&holder).map(|written| !written)
+    })?;
+
+    Ok(match ending {
+        Ending::TurnOver(code) | Ending::Done(code) | Ending::OutOfTime(code) => code,
+    })
+}
+
+/// Whether the analyst wrote both files.
+fn report_written(holder: &str) -> std::io::Result<bool> {
+    exists(&[
+        "exec",
+        holder,
+        "test",
+        "-s",
+        &format!("{WORKSPACE_STAGE}/{ANALYSIS_SUMMARY_FILE}"),
+        "-a",
+        "-s",
+        &format!("{WORKSPACE_STAGE}/{ANALYSIS_TEXT_FILE}"),
+    ])
+}
+
+/// The summary and the analysis the analyst wrote.
+fn collect_report(holder: &str) -> std::io::Result<(String, String)> {
+    let mut texts = Vec::new();
+
+    for file in [ANALYSIS_SUMMARY_FILE, ANALYSIS_TEXT_FILE] {
+        let text = process::run_and_assume_success(
             "docker",
-            &[
-                "cp",
-                &format!("{container}:{SANDBOX_WORKSPACE}/{file}"),
-                &copy.display().to_string(),
-            ],
+            &["exec", holder, "cat", &format!("{WORKSPACE_STAGE}/{file}")],
         )
         .map_err(|error| std::io::Error::other(format!("the analyst left no {file}: {error}")))?;
 
-        let text = std::fs::read_to_string(&copy)?;
-        if text.trim().is_empty() {
+        if text.is_empty() {
             return Err(std::io::Error::other(format!(
                 "the analyst left {file} empty"
             )));
         }
-        report.insert(
-            field.to_string(),
-            serde_json::Value::String(text.trim().to_string()),
-        );
+        texts.push(text);
     }
 
-    Ok(serde_json::Value::Object(report))
+    let analysis = texts.pop().expect("two files were read");
+    let summary = texts.pop().expect("two files were read");
+    Ok((summary, analysis))
 }
 
-/// The harness command behind the bridge in the entrypoint of `image`.
-fn harness_command(image: &str) -> std::io::Result<Vec<String>> {
-    let entrypoint = process::run_and_assume_success(
-        "docker",
-        &["image", "inspect", "--format", ENTRYPOINT_FORMAT, image],
-    )?;
-    let mut command: Vec<String> =
-        serde_json::from_str(&entrypoint).map_err(std::io::Error::other)?;
-
-    if command.first().map(String::as_str) != Some(BRIDGE) {
-        return Err(std::io::Error::other(format!(
-            "{image} does not start through {BRIDGE}"
-        )));
-    }
-    command.remove(0);
-
-    Ok(command)
-}
-
-/// Start the analyst on `image` against the proxy of `sidecar` and wait for it.
-fn run_analyst(
-    command: &Analyze,
-    image: &str,
-    harness: &[String],
-    sidecar: &str,
-    staging: &std::path::Path,
-    invocation: &crate::registry::Invocation,
-    container: &str,
-) -> std::io::Result<i32> {
-    let run = command.run.as_str();
-
-    let mut analyst = std::process::Command::new("docker");
-    analyst.args([
-        "run",
-        "--name",
-        container,
-        "--network",
-        "none",
-        "--ulimit",
-        NO_CORE_DUMPS,
-        "--tmpfs",
-        &format!("{SANDBOX_TMPFS},{SCRATCH_SIZE}"),
-        "--workdir",
-        SANDBOX_WORKSPACE,
-        "--volume",
-        &format!("{}:{SOCKET_DIRECTORY}{READ_ONLY}", socket_volume(sidecar)),
-        "--volume",
-        &staged_run_mount(run, staging)?,
-        "--volume",
-        &read_only_mount(BOOK_DIRECTORY, BOOK_MOUNT)?,
-        "--hostname",
-        &command.analyst.name,
-        "--add-host",
-        &format!("{}:{SANDBOX_LOOPBACK}", command.analyst.name),
-    ]);
-
-    for host in &invocation.hosts {
-        analyst.args(["--add-host", &format!("{host}:{SANDBOX_LOOPBACK}")]);
-    }
-
-    for (path, contents) in &invocation.files {
-        analyst.args(["--volume", &staged_mount(staging, path, contents)?]);
-    }
-
-    for (name, value) in &invocation.variables {
-        analyst.args(["--env", name]);
-        analyst.env(name, value);
-    }
-
-    log::info!("starting the analyst {container} from {image}");
-
-    analyst.stdout(std::process::Stdio::piped());
-    analyst.stderr(std::process::Stdio::piped());
-    std::os::unix::process::CommandExt::process_group(&mut analyst, 0);
-
-    let mut child = analyst
-        .args(["--entrypoint", ANALYST, image])
-        .args(harness)
-        .args(&invocation.arguments)
-        .spawn()?;
-
-    let monitor = std::sync::Arc::new(crate::monitor::Monitor::new());
-    let readers = record_output(&mut child, run, ANALYSIS_LOG, &monitor)?;
-    let code = await_analyst(child, container, run, command.analyst.limit)?;
-
-    for reader in readers {
-        reader.join().expect("the reader threads do not panic")?;
-    }
-
-    Ok(code)
-}
-
-/// Wait for the analyst, killing the container at the deadline or on an
-/// interrupt.
-fn await_analyst(
-    mut client: std::process::Child,
-    container: &str,
-    run: &str,
-    limit: u64,
-) -> std::io::Result<i32> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(limit);
-    log::info!("{run}: the analyst has {limit} seconds");
-
-    loop {
-        if let Some(status) = client.try_wait()? {
-            log::info!("{run}: the analyst exited with {status}");
-            return Ok(status.code().unwrap_or(1));
-        }
-        if crate::interrupt::interrupted() {
-            log::warn!("the analysis was interrupted, killing {container}");
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            log::warn!("{run}: the analyst ran out of time after {limit} seconds, stopping it");
-            break;
-        }
-        std::thread::sleep(CLOCK_INTERVAL);
-    }
-
-    let _ = std::process::Command::new("docker")
-        .args(["kill", container])
-        .output();
-    Ok(client.wait()?.code().unwrap_or(1))
+/// Write the analysis record.
+fn write_analysis(directory: &std::path::Path, record: &ava_wire::Analysis) -> std::io::Result<()> {
+    std::fs::write(
+        directory.join(ANALYSIS_FILE),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(record).map_err(std::io::Error::other)?
+        ),
+    )
 }

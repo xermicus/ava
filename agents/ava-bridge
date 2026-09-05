@@ -8,7 +8,8 @@ socat TCP-LISTEN:8080,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/ava/proxy.
 
 # The workspace is a clone of the run's remote, worked on the task branch.
 # Without the socket volume this is not a run and there is nothing to set up.
-if [ -S /run/ava/proxy.sock ]; then
+# An analyst has no git host and starts on an empty workspace.
+if [ -S /run/ava/proxy.sock ] && getent hosts git >/dev/null; then
 	# In the environment rather than in a config file, so a full home cannot
 	# stop the commit the last chance has to make.
 	export GIT_CONFIG_COUNT=3
