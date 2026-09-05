@@ -1,5 +1,6 @@
-//! The crackme game: one seat writes a crackme with the keygen that unlocks
-//! it, the other seats write a keygen for that crackme.
+//! The crackme game: in the first turn every seat writes a crackme with the
+//! keygen that unlocks it, in the second every seat writes one keygen for the
+//! crackmes of the others.
 //!
 //! A keygen turns a number into a key: the same key for the same number, a
 //! different key for a different number. A crackme gets a number and a key
@@ -8,10 +9,10 @@
 //! keys found for other numbers open nothing, and a solver has to reproduce
 //! the function. The defence is verified by running a sample of random numbers
 //! through the author's keygen into the crackme, and by pairs the crackme
-//! must refuse. The attack is verified by running the sample through the
-//! attacker's keygen into the crackme of the defending seat, mounted as the
-//! challenge. Both binaries run confined to the system directories and
-//! themselves, so neither can read or run the other.
+//! must refuse. The attack is verified by running a sample per crackme through
+//! the attacker's keygen into that crackme, seeded as an input of the turn,
+//! and records the crackmes it cracked. Both binaries run confined to the
+//! system directories and themselves, so neither can read or run the other.
 
 const GAME_NAME: &str = "crackme";
 
@@ -47,38 +48,125 @@ const SYSTEM_DIRECTORIES: [&str; 6] = ["/usr", "/lib", "/lib64", "/bin", "/sbin"
 /// and the keys of other numbers.
 const REFUSED_KEYS: [&str; 2] = ["", "password"];
 
-/// The crackme game: defended with a crackme and the keygen unlocking it,
-/// attacked with a keygen for the crackme mounted as the challenge.
+/// The crackme game: a crackme with its keygen in the first turn, one keygen
+/// for the crackmes of the other seats in the second.
 pub struct Crackme;
+
+/// The turns: defending with a crackme, then attacking the crackmes of the others.
+const TURNS: [crate::Turn; 2] = [
+    crate::Turn {
+        task: "defend",
+        entry: CRACKME,
+    },
+    crate::Turn {
+        task: "attack",
+        entry: KEYGEN,
+    },
+];
+const DEFEND: usize = 0;
+const ATTACK: usize = 1;
+
+/// The name the crackme of `seat` is seeded under for the attackers, the seat
+/// counted from one the way the tournament page counts.
+fn crackme_of(seat: usize) -> String {
+    format!("{CRACKME}.{}", seat + 1)
+}
+
+/// The seat whose crackme is seeded as `name`, if it is one.
+fn seat_of(name: &str) -> Option<usize> {
+    name.strip_prefix(CRACKME)?
+        .strip_prefix('.')?
+        .parse::<usize>()
+        .ok()?
+        .checked_sub(1)
+}
 
 impl crate::Game for Crackme {
     fn name(&self) -> &'static str {
         GAME_NAME
     }
 
-    fn entry(&self) -> &'static str {
-        CRACKME
+    fn turns(&self) -> &[crate::Turn] {
+        &TURNS
     }
 
-    fn attack_entry(&self) -> &'static str {
-        KEYGEN
+    /// The attackers get every opponent's crackme, named by its seat.
+    fn inputs(&self, turn: usize, opponents: &[usize]) -> Vec<crate::Input> {
+        if turn != ATTACK {
+            return Vec::new();
+        }
+
+        opponents
+            .iter()
+            .map(|&seat| crate::Input {
+                seat,
+                turn: DEFEND,
+                name: crackme_of(seat),
+            })
+            .collect()
     }
 
-    fn mode(&self) -> crate::Mode {
-        crate::Mode::Multiplayer
-    }
-
-    /// Verify the defence without a challenge and the attack against one.
     fn verify(
         &self,
+        turn: usize,
         submission: &std::path::Path,
-        challenge: Option<&std::path::Path>,
+        inputs: &std::path::Path,
     ) -> std::io::Result<ava_wire::Verdict> {
-        match challenge {
-            Some(challenge) => verify_attack(submission, challenge),
-            None => verify_defence(submission),
+        match turn {
+            DEFEND => verify_defence(submission),
+            ATTACK => verify_attack(submission, inputs),
+            _ => Err(std::io::Error::other(format!(
+                "{GAME_NAME} has {} turns",
+                TURNS.len()
+            ))),
         }
     }
+
+    /// Two rounds, one per direction of attack: a seat wins the round it
+    /// attacks in when a push of its attack cracked the other's crackme, and
+    /// by forfeit when the other left none.
+    fn outcome(
+        &self,
+        first: (usize, &[crate::Played]),
+        second: (usize, &[crate::Played]),
+    ) -> Option<crate::Outcome> {
+        let defended =
+            |played: &[crate::Played]| played.get(DEFEND).is_some_and(|turn| turn.entry.is_some());
+        if !defended(first.1) && !defended(second.1) {
+            return Some(crate::forfeit(first.0, false, second.0, false));
+        }
+
+        let mut tally = ava_wire::Tally::default();
+        let mut reasons = Vec::new();
+        for (attacker, defender, won) in [(first, second, true), (second, first, false)] {
+            let cracked = if defended(defender.1) {
+                cracked(attacker.1, defender.0)
+            } else {
+                reasons.push(format!("seat {} left no {CRACKME}", defender.0 + 1));
+                true
+            };
+            if cracked == won {
+                tally.won += 1;
+            } else {
+                tally.lost += 1;
+            }
+        }
+
+        Some(crate::Outcome {
+            tally,
+            reason: (!reasons.is_empty()).then(|| reasons.join(", ")),
+        })
+    }
+}
+
+/// Whether a push of the attack of `played` cracked the crackme of `defender`.
+fn cracked(played: &[crate::Played], defender: usize) -> bool {
+    let name = crackme_of(defender);
+    played.get(ATTACK).is_some_and(|turn| {
+        turn.attempts
+            .iter()
+            .any(|attempt| attempt.verdict.defeated.contains(&name))
+    })
 }
 
 /// Verify that the crackme accepts the key the keygen makes for a number,
@@ -93,7 +181,7 @@ fn verify_defence(submission: &std::path::Path) -> std::io::Result<ava_wire::Ver
     }
 
     let numbers = sample();
-    let keys = match generated(&keygen, &numbers)? {
+    let keys = match generated(&keygen, &[], &numbers)? {
         Ok(keys) => keys,
         Err(reason) => return Ok(crate::failed(reason)),
     };
@@ -128,35 +216,77 @@ fn verify_defence(submission: &std::path::Path) -> std::io::Result<ava_wire::Ver
     Ok(ava_wire::Verdict::passed())
 }
 
-/// Verify that the submitted keygen unlocks the crackme mounted as the challenge.
+/// Verify the keygen against every crackme seeded as an input: a crackme is
+/// cracked when it accepts the key the keygen makes for each sampled number,
+/// and the push passes when at least one is.
 fn verify_attack(
     submission: &std::path::Path,
-    challenge: &std::path::Path,
+    inputs: &std::path::Path,
 ) -> std::io::Result<ava_wire::Verdict> {
-    let crackme = challenge.join(CRACKME);
     let keygen = submission.join(KEYGEN);
-
     if let Some(reason) = unfit_binary(&keygen, KEYGEN)? {
         return Ok(crate::failed(reason));
     }
 
-    let numbers = sample();
-    let keys = match generated(&keygen, &numbers)? {
-        Ok(keys) => keys,
-        Err(reason) => return Ok(crate::failed(reason)),
+    let mut crackmes: Vec<(usize, std::path::PathBuf)> = match std::fs::read_dir(inputs) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let seat = seat_of(entry.file_name().to_str()?)?;
+                Some((seat, entry.path()))
+            })
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
     };
+    crackmes.sort_by_key(|(seat, _)| *seat);
+    if crackmes.is_empty() {
+        return Ok(crate::failed(format!(
+            "no {CRACKME} to attack, no other seat left one"
+        )));
+    }
 
-    for (number, key) in numbers.iter().zip(&keys) {
-        if let Some(reason) = refused(&crackme, *number, key)? {
-            return Ok(crate::failed(format!(
-                "the {CRACKME} refuses the key of {number}: {reason}"
-            )));
+    let mut defeated = Vec::new();
+    let mut reasons = Vec::new();
+    for (seat, crackme) in crackmes {
+        let name = crackme_of(seat);
+        let numbers = sample();
+        let seat_argument = (seat + 1).to_string();
+        let keys = match generated(&keygen, &[&seat_argument], &numbers)? {
+            Ok(keys) => keys,
+            Err(reason) => {
+                reasons.push(format!("{name}: {reason}"));
+                continue;
+            }
+        };
+
+        let mut refusal = None;
+        for (number, key) in numbers.iter().zip(&keys) {
+            if let Some(reason) = refused(&crackme, *number, key)? {
+                refusal = Some(format!("{name} refuses the key of {number}: {reason}"));
+                break;
+            }
+        }
+        match refusal {
+            Some(reason) => reasons.push(reason),
+            None => defeated.push(name),
         }
     }
 
-    log::info!("the {CRACKME} accepts the {SAMPLE} keys of the {KEYGEN} for their numbers");
+    log::info!(
+        "the {KEYGEN} cracked {} of the crackmes: {}",
+        defeated.len(),
+        defeated.join(" ")
+    );
+    for reason in &reasons {
+        log::info!("{reason}");
+    }
 
-    Ok(ava_wire::Verdict::passed())
+    if defeated.is_empty() {
+        return Ok(crate::failed(reasons.join("; ")));
+    }
+
+    Ok(ava_wire::Verdict::defeated(defeated))
 }
 
 /// Random numbers for one verification, distinct from each other, so a
@@ -185,17 +315,23 @@ fn sample() -> Vec<u64> {
 /// with different keys for different numbers.
 fn generated(
     keygen: &std::path::Path,
+    prefix: &[&str],
     numbers: &[u64],
 ) -> std::io::Result<Result<Vec<String>, String>> {
     let mut keys: Vec<String> = Vec::new();
 
     for number in numbers {
-        let argument = number.to_string();
-        let first = match key_of(keygen, &argument)? {
+        let number_argument = number.to_string();
+        let arguments: Vec<&str> = prefix
+            .iter()
+            .copied()
+            .chain([number_argument.as_str()])
+            .collect();
+        let first = match key_of(keygen, &arguments)? {
             Ok(key) => key,
             Err(reason) => return Ok(Err(reason)),
         };
-        let second = match key_of(keygen, &argument)? {
+        let second = match key_of(keygen, &arguments)? {
             Ok(key) => key,
             Err(reason) => return Ok(Err(reason)),
         };
@@ -216,9 +352,10 @@ fn generated(
     Ok(Ok(keys))
 }
 
-/// The key `keygen` prints for `argument`, or why what it printed is not a key.
-fn key_of(keygen: &std::path::Path, argument: &str) -> std::io::Result<Result<String, String>> {
-    let Some((status, output)) = run_with_timeout(keygen, &[argument])? else {
+/// The key `keygen` prints for `arguments`, or why what it printed is not a key.
+fn key_of(keygen: &std::path::Path, arguments: &[&str]) -> std::io::Result<Result<String, String>> {
+    let argument = arguments.join(" ");
+    let Some((status, output)) = run_with_timeout(keygen, arguments)? else {
         return Ok(Err(format!(
             "{KEYGEN} gave no answer within {RUN_TIMEOUT:?} for {argument}"
         )));
@@ -525,6 +662,79 @@ mod landlock {
 
 #[cfg(test)]
 mod tests {
+    use crate::Game;
+
+    fn played(entry: bool, defeated: &[&str]) -> crate::Played {
+        crate::Played {
+            entry: entry.then(|| crate::Kept {
+                path: std::path::PathBuf::from(super::CRACKME),
+                points: None,
+            }),
+            attempts: defeated
+                .iter()
+                .map(|name| ava_wire::Attempt {
+                    seconds: 1,
+                    verdict: ava_wire::Verdict::defeated(vec![name.to_string()]),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_attackers_get_every_other_crackme_by_seat() {
+        let inputs = super::Crackme.inputs(super::ATTACK, &[0, 2]);
+        assert_eq!(
+            inputs,
+            vec![
+                crate::Input {
+                    seat: 0,
+                    turn: super::DEFEND,
+                    name: "crackme.1".to_string(),
+                },
+                crate::Input {
+                    seat: 2,
+                    turn: super::DEFEND,
+                    name: "crackme.3".to_string(),
+                },
+            ]
+        );
+        assert!(super::Crackme.inputs(super::DEFEND, &[1]).is_empty());
+        assert_eq!(super::seat_of("crackme.3"), Some(2));
+        assert_eq!(super::seat_of("keygen"), None);
+    }
+
+    #[test]
+    fn a_pairing_is_two_rounds_won_by_cracking_or_forfeit() {
+        let first = [played(true, &[]), played(false, &["crackme.2"])];
+        let second = [played(true, &[]), played(false, &[])];
+        let outcome = super::Crackme.outcome((0, &first), (1, &second)).unwrap();
+        assert_eq!(
+            outcome.tally,
+            ava_wire::Tally {
+                won: 2,
+                drawn: 0,
+                lost: 0
+            }
+        );
+        assert_eq!(outcome.reason, None);
+
+        let second = [played(false, &[]), played(false, &["crackme.1"])];
+        let outcome = super::Crackme.outcome((0, &first), (1, &second)).unwrap();
+        assert_eq!(
+            outcome.tally,
+            ava_wire::Tally {
+                won: 1,
+                drawn: 0,
+                lost: 1
+            }
+        );
+        assert_eq!(outcome.reason.as_deref(), Some("seat 2 left no crackme"));
+
+        let none = [played(false, &[]), played(false, &[])];
+        let outcome = super::Crackme.outcome((0, &none), (1, &none)).unwrap();
+        assert_eq!(outcome.tally.rounds(), 0);
+    }
+
     #[test]
     fn the_sample_is_distinct_numbers() {
         let numbers = super::sample();

@@ -68,6 +68,10 @@ pub struct Verdict {
     /// Why it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The inputs of the turn the submission defeated, by name, for a turn
+    /// played against the entries of other seats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub defeated: Vec<String>,
 }
 
 impl Verdict {
@@ -76,6 +80,16 @@ impl Verdict {
         Self {
             passed: true,
             reason: None,
+            defeated: Vec::new(),
+        }
+    }
+
+    /// The verdict on a submission defeating the inputs named in `defeated`.
+    pub fn defeated(defeated: Vec<String>) -> Self {
+        Self {
+            passed: true,
+            reason: None,
+            defeated,
         }
     }
 
@@ -84,6 +98,7 @@ impl Verdict {
         Self {
             passed: false,
             reason: Some(reason.into()),
+            defeated: Vec::new(),
         }
     }
 }
@@ -179,12 +194,21 @@ pub struct Metrics {
     pub mean_first_token_seconds: f64,
 }
 
-/// The entry a run attacks, for an attack an agent plays: the run that kept it
-/// and the seconds of the attempt it came from.
+/// The entry a run attacked, on a record from before the inputs: the run that
+/// kept it and the seconds of the attempt it came from. Read as one input.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Challenge {
     pub run: String,
     pub attempt: u64,
+}
+
+/// An entry of another run a run got before its turn: the run and the attempt
+/// it came from, and the name it was seeded under.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Input {
+    pub run: String,
+    pub attempt: u64,
+    pub name: String,
 }
 
 /// One run, kept as `runs/<run>/run.json`: written when the run starts and
@@ -222,7 +246,13 @@ pub struct Run {
     pub arguments: Vec<String>,
     /// The names of the variables the sandbox was given, never their values.
     pub variables: Vec<String>,
-    /// The entry the run attacked, when it played a pairing.
+    /// The turn of the game the run plays, counted from zero.
+    #[serde(default)]
+    pub turn: usize,
+    /// The entries of other runs the turn got, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Input>,
+    /// The entry the run attacked, on a record from before the inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub challenge: Option<Challenge>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -429,23 +459,28 @@ impl Tournament {
     }
 }
 
-/// One round: every seat played a run, and every pairing of the entries fought.
+/// One round: every seat played a run of every turn, and the pairings were
+/// settled from what they kept.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Round {
     pub started_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_seconds: Option<u64>,
-    /// One per seat, in seat order.
+    /// One per seat per turn, turn by turn in seat order.
     pub entries: Vec<Entry>,
-    /// In the order they were fought. Empty for a game whose entries stand
-    /// alone, where the pairings are derived from the entries when shown.
+    /// The pairings that took a fight, in the order they were fought. The
+    /// pairings a game settles from the records are derived when shown.
     pub pairings: Vec<Pairing>,
 }
 
-/// The run one seat played in a round, and the attempt whose entry fights for it.
+/// The run one seat played in one turn of a round, and the attempt whose entry
+/// is its entry of record.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub seat: usize,
+    /// The turn, counted from zero.
+    #[serde(default)]
+    pub turn: usize,
     pub run: String,
     /// The seconds of the attempt that is the entry of record, or nothing
     /// while the run goes or when no attempt passed.
@@ -493,6 +528,8 @@ mod tests {
 
         assert_eq!(run.version, super::UNVERSIONED);
         assert_eq!(run.harness, "pi");
+        assert_eq!(run.turn, 0);
+        assert!(run.inputs.is_empty());
         assert!(run.attempts.is_empty());
         assert!(run.metrics.is_none());
     }

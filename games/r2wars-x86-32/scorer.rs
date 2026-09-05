@@ -27,8 +27,8 @@ const TIMEOUT_MARKER: &str = ": timeout after ";
 pub struct R2wars {
     name: &'static str,
     architecture: &'static str,
-    /// The file the warrior is submitted as, `warrior.<architecture>.asm`.
-    entry: &'static str,
+    /// The one turn, asking for the warrior as `warrior.<architecture>.asm`.
+    turns: [crate::Turn; 1],
     assembler_arguments: &'static [&'static str],
 }
 
@@ -37,13 +37,13 @@ pub const GAMES: [R2wars; 2] = [
     R2wars {
         name: "r2wars-x86-32",
         architecture: "x86-32",
-        entry: "warrior.x86-32.asm",
+        turns: [crate::single_turn("warrior.x86-32.asm")],
         assembler_arguments: &["-a", "x86", "-b", "32"],
     },
     R2wars {
         name: "r2wars-gb",
         architecture: "gb",
-        entry: "warrior.gb.asm",
+        turns: [crate::single_turn("warrior.gb.asm")],
         assembler_arguments: &["-a", "gb", "-b", "16"],
     },
 ];
@@ -64,21 +64,18 @@ impl crate::Game for R2wars {
         Some(IMAGE)
     }
 
-    fn entry(&self) -> &'static str {
-        self.entry
-    }
-
-    fn mode(&self) -> crate::Mode {
-        crate::Mode::Multiplayer
+    fn turns(&self) -> &[crate::Turn] {
+        &self.turns
     }
 
     /// Verify the submitted assembly the way r2wars loads it.
     fn verify(
         &self,
+        _turn: usize,
         submission: &std::path::Path,
-        _challenge: Option<&std::path::Path>,
+        _inputs: &std::path::Path,
     ) -> std::io::Result<ava_wire::Verdict> {
-        let file = self.entry;
+        let file = self.turns[0].entry;
         let source = submission.join(file);
         if !source.is_file() {
             return Ok(crate::failed(format!("no {file} in the submission")));
@@ -123,6 +120,15 @@ impl crate::Game for R2wars {
 
     /// Play `combats` combats between the two warriors, each best of three
     /// rounds on random load positions, and tally every round.
+    /// Warriors are told apart by fighting, so nothing is settled from the records.
+    fn outcome(
+        &self,
+        _first: (usize, &[crate::Played]),
+        _second: (usize, &[crate::Played]),
+    ) -> Option<crate::Outcome> {
+        None
+    }
+
     fn fight(
         &self,
         first: &std::path::Path,

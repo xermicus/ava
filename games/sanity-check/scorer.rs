@@ -10,20 +10,24 @@ const READ_LIMIT: u64 = 1 << 12;
 /// The sanity-check game, verified by a submitted palindrome.
 pub struct SanityCheck;
 
+/// The one turn of the game.
+const TURNS: [crate::Turn; 1] = [crate::single_turn(SUBMISSION_FILE)];
+
 impl crate::Game for SanityCheck {
     fn name(&self) -> &'static str {
         GAME_NAME
     }
 
-    fn entry(&self) -> &'static str {
-        SUBMISSION_FILE
+    fn turns(&self) -> &[crate::Turn] {
+        &TURNS
     }
 
     /// Verify the palindrome submitted as `palindrome`.
     fn verify(
         &self,
+        _turn: usize,
         submission: &std::path::Path,
-        _challenge: Option<&std::path::Path>,
+        _inputs: &std::path::Path,
     ) -> std::io::Result<ava_wire::Verdict> {
         let path = submission.join(SUBMISSION_FILE);
 

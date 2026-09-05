@@ -36,9 +36,17 @@ pub struct Score {
     pub fight: Option<String>,
     /// The combats the fight plays.
     pub combats: Option<u64>,
-    /// The directory holding the entry the submission attacks.
-    pub challenge: Option<String>,
+    /// The turn of the game the submission plays, counted from zero, the first
+    /// unless given.
+    pub turn: Option<usize>,
+    /// The directory holding the inputs of the turn, the entries of the other
+    /// seats by name.
+    pub inputs: Option<String>,
 }
+
+/// Where the verifier of a turn without inputs looks for them: an empty
+/// directory, so a game reads the same place either way.
+const NO_INPUTS_PREFIX: &str = "ava-no-inputs-";
 
 /// One request as the proxy sidecar logged it.
 #[derive(serde::Deserialize)]
@@ -107,13 +115,21 @@ pub fn run(command: &Score) -> std::io::Result<i32> {
 
     if let Some(name) = &command.game {
         let game = find(name)?;
+        let turn = command.turn.unwrap_or_default();
+        let played = game.turns().get(turn).ok_or_else(|| {
+            std::io::Error::other(format!(
+                "{name} has {} turns, there is no turn {turn}",
+                game.turns().len()
+            ))
+        })?;
 
         match &command.fight {
             Some(directory) => {
                 let directory = std::path::Path::new(directory);
+                let fought = game.turns().last().expect("a game has a turn").entry;
                 let tally = game.fight(
-                    &directory.join(FIRST_DIRECTORY).join(game.entry()),
-                    &directory.join(SECOND_DIRECTORY).join(game.entry()),
+                    &directory.join(FIRST_DIRECTORY).join(fought),
+                    &directory.join(SECOND_DIRECTORY).join(fought),
                     command.combats.unwrap_or(DEFAULT_COMBATS),
                 )?;
                 log::info!(
@@ -125,20 +141,29 @@ pub fn run(command: &Score) -> std::io::Result<i32> {
                 report.fight = Some(tally);
             }
             None => {
-                let verdict = game.verify(
-                    std::path::Path::new(SUBMISSION_DIRECTORY),
-                    command.challenge.as_deref().map(std::path::Path::new),
-                )?;
+                let no_inputs =
+                    std::env::temp_dir().join(format!("{NO_INPUTS_PREFIX}{}", std::process::id()));
+                let inputs = match &command.inputs {
+                    Some(inputs) => std::path::PathBuf::from(inputs),
+                    None => {
+                        std::fs::create_dir_all(&no_inputs)?;
+                        no_inputs.clone()
+                    }
+                };
+                let verdict =
+                    game.verify(turn, std::path::Path::new(SUBMISSION_DIRECTORY), &inputs)?;
+                let _ = std::fs::remove_dir(&no_inputs);
                 log::info!(
-                    "the {name} submission {}",
-                    if verdict.passed { "passed" } else { "failed" }
+                    "the {name} submission of turn {turn} {}{}",
+                    if verdict.passed { "passed" } else { "failed" },
+                    if verdict.defeated.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", defeating {}", verdict.defeated.join(" "))
+                    }
                 );
                 report.verdict = Some(verdict);
-                report.entry = Some(if command.challenge.is_some() {
-                    game.attack_entry()
-                } else {
-                    game.entry()
-                });
+                report.entry = Some(played.entry);
             }
         }
     }

@@ -405,7 +405,8 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
         thinking: agent.thinking,
         force_build_images: value(form, "force") == "on",
         analyst,
-        challenge: None,
+        turn: 0,
+        inputs: Vec::new(),
     };
 
     log::info!(

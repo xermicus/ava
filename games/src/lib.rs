@@ -53,14 +53,58 @@ pub(crate) fn binary_command(binary: &std::path::Path) -> std::process::Command 
 /// beyond passing ranks nothing.
 pub const MAXIMUM_POINTS: u64 = 10_000;
 
-/// Who an entry is up against.
+/// The folder holding the task of a game with one turn.
+pub const TASK_FOLDER: &str = "task";
+
+/// One turn of a game: the task the seats play and the file it asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// The entry stands alone against the ceiling of the game.
-    SinglePlayer,
-    /// The entries of the seats of a tournament meet: fought by the scorer,
-    /// or attacked by the other agents when the game has an attack task.
-    Multiplayer,
+pub struct Turn {
+    /// The folder under the game holding the task.
+    pub task: &'static str,
+    /// The file the task asks for, kept as the entry of every passing push.
+    pub entry: &'static str,
+}
+
+/// The one turn of a game with a single task, asking for `entry`.
+pub const fn single_turn(entry: &'static str) -> Turn {
+    Turn {
+        task: TASK_FOLDER,
+        entry,
+    }
+}
+
+/// An entry of an earlier turn a seat gets before playing a turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Input {
+    /// The seat whose entry it is.
+    pub seat: usize,
+    /// The turn the entry was kept in.
+    pub turn: usize,
+    /// The name the entry appears under in the workspace and the inputs directory.
+    pub name: String,
+}
+
+/// An entry a run kept, ranked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    pub path: std::path::PathBuf,
+    pub points: Option<u64>,
+}
+
+/// One turn as a seat played it: the entry of record it kept, if any, and
+/// every verdict its pushes got.
+#[derive(Clone, Debug, Default)]
+pub struct Played {
+    pub entry: Option<Kept>,
+    pub attempts: Vec<ava_wire::Attempt>,
+}
+
+/// How a pairing came out from the view of its first seat, with the reason
+/// when the tally is not the outcome of play.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outcome {
+    pub tally: ava_wire::Tally,
+    pub reason: Option<String>,
 }
 
 /// A benchmark task able to verify the submission an agent left and to rank
@@ -80,28 +124,24 @@ pub trait Game {
         None
     }
 
-    /// The file the task asks for, kept as the entry of every passing attempt.
-    fn entry(&self) -> &'static str;
+    /// The turns of the game in order, at least one.
+    fn turns(&self) -> &[Turn];
 
-    /// Who an entry of the game is up against.
-    fn mode(&self) -> Mode {
-        Mode::SinglePlayer
+    /// What a seat gets before playing `turn` from the `opponents` it meets:
+    /// entries of earlier turns under the names the task text uses. Nothing
+    /// unless the game says otherwise.
+    fn inputs(&self, turn: usize, opponents: &[usize]) -> Vec<Input> {
+        let _ = (turn, opponents);
+        Vec::new()
     }
 
-    /// The file the attack task asks for, kept as the entry of a passing
-    /// attack, for a multiplayer game whose entries agents attack.
-    fn attack_entry(&self) -> &'static str {
-        self.entry()
-    }
-
-    /// Whether the contents of the `submission` directory do what the task asks.
-    ///
-    /// An attack on the entry of another run gets that entry as the file under
-    /// `challenge`, the way it was mounted into the scoring container.
+    /// Whether the contents of the `submission` directory do what the task of
+    /// `turn` asks, with the inputs of the turn under `inputs` by name.
     fn verify(
         &self,
+        turn: usize,
         submission: &std::path::Path,
-        challenge: Option<&std::path::Path>,
+        inputs: &std::path::Path,
     ) -> std::io::Result<ava_wire::Verdict>;
 
     /// The points a passing `entry` ranks at, within 0 and [`MAXIMUM_POINTS`],
@@ -111,9 +151,30 @@ pub trait Game {
         Ok(None)
     }
 
+    /// How `first` came out against `second` over the turns both played,
+    /// read from what was recorded, or nothing when it takes a fight. Unless
+    /// the game says otherwise the entries of the last turn are compared by
+    /// their points: more points win, equal points draw, a missing entry
+    /// forfeits.
+    fn outcome(&self, first: (usize, &[Played]), second: (usize, &[Played])) -> Option<Outcome> {
+        let points = |played: &[Played]| {
+            played
+                .last()
+                .and_then(|turn| turn.entry.as_ref())
+                .map(|kept| kept.points)
+        };
+
+        Some(compared(
+            first.0,
+            points(first.1),
+            second.0,
+            points(second.1),
+        ))
+    }
+
     /// Fight the entry at `first` against the entry at `second` over `combats`
-    /// combats and report the rounds from the view of `first`, for a
-    /// multiplayer game the scorer fights.
+    /// combats and report the rounds from the view of `first`, for a game
+    /// whose pairings take a fight.
     fn fight(
         &self,
         first: &std::path::Path,
@@ -126,6 +187,60 @@ pub trait Game {
             self.name()
         )))
     }
+}
+
+/// The outcome of comparing the entries of two seats by their points, either
+/// of which may be missing. The points themselves are nothing for a game
+/// ranking nothing, which draws.
+pub fn compared(
+    first: usize,
+    first_points: Option<Option<u64>>,
+    second: usize,
+    second_points: Option<Option<u64>>,
+) -> Outcome {
+    match (first_points, second_points) {
+        (Some(first_points), Some(second_points)) => {
+            let ordering = first_points.cmp(&second_points);
+            Outcome {
+                tally: ava_wire::Tally {
+                    won: u64::from(ordering.is_gt()),
+                    drawn: u64::from(ordering.is_eq()),
+                    lost: u64::from(ordering.is_lt()),
+                },
+                reason: None,
+            }
+        }
+        (first_points, second_points) => forfeit(
+            first,
+            first_points.is_some(),
+            second,
+            second_points.is_some(),
+        ),
+    }
+}
+
+/// The reason of a pairing neither seat left an entry for.
+const NEITHER_ENTRY: &str = "neither seat left a passing entry";
+
+/// The outcome of a pairing at least one seat left no entry for: one round
+/// to the seat that did, or no round at all.
+pub fn forfeit(first: usize, first_present: bool, second: usize, second_present: bool) -> Outcome {
+    let (tally, reason) = match (first_present, second_present) {
+        (true, false) => (ava_wire::Tally::FIRST_WON, no_entry(second)),
+        (false, true) => (ava_wire::Tally::SECOND_WON, no_entry(first)),
+        _ => (ava_wire::Tally::default(), NEITHER_ENTRY.to_string()),
+    };
+
+    Outcome {
+        tally,
+        reason: Some(reason),
+    }
+}
+
+/// The reason a seat forfeits, the seat counted from one the way the
+/// tournament page counts.
+pub fn no_entry(seat: usize) -> String {
+    format!("seat {} left no passing entry", seat + 1)
 }
 
 /// Look up the game registered under `name`.
@@ -153,6 +268,26 @@ pub(crate) fn failed(reason: String) -> ava_wire::Verdict {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn points_compare_and_missing_entries_forfeit() {
+        let won = super::compared(0, Some(Some(10)), 1, Some(Some(5)));
+        assert_eq!(won.tally, ava_wire::Tally::FIRST_WON);
+        assert_eq!(won.reason, None);
+
+        let drawn = super::compared(0, Some(None), 1, Some(None));
+        assert_eq!(drawn.tally.drawn, 1);
+
+        let forfeited = super::compared(0, None, 1, Some(Some(5)));
+        assert_eq!(forfeited.tally, ava_wire::Tally::SECOND_WON);
+        assert_eq!(
+            forfeited.reason.as_deref(),
+            Some("seat 1 left no passing entry")
+        );
+
+        let neither = super::forfeit(0, false, 1, false);
+        assert_eq!(neither.tally.rounds(), 0);
+    }
+
     #[test]
     fn a_read_stops_at_the_limit() {
         let path = std::env::temp_dir().join(format!("ava-read-at-most-{}", std::process::id()));

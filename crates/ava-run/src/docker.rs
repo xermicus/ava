@@ -22,8 +22,11 @@ pub struct Agent {
     pub force_build_images: bool,
     /// The agent analyzing the run once it is over.
     pub analyst: Option<Analyst>,
-    /// The entry the run attacks, when it plays a pairing of a tournament.
-    pub challenge: Option<Challenge>,
+    /// The turn of the game the run plays, counted from zero.
+    pub turn: usize,
+    /// The entries of other runs the turn gets, seeded into the workspace and
+    /// mounted into the scoring container under their names.
+    pub inputs: Vec<InputFile>,
 }
 
 impl Agent {
@@ -65,16 +68,17 @@ impl Default for Agent {
             thinking: None,
             force_build_images: false,
             analyst: None,
-            challenge: None,
+            turn: 0,
+            inputs: Vec::new(),
         }
     }
 }
 
-/// The entry a run attacks: the file on disk, and the run and attempt it came from.
+/// An input of a turn: the entry on disk, and what the run records about it.
 #[derive(Debug, Clone)]
-pub struct Challenge {
+pub struct InputFile {
     pub path: std::path::PathBuf,
-    pub record: ava_wire::Challenge,
+    pub record: ava_wire::Input,
 }
 
 /// The image building command.
@@ -315,11 +319,6 @@ const SCORER_IMAGE: &str = "ava/scorer";
 const SCORER_DOCKERFILE: &str = "scorer/Dockerfile";
 const REPOSITORY_CONTEXT: &str = ".";
 const GAMES_DIRECTORY: &str = "games";
-const TASK_DIRECTORY: &str = "task";
-/// The tasks of a multiplayer game whose entries agents attack: defending an
-/// entry, and attacking the entry of another seat.
-const DEFEND_DIRECTORY: &str = "defend";
-const ATTACK_DIRECTORY: &str = "attack";
 const TASK_INSTRUCTIONS: &str = "README.md";
 
 const TASK_MOUNT: &str = "/home/agent/task";
@@ -330,9 +329,9 @@ const README_MOUNT: &str = "/home/agent/README.md";
 pub const ENTRIES_DIRECTORY: &str = "entries";
 const SCORER_ENTRIES: &str = "/home/agent/entries";
 
-/// Where the entry a run attacks is mounted into the scoring container, which
-/// seeds it into the workspace and verifies the pushes against it.
-const CHALLENGE_MOUNT: &str = "/home/agent/challenge";
+/// Where the inputs of a turn are mounted into the scoring container, which
+/// seeds them into the workspace and hands them to the verifier.
+const INPUTS_MOUNT: &str = "/home/agent/inputs";
 
 /// Where the two entries of a fight are mounted into the scorer image.
 const FIGHT_MOUNT: &str = "/home/agent/fight";
@@ -707,15 +706,14 @@ fn start_score_server(
     run: &str,
     game: &str,
     image: &str,
-    challenge: Option<&Challenge>,
+    turn: usize,
+    inputs: &[InputFile],
 ) -> std::io::Result<()> {
     let container = scorer_container(run);
     log::info!("starting the scoring server {container}");
 
     let task = read_only_mount(
-        &task_directory(game, challenge.is_some())
-            .display()
-            .to_string(),
+        &task_directory(game, turn).display().to_string(),
         TASK_MOUNT,
     )?;
     let readme = read_only_mount(
@@ -744,12 +742,13 @@ fn start_score_server(
     .iter()
     .map(|argument| argument.to_string())
     .collect();
-    if let Some(challenge) = challenge {
+    for input in inputs {
         arguments.push("--volume".to_string());
-        arguments.push(challenge_mount(challenge)?);
+        arguments.push(input_mount(input)?);
     }
+    let turn = turn.to_string();
     arguments.extend(
-        ["--entrypoint", BASH, image, SCORE_ENTRY, game]
+        ["--entrypoint", BASH, image, SCORE_ENTRY, game, &turn]
             .iter()
             .map(|argument| argument.to_string()),
     );
@@ -760,18 +759,15 @@ fn start_score_server(
     await_socket(&container, SCORE_SOCKET_PATH)
 }
 
-/// The mount putting the entry a run attacks into the scoring container, under
-/// the name it was kept by.
-fn challenge_mount(challenge: &Challenge) -> std::io::Result<String> {
-    let name = challenge.path.file_name().ok_or_else(|| {
-        std::io::Error::other(format!("{} has no file name", challenge.path.display()))
-    })?;
-    let source = std::env::current_dir()?.join(&challenge.path);
+/// The mount putting one input of the turn into the scoring container under
+/// its name.
+fn input_mount(input: &InputFile) -> std::io::Result<String> {
+    let source = std::env::current_dir()?.join(&input.path);
 
     Ok(format!(
-        "{}:{CHALLENGE_MOUNT}/{}{READ_ONLY}",
+        "{}:{INPUTS_MOUNT}/{}{READ_ONLY}",
         source.display(),
-        name.to_string_lossy()
+        input.record.name
     ))
 }
 
@@ -888,10 +884,13 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
             .iter()
             .map(|(name, _)| name.clone())
             .collect(),
-        challenge: command
-            .challenge
-            .as_ref()
-            .map(|challenge| challenge.record.clone()),
+        turn: command.turn,
+        inputs: command
+            .inputs
+            .iter()
+            .map(|input| input.record.clone())
+            .collect(),
+        challenge: None,
         finished_seconds: None,
         attempts: Vec::new(),
         metrics: None,
@@ -916,30 +915,14 @@ pub fn write_run(run: &str, record: &ava_wire::Run) -> std::io::Result<()> {
 
 /// The commit the folder of `game`, and the folder of its image, was last
 /// changed in, marked when the working tree differs from it. Empty outside a
-/// Whether the entries of `game` are attacked by agents, which is what an
-/// attack task in its folder says.
-pub fn attacked(game: &str) -> bool {
-    std::path::Path::new(GAMES_DIRECTORY)
-        .join(game)
-        .join(ATTACK_DIRECTORY)
-        .is_dir()
-}
+/// The folder holding the task of `turn` of `game`, the first turn's for a
+/// turn the game does not have or a game it does not know.
+pub fn task_directory(game: &str, turn: usize) -> std::path::PathBuf {
+    let task = ava_game::find(game)
+        .map(|found| crate::runs::turn_task(found, turn))
+        .unwrap_or(ava_game::TASK_FOLDER);
 
-/// The folder holding the task a run of `game` gets: the attack task when the
-/// run `attacks` an entry, else the defence when the game has one, else the
-/// task.
-pub fn task_directory(game: &str, attacks: bool) -> std::path::PathBuf {
-    let folder = std::path::Path::new(GAMES_DIRECTORY).join(game);
-    if attacks {
-        return folder.join(ATTACK_DIRECTORY);
-    }
-
-    let defend = folder.join(DEFEND_DIRECTORY);
-    if defend.is_dir() {
-        return defend;
-    }
-
-    folder.join(TASK_DIRECTORY)
+    std::path::Path::new(GAMES_DIRECTORY).join(game).join(task)
 }
 
 /// repository.
@@ -1260,7 +1243,7 @@ pub struct Launch {
 pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
     let agent = command.name.as_str();
     Agent::checked_limit(command.limit)?;
-    require_game(&command.game, command.challenge.as_ref())?;
+    require_game(&command.game, command.turn)?;
 
     let registry = crate::registry::load()?;
     let invocation = registry.invocation(
@@ -1369,7 +1352,8 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
                 run,
                 &command.game,
                 &scorer_image(&command.game),
-                command.challenge.as_ref(),
+                command.turn,
+                &command.inputs,
             )
         })
         .and_then(|()| prepare_agent_home(run, &image))
@@ -1410,24 +1394,25 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
     Ok(code)
 }
 
-/// Fail before anything is built when the game or its task folder is missing,
-/// or when the game attacks the entries of another and no `challenge` is given.
-fn require_game(game: &str, challenge: Option<&Challenge>) -> std::io::Result<()> {
-    if ava_game::find(game).is_none() {
+/// Fail before anything is built when the game, the turn or its task folder
+/// is missing.
+fn require_game(game: &str, turn: usize) -> std::io::Result<()> {
+    let Some(found) = ava_game::find(game) else {
         return Err(crate::registry::unknown(
             game,
             "game",
             ava_game::GAMES.iter().map(|game| game.name()),
         ));
-    }
+    };
 
-    if challenge.is_some() && !attacked(game) {
+    if turn >= found.turns().len() {
         return Err(std::io::Error::other(format!(
-            "{game} has no attack task, nothing attacks its entries"
+            "{game} has {} turns, there is no turn {turn}",
+            found.turns().len()
         )));
     }
 
-    let task = task_directory(game, challenge.is_some());
+    let task = task_directory(game, turn);
     if !task.is_dir() {
         return Err(std::io::Error::other(format!(
             "the task folder {} does not exist",
@@ -1502,7 +1487,10 @@ pub fn fight(
     ] {
         let target = staging.join(directory);
         std::fs::create_dir_all(&target)?;
-        std::fs::copy(entry, target.join(played.entry()))?;
+        std::fs::copy(
+            entry,
+            target.join(played.turns().last().expect("a game has a turn").entry),
+        )?;
     }
 
     let output = std::process::Command::new("docker")

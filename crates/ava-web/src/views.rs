@@ -181,6 +181,8 @@ const TILE_VALUE_CLASSES: &str =
     "mt-1 text-lg font-semibold text-neutral-100 font-mono tabular-nums";
 const TILE_TEXT_CLASSES: &str = "mt-1 text-sm font-semibold text-neutral-100 font-mono break-all";
 const TILE_DETAIL_CLASSES: &str = "mt-1 text-xs text-neutral-500 break-all";
+/// A tile listing names and links, one per line, none broken mid-word.
+const TILE_LIST_CLASSES: &str = "mt-1 text-sm text-neutral-100 font-mono";
 const TILE_GRID_CLASSES: &str = "mt-3 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3";
 
 /// The games page: a grid of cards, one per game, each folding out to the
@@ -198,12 +200,38 @@ const FACT_VALUE_CLASSES: &str = "font-mono tabular-nums text-neutral-100";
 const CHEVRON_CLASSES: &str = "h-4 w-4 shrink-0 text-neutral-500 transition-transform \
      motion-reduce:transition-none group-open:rotate-180";
 const GAME_BODY_CLASSES: &str = "border-t border-neutral-800 px-4 pb-4";
-/// Between the defend task and the attack task of a game holding both.
+/// Between the tasks of the turns of a game with several.
 const TASK_SEPARATOR: &str = "<hr class=\"my-6 border-neutral-800\">";
 
-/// The pills naming who an entry is up against.
-const SINGLE_PLAYER_PILL: &str = "bg-neutral-800 text-neutral-400";
-const MULTIPLAYER_PILL: &str = "bg-indigo-500/10 text-indigo-300";
+/// The pill naming one turn of a game with several.
+const TURN_PILL: &str = "bg-neutral-800 text-neutral-400";
+
+/// The graph of a round: nodes of one size on a grid of turns and seats,
+/// edges bending between the columns, text set in the font size of the page.
+const GRAPH_NODE_WIDTH: f64 = 260.0;
+const GRAPH_NODE_HEIGHT: f64 = 54.0;
+const GRAPH_COLUMN_GAP: f64 = 88.0;
+const GRAPH_ROW_GAP: f64 = 12.0;
+const GRAPH_HEADER_HEIGHT: f64 = 28.0;
+const GRAPH_PADDING: f64 = 2.0;
+const GRAPH_TEXT_INSET: f64 = 12.0;
+const GRAPH_LINE_ONE: f64 = 21.0;
+const GRAPH_LINE_TWO: f64 = 41.0;
+const GRAPH_DOT_LIFT: f64 = 4.0;
+const GRAPH_STATE_WIDTH: f64 = 62.0;
+const GRAPH_FONT_SIZE: u32 = 12;
+const GRAPH_LABEL_CHARS: usize = 34;
+const GRAPH_CLASSES: &str = "font-sans";
+const GRAPH_HEADER_TEXT_CLASSES: &str = "fill-neutral-500 font-mono";
+const GRAPH_NODE_CLASSES: &str =
+    "fill-neutral-950 stroke-neutral-800 hover:stroke-neutral-600 transition-colors";
+const GRAPH_LABEL_CLASSES: &str = "fill-neutral-300";
+const GRAPH_POINTS_CLASSES: &str = "fill-amber-400 font-mono";
+const GRAPH_RUN_CLASSES: &str = "fill-indigo-300 font-mono";
+const GRAPH_STATE_CLASSES: &str = "font-medium";
+const GRAPH_EDGE_CLASSES: &str = "stroke-neutral-700";
+/// The turn the attacks of a record from before the turns count as.
+const LEGACY_ATTACK_TURN: usize = 1;
 
 /// The cover of a card shows the entry of record as it is: the first bytes of
 /// a binary as a grid of cells shaded by their value, so the size and the
@@ -353,7 +381,7 @@ impl RunEntry {
             None
         } else {
             ava_game::find(&run.game).and_then(|game| {
-                runs::entry_of_record(game, directory, run.challenge.is_some())
+                runs::entry_of_record(game, directory, runs::kept_file(game, &run))
                     .ok()
                     .flatten()
             })
@@ -453,7 +481,10 @@ impl RunEntry {
         if let Some(placement) = &self.placement {
             cell.push_str(&format!(
                 "<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{}</div>",
-                placement_label(placement)
+                placement_label(
+                    placement,
+                    ava_game::find(&self.run.game).map_or(1, |game| game.turns().len())
+                )
             ));
         }
         cell
@@ -1011,20 +1042,42 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             TILE_TEXT_CLASSES,
         ),
     ];
+    let turns = ava_game::find(&entry.run.game).map_or(1, |game| game.turns().len());
     if let Some(placement) = &entry.placement {
         facts.push(tile(
             "tournament",
             &tournament_link(&placement.tournament),
-            &placement_role(placement),
+            &placement_role(placement, turns),
             TILE_TEXT_CLASSES,
         ));
     }
-    if let Some(challenge) = &entry.run.challenge {
+    if turns > 1 {
         facts.push(tile(
-            "attacking",
-            &run_link(&challenge.run),
-            &format!("the entry kept at {}s", challenge.attempt),
+            "turn",
+            &format!("{} of {turns}", entry.run.turn + 1),
+            &ava_game::find(&entry.run.game)
+                .map(|game| runs::turn_task(game, entry.run.turn).to_string())
+                .unwrap_or_default(),
             TILE_TEXT_CLASSES,
+        ));
+    }
+    if !entry.run.inputs.is_empty() {
+        facts.push(tile(
+            "inputs",
+            &entry
+                .run
+                .inputs
+                .iter()
+                .map(|input| {
+                    format!(
+                        "<span class=\"block\">{} <span class=\"{MUTED_CLASSES}\">from</span> {}</span>",
+                        escape(&input.name),
+                        run_link(&input.run)
+                    )
+                })
+                .collect::<String>(),
+            "seeded into the workspace",
+            TILE_LIST_CLASSES,
         ));
     }
     body.push_str(&tiles(&facts));
@@ -1099,8 +1152,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     if let Some(game) = ava_game::find(&entry.run.game)
         && !entry.live
     {
-        let file = runs::kept_file(game, entry.run.challenge.is_some());
-        let kept = runs::entries(game, &directory, entry.run.challenge.is_some())?;
+        let file = runs::kept_file(game, &entry.run);
+        let kept = runs::entries(game, &directory, file)?;
         if !kept.is_empty() {
             let record = entry.record.as_ref().map(|record| record.seconds);
             let rows = kept
@@ -1287,7 +1340,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
     Ok(page("scoreboard", &body))
 }
 
-/// Every game as a card: the name, the mode and the record on its face,
+/// Every game as a card: the name, its turns and the record on its face,
 /// the standings, the heatmap and the task folded behind it.
 pub(crate) fn games_page() -> std::io::Result<String> {
     let runs = collect_runs()?;
@@ -1297,9 +1350,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         let played: Vec<&RunEntry> = runs
             .iter()
             .filter(|run| {
-                run.run.game == game
-                    && run.run.challenge.is_none()
-                    && run.run.finished_seconds.is_some()
+                run.run.game == game && run.run.turn == 0 && run.run.finished_seconds.is_some()
             })
             .collect();
         cards.push_str(&game_card(&game, &played));
@@ -1322,14 +1373,14 @@ pub(crate) fn games_page() -> std::io::Result<String> {
 /// The card of one game over the finished runs that `played` it, folding
 /// out to the text of its task.
 fn game_card(game: &str, played: &[&RunEntry]) -> String {
-    let task = std::fs::read_to_string(docker::task_directory(game, false).join(TASK_FILE))
-        .unwrap_or_default();
-    let attack = if docker::attacked(game) {
-        std::fs::read_to_string(docker::task_directory(game, true).join(TASK_FILE))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    let turns = ava_game::find(game).map_or(1, |found| found.turns().len());
+    let tasks: Vec<String> = (0..turns)
+        .map(|turn| {
+            std::fs::read_to_string(docker::task_directory(game, turn).join(TASK_FILE))
+                .unwrap_or_default()
+        })
+        .collect();
+    let task = tasks.first().cloned().unwrap_or_default();
     let passed = played.iter().filter(|run| run.passed()).count() as u64;
     let best = played
         .iter()
@@ -1340,7 +1391,7 @@ fn game_card(game: &str, played: &[&RunEntry]) -> String {
         "<details class=\"{GAME_CARD_CLASSES}\">{}\
          <div class=\"{GAME_BODY_CLASSES}\">{}</div></details>",
         game_face(game, &task, played.len() as u64, passed, best),
-        [task, attack]
+        tasks
             .iter()
             .filter(|text| !text.is_empty())
             .map(|text| ava_markdown::render(text))
@@ -1349,7 +1400,7 @@ fn game_card(game: &str, played: &[&RunEntry]) -> String {
     )
 }
 
-/// The face of a card: the name and the mode, the title of the task and
+/// The face of a card: the name and its turns, the title of the task and
 /// the image it plays on, then the cover beside the runs and the record.
 fn game_face(
     game: &str,
@@ -1392,7 +1443,7 @@ fn game_face(
          </span>\
          </summary>",
         escape(game),
-        mode_badge(game),
+        turn_badges(game),
         chevron(CHEVRON_CLASSES),
         escape(task_title(task)),
         cover(game, best),
@@ -1526,26 +1577,21 @@ fn fact(label: &str, value: &str) -> String {
     )
 }
 
-/// The mode of a game as a pill, its meaning behind the hover.
-fn mode_badge(game: &str) -> String {
+/// The turns of a game with several, one pill per task, nothing for a game
+/// with one turn.
+fn turn_badges(game: &str) -> String {
     let Some(found) = ava_game::find(game) else {
         return String::new();
     };
+    if found.turns().len() < 2 {
+        return String::new();
+    }
 
-    let (tint, label, tooltip) = match found.mode() {
-        ava_game::Mode::SinglePlayer => (
-            SINGLE_PLAYER_PILL,
-            "single player",
-            "the entries are ranked alone against the ceiling of the game",
-        ),
-        ava_game::Mode::Multiplayer => (
-            MULTIPLAYER_PILL,
-            "multiplayer",
-            "the entries of the seats meet in tournaments",
-        ),
-    };
-
-    format!("<span class=\"{PILL_CLASSES} {tint} cursor-help\" title=\"{tooltip}\">{label}</span>")
+    found
+        .turns()
+        .iter()
+        .map(|turn| pill(TURN_PILL, false, &escape(turn.task)))
+        .collect()
 }
 
 /// The tournaments: the form opening one, and every tournament on disk.
@@ -1680,9 +1726,7 @@ pub(crate) fn tournament_page(
     let playing = tournament::playing(name);
     let running = live_runs();
     let registry = registry::load()?;
-    let compared = ava_game::find(&record.game)
-        .is_some_and(|game| game.mode() == ava_game::Mode::SinglePlayer);
-    let ordered = docker::attacked(&record.game);
+    let game = ava_game::find(&record.game);
 
     let play_form = if playing || record.seats.is_empty() {
         String::new()
@@ -1804,14 +1848,7 @@ pub(crate) fn tournament_page(
             "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
             explained(
                 "standings",
-                &format!(
-                    "derived from the matches of the finished rounds between different agents{}, ordered by Bradley-Terry",
-                    if compared {
-                        ", the entries compared by their points"
-                    } else {
-                        ""
-                    }
-                )
+                "derived from the matches of the finished rounds between different agents, ordered by Bradley-Terry"
             ),
             table(
                 &[
@@ -1846,67 +1883,21 @@ pub(crate) fn tournament_page(
             usage::age(round.started_seconds)
         ));
 
-        let entry_rows: Vec<Vec<String>> = round
-            .entries
-            .iter()
-            .map(|entry| {
-                let agent = record.seats.get(entry.seat);
-                let run =
-                    runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(&entry.run)).ok();
-                let live = running.contains(&docker::scorer_container(&entry.run));
-                let state = match (&run, live) {
-                    (_, true) => pill(LIVE_PILL, true, "live"),
-                    (Some(run), false) if run.passed() => pill(PASSED_PILL, false, "passed"),
-                    (Some(run), false) if run.finished_seconds.is_some() => {
-                        pill(FAILED_PILL, false, "failed")
-                    }
-                    (Some(_), false) => pill(BROKEN_PILL, false, "unfinished"),
-                    (None, false) if playing && index + 1 == record.rounds.len() => {
-                        pill(STARTING_PILL, true, "queued")
-                    }
-                    (None, false) => pill(BROKEN_PILL, false, "missing"),
-                };
-                vec![
-                    (entry.seat + 1).to_string(),
-                    agent
-                        .map(|agent| escape(&agent.label()))
-                        .unwrap_or_default(),
-                    format!(
-                        "<a class=\"{LINK_CLASSES}\" href=\"/run/{run}\">{run}</a>",
-                        run = escape(&entry.run)
-                    ),
-                    state,
-                    match entry.attempt {
-                        Some(seconds) => format!("{seconds}s"),
-                        None if live => String::new(),
-                        None => "none".to_string(),
-                    },
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &[
-                "#SEAT",
-                "*AGENT",
-                "RUN",
-                "STATE",
-                "ENTRY|the passing push whose entry fights, by its seconds",
-            ],
-            entry_rows,
-            None,
-        ));
+        let live = playing && index + 1 == record.rounds.len();
+        body.push_str(&round_graph(&record, round, game, &running, live));
 
         let pairings = tournament::pairings(&record, round)?;
         if !pairings.is_empty() {
+            // The attacks of a record from before the turns pair every seat
+            // with every other in both directions.
+            let ordered = pairings.iter().any(|pairing| {
+                pairings
+                    .iter()
+                    .any(|other| (other.first, other.second) == (pairing.second, pairing.first))
+            });
             body.push_str(&format!(
-                "<div class=\"mt-3\">{}</div>",
-                cross_table(
-                    &record,
-                    round,
-                    &pairings,
-                    ordered,
-                    playing && index + 1 == record.rounds.len()
-                )
+                "<div class=\"mt-4\">{}</div>",
+                cross_table(&record, round, &pairings, ordered, live)
             ));
         }
     }
@@ -1926,6 +1917,205 @@ pub(crate) fn tournament_page(
     body.push_str("</div>");
 
     Ok(page(name, &body))
+}
+
+/// The runs of a round as the graph the tournament walked: a column per turn,
+/// a row per seat, every run a node linking its page with its state, and an
+/// edge from every entry a run got as its input to that run. While the round
+/// is `live`, a run not started yet shows as queued.
+fn round_graph(
+    record: &ava_wire::Tournament,
+    round: &ava_wire::Round,
+    game: Option<&dyn ava_game::Game>,
+    running: &[String],
+    live: bool,
+) -> String {
+    struct Node {
+        seat: usize,
+        turn: usize,
+        run: String,
+        record: Option<ava_wire::Run>,
+        points: Option<u64>,
+        x: f64,
+        y: f64,
+    }
+
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut place = |seat: usize, turn: usize, run: &str, attempt: Option<u64>| {
+        if nodes.iter().any(|node| node.run == run) {
+            return;
+        }
+        let directory = std::path::Path::new(docker::RUN_DIRECTORY).join(run);
+        let record = runs::read(&directory).ok();
+        let points = match (game, attempt) {
+            (Some(game), Some(attempt)) => {
+                runs::entries(game, &directory, runs::turn_entry(game, turn))
+                    .ok()
+                    .and_then(|kept| kept.into_iter().find(|kept| kept.seconds == attempt))
+                    .and_then(|kept| kept.points)
+            }
+            _ => None,
+        };
+        nodes.push(Node {
+            seat,
+            turn,
+            run: run.to_string(),
+            record,
+            points,
+            x: 0.0,
+            y: 0.0,
+        });
+    };
+    for entry in &round.entries {
+        place(entry.seat, entry.turn, &entry.run, entry.attempt);
+    }
+    // The attacks of a record from before the turns played the second turn.
+    for pairing in &round.pairings {
+        if let Some(run) = &pairing.run {
+            place(pairing.first, LEGACY_ATTACK_TURN, run, None);
+        }
+    }
+
+    let seats = record.seats.len();
+    let turns = game
+        .map_or(1, |game| game.turns().len())
+        .max(nodes.iter().map(|node| node.turn + 1).max().unwrap_or(1));
+
+    // A seat's row is as tall as its fullest column, so nodes never overlap
+    // when a turn holds several runs of one seat.
+    let mut stacked: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    let mut rows = vec![1usize; seats];
+    for node in &nodes {
+        let count = stacked.entry((node.seat, node.turn)).or_default();
+        *count += 1;
+        if node.seat < seats {
+            rows[node.seat] = rows[node.seat].max(*count);
+        }
+    }
+    let row_height =
+        |stack: usize| stack as f64 * GRAPH_NODE_HEIGHT + (stack as f64 - 1.0) * GRAPH_ROW_GAP;
+    let mut row_top = Vec::with_capacity(seats);
+    let mut y = GRAPH_HEADER_HEIGHT;
+    for stack in &rows {
+        row_top.push(y);
+        y += row_height(*stack) + GRAPH_ROW_GAP;
+    }
+    let height = y - GRAPH_ROW_GAP + GRAPH_PADDING;
+    let width = turns as f64 * GRAPH_NODE_WIDTH + (turns as f64 - 1.0) * GRAPH_COLUMN_GAP;
+
+    let mut filled: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for node in &mut nodes {
+        let slot = filled.entry((node.seat, node.turn)).or_default();
+        node.x = node.turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+        node.y = row_top
+            .get(node.seat)
+            .copied()
+            .unwrap_or(GRAPH_HEADER_HEIGHT)
+            + *slot as f64 * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP);
+        *slot += 1;
+    }
+
+    let mut svg = format!(
+        "<svg class=\"block w-full {GRAPH_CLASSES}\" style=\"max-width:{width}px\" viewBox=\"0 0 {width} {height}\" font-size=\"{GRAPH_FONT_SIZE}\">"
+    );
+
+    for turn in 0..turns {
+        let task = game
+            .and_then(|game| game.turns().get(turn))
+            .map(|turn| turn.task.to_string())
+            .unwrap_or_else(|| format!("turn {}", turn + 1));
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" class=\"{GRAPH_HEADER_TEXT_CLASSES}\">{}</text>",
+            turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP),
+            GRAPH_HEADER_HEIGHT - GRAPH_ROW_GAP,
+            escape(&task)
+        ));
+    }
+
+    for node in &nodes {
+        let Some(run) = &node.record else {
+            continue;
+        };
+        for input in &run.inputs {
+            let Some(source) = nodes.iter().find(|source| source.run == input.run) else {
+                continue;
+            };
+            let (from_x, from_y) = (
+                source.x + GRAPH_NODE_WIDTH,
+                source.y + GRAPH_NODE_HEIGHT / 2.0,
+            );
+            let (to_x, to_y) = (node.x, node.y + GRAPH_NODE_HEIGHT / 2.0);
+            let bend = (from_x + to_x) / 2.0;
+            svg.push_str(&format!(
+                "<path d=\"M{from_x} {from_y} C{bend} {from_y} {bend} {to_y} {to_x} {to_y}\" class=\"{GRAPH_EDGE_CLASSES}\" fill=\"none\"><title>{}</title></path>",
+                escape(&input.name)
+            ));
+        }
+    }
+
+    for node in &nodes {
+        let live_run = running.contains(&docker::scorer_container(&node.run));
+        let (state, tint, pulsing) = match (&node.record, live_run) {
+            (_, true) => ("live", LIVE_PILL, true),
+            (Some(run), false) if run.passed() => ("passed", PASSED_PILL, false),
+            (Some(run), false) if run.finished_seconds.is_some() => ("failed", FAILED_PILL, false),
+            (Some(_), false) => ("unfinished", BROKEN_PILL, false),
+            (None, false) if live => ("queued", STARTING_PILL, true),
+            (None, false) => ("missing", BROKEN_PILL, false),
+        };
+        let agent = record
+            .seats
+            .get(node.seat)
+            .map(|agent| format!("{} on {}", agent.harness, agent.model))
+            .unwrap_or_default();
+        let label = format!("{} \u{00b7} {agent}", node.seat + 1);
+        let shown = if label.chars().count() > GRAPH_LABEL_CHARS {
+            format!(
+                "{}\u{2026}",
+                label
+                    .chars()
+                    .take(GRAPH_LABEL_CHARS - 1)
+                    .collect::<String>()
+            )
+        } else {
+            label.clone()
+        };
+        let points = node
+            .points
+            .map(|points| {
+                format!(
+                    "<text x=\"{}\" y=\"{}\" text-anchor=\"end\" class=\"{GRAPH_POINTS_CLASSES}\">{points}</text>",
+                    node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET,
+                    node.y + GRAPH_LINE_ONE
+                )
+            })
+            .unwrap_or_default();
+        let dot_class = if pulsing { "animate-pulse" } else { "" };
+        svg.push_str(&format!(
+            "<a href=\"/run/{run}\"><title>{title}</title>\
+             <rect x=\"{x}\" y=\"{y}\" width=\"{GRAPH_NODE_WIDTH}\" height=\"{GRAPH_NODE_HEIGHT}\" rx=\"6\" class=\"{GRAPH_NODE_CLASSES}\"/>\
+             <text x=\"{text_x}\" y=\"{line_one}\" class=\"{GRAPH_LABEL_CLASSES}\">{shown}</text>{points}\
+             <text x=\"{text_x}\" y=\"{line_two}\" class=\"{GRAPH_RUN_CLASSES}\">{run}</text>\
+             <circle cx=\"{dot_x}\" cy=\"{dot_y}\" r=\"3\" fill=\"currentColor\" class=\"{tint} {dot_class}\"/>\
+             <text x=\"{state_x}\" y=\"{line_two}\" text-anchor=\"end\" fill=\"currentColor\" class=\"{GRAPH_STATE_CLASSES} {tint}\">{state}</text>\
+             </a>",
+            run = escape(&node.run),
+            title = escape(&format!("{label}, {state}")),
+            x = node.x,
+            y = node.y,
+            text_x = node.x + GRAPH_TEXT_INSET,
+            line_one = node.y + GRAPH_LINE_ONE,
+            line_two = node.y + GRAPH_LINE_TWO,
+            dot_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET - GRAPH_STATE_WIDTH,
+            dot_y = node.y + GRAPH_LINE_TWO - GRAPH_DOT_LIFT,
+            state_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET,
+        ));
+    }
+
+    svg.push_str("</svg>");
+    format!("<div class=\"{CARD_CLASSES} p-4 overflow-x-auto\">{svg}</div>")
 }
 
 /// The place of one agent on the leaderboard of a tournament.
@@ -2429,7 +2619,7 @@ pub(crate) fn games() -> std::io::Result<Vec<String>> {
         .map_err(|error| at_path(GAMES_DIRECTORY, error))?
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| docker::task_directory(name, false).is_dir())
+        .filter(|name| docker::task_directory(name, 0).is_dir())
         .collect();
     games.sort();
 
@@ -2452,7 +2642,7 @@ pub(crate) fn run_entry(name: &str, seconds: &str, file: &str) -> Option<Vec<u8>
     let directory = run_directory(name).ok()?;
     let run = runs::read(&directory).ok()?;
     let game = ava_game::find(&run.game)?;
-    if file != runs::kept_file(game, run.challenge.is_some()) {
+    if file != runs::kept_file(game, &run) {
         return None;
     }
 
@@ -2842,28 +3032,26 @@ fn version_label(version: &str) -> String {
     )
 }
 
-/// The seat a run plays in its round, and the seat it attacks when it does.
-fn placement_role(placement: &tournament::Placement) -> String {
-    match placement.attacking {
-        Some(defender) => format!(
-            "seat {} attacking seat {} in round {}",
-            placement.seat + 1,
-            defender + 1,
-            placement.round + 1
-        ),
-        None => format!(
-            "seat {} in round {}",
-            placement.seat + 1,
-            placement.round + 1
-        ),
-    }
+/// The seat a run plays in its round, and its turn for a game with several.
+fn placement_role(placement: &tournament::Placement, turns: usize) -> String {
+    let turn = if turns > 1 {
+        format!(", turn {}", placement.turn + 1)
+    } else {
+        String::new()
+    };
+
+    format!(
+        "seat {} in round {}{turn}",
+        placement.seat + 1,
+        placement.round + 1
+    )
 }
 
 /// Where a run sits in a tournament, linking the tournament.
-fn placement_label(placement: &tournament::Placement) -> String {
+fn placement_label(placement: &tournament::Placement, turns: usize) -> String {
     format!(
         "{} of {}",
-        placement_role(placement),
+        placement_role(placement, turns),
         tournament_link(&placement.tournament)
     )
 }
@@ -2876,12 +3064,17 @@ fn tournament_link(name: &str) -> String {
     )
 }
 
-/// The game of a run, marked when the run attacks the entry of another.
+/// The game of a run, with the task of its turn when it is not the first.
 fn game_label(run: &ava_wire::Run) -> String {
-    if run.challenge.is_some() {
+    if run.turn > 0 {
         return format!(
-            "{} <span class=\"{MUTED_CLASSES}\">attack</span>",
-            escape(&run.game)
+            "{} <span class=\"{MUTED_CLASSES}\">{}</span>",
+            escape(&run.game),
+            escape(
+                ava_game::find(&run.game)
+                    .map(|game| runs::turn_task(game, run.turn))
+                    .unwrap_or_default()
+            )
         );
     }
 
