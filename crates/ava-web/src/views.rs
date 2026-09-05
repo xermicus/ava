@@ -53,6 +53,12 @@ const NUMERIC_MARKER: char = '#';
 /// A `*` prefix on a header marks the column taking the slack of the row.
 const SLACK_MARKER: char = '*';
 
+/// A `^` marked header holds a centered column. The markers combine: `*#`
+/// is a right-aligned column taking slack, which pushes what follows it to
+/// the right edge.
+const CENTER_MARKER: char = '^';
+const MARKERS: [char; 3] = [NUMERIC_MARKER, SLACK_MARKER, CENTER_MARKER];
+
 /// Whatever follows a `|` in a header is the tooltip explaining that column
 /// rather than part of its title.
 const TOOLTIP_SEPARATOR: char = '|';
@@ -104,6 +110,7 @@ const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoratio
 const CELL_CLASSES: &str = "py-2.5 border-t border-neutral-800 align-middle";
 const ROW_CLASSES: &str = "hover:bg-neutral-800/40 transition-colors";
 const NUMERIC_CLASSES: &str = "text-right font-mono tabular-nums";
+const CENTERED_CLASSES: &str = "text-center";
 const EMPTY_ROW_CLASSES: &str =
     "px-4 py-8 text-center text-neutral-500 border-t border-neutral-800";
 
@@ -1798,23 +1805,21 @@ pub(crate) fn tournament_page(
             (rank, *seat)
         });
     }
+    let cells = pairing_cells(&record)?;
     let seat_rows: Vec<Vec<String>> = seats
         .iter()
         .map(|(seat, agent)| {
-            let played = record
-                .rounds
-                .iter()
-                .filter(|round| round.entries.iter().any(|entry| entry.seat == *seat))
-                .count();
             let standing = standings
                 .iter()
                 .find(|standing| standing.agent == agent.label())
                 .filter(|_| rated);
-            vec![
+            let mut row = vec![
                 (seat + 1).to_string(),
                 agent_label(&agent.harness, agent.thinking.as_deref().unwrap_or("")),
                 escape(&agent.model),
-                played.to_string(),
+            ];
+            row.extend(cells[*seat].iter().cloned());
+            row.extend([
                 standing
                     .map(|standing| tally_label(&standing.fights))
                     .unwrap_or_default(),
@@ -1836,30 +1841,38 @@ pub(crate) fn tournament_page(
                 } else {
                     String::new()
                 },
-            ]
+            ]);
+            row
         })
         .collect();
+    let mut headers: Vec<String> = vec![
+        "#SEAT".to_string(),
+        "HARNESS".to_string(),
+        "*MODEL".to_string(),
+    ];
+    headers.extend((1..=record.seats.len()).map(|seat| {
+        format!(
+            "^{seat}|the row's rounds against seat {seat} over the finished rounds as won-drawn-lost, the rounds behind the hover"
+        )
+    }));
+    headers.extend(
+        [
+            "*#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
+            "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+            "#ELO|updated in match order, anchored at 1000",
+            "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
+            "",
+        ]
+        .map(str::to_string),
+    );
+    let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
     body.push_str(&format!(
         "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
         explained(
             "standings",
-            "the seats of the tournament, joining between rounds and fixed once a round was played, rated over the matches of the finished rounds between different agents and ordered by Bradley-Terry"
+            "the seats of the tournament, joining between rounds and fixed once a round was played, their rounds against each other over the finished rounds, and their ratings over the matches between different agents, ordered by Bradley-Terry"
         ),
-        table(
-            &[
-                "#SEAT",
-                "HARNESS",
-                "*MODEL",
-                "#ROUNDS|the rounds the seat played",
-                "#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
-                "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
-                "#ELO|updated in match order, anchored at 1000",
-                "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
-                "",
-            ],
-            seat_rows,
-            Some(NO_SEATS_NOTE),
-        )
+        table(&headers, seat_rows, Some(NO_SEATS_NOTE))
     ));
     if removable {
         body.push_str(&format!(
@@ -1892,21 +1905,6 @@ pub(crate) fn tournament_page(
 
         let live = playing && index + 1 == record.rounds.len();
         body.push_str(&round_graph(&record, round, game, &running, live));
-
-        let pairings = tournament::pairings(&record, round)?;
-        if !pairings.is_empty() {
-            // The attacks of a record from before the turns pair every seat
-            // with every other in both directions.
-            let ordered = pairings.iter().any(|pairing| {
-                pairings
-                    .iter()
-                    .any(|other| (other.first, other.second) == (pairing.second, pairing.first))
-            });
-            body.push_str(&format!(
-                "<div class=\"mt-4\">{}</div>",
-                cross_table(&record, &pairings, ordered, live)
-            ));
-        }
     }
 
     body.push_str(&format!(
@@ -2309,112 +2307,80 @@ fn rating_label(rating: Option<f64>) -> String {
         .unwrap_or_default()
 }
 
-/// The `pairings` of one round as a cross table: the tally of the row's seat
-/// against the column's seat, and its total across the row. An `ordered`
-/// round pairs every seat with every other twice, once attacking and once
-/// defending, so the row is the attacker and nothing is mirrored. While the
-/// round is `live`, a pairing without rounds is an attack still going.
-fn cross_table(
-    record: &ava_wire::Tournament,
-    pairings: &[ava_wire::Pairing],
-    ordered: bool,
-    live: bool,
-) -> String {
+/// The cells of the standings, by seat row and seat column: the row's rounds
+/// against the column over the finished rounds, tinted by who came out ahead,
+/// `none` where nothing was counted, the rounds behind the hover with their
+/// reasons. A pairing recorded the other way round is read mirrored.
+fn pairing_cells(record: &ava_wire::Tournament) -> std::io::Result<Vec<Vec<String>>> {
+    #[derive(Default)]
+    struct Met {
+        tally: ava_wire::Tally,
+        rounds: Vec<String>,
+    }
+
     let seats = record.seats.len();
-    let mut headers: Vec<String> = vec![if ordered {
-        "*SEAT|the seat of the row attacks the entry of the column".to_string()
-    } else {
-        "*SEAT".to_string()
-    }];
-    headers.extend((1..=seats).map(|seat| format!("#{seat}")));
-    headers.push(
-        "#TOTAL|fights won, drawn and lost across the row, forfeits included, pairings without a fight left out"
-            .to_string(),
-    );
-    let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
-
-    let rows = (0..seats)
-        .map(|row| {
-            let mut total = ava_wire::Tally::default();
-            let mut cells = vec![format!(
-                "{} {}",
-                row + 1,
-                record
-                    .seats
-                    .get(row)
-                    .map(|agent| format!(
-                        "<span class=\"{MUTED_CLASSES}\">{}</span>",
-                        escape(&agent.label())
-                    ))
-                    .unwrap_or_default()
-            )];
-
-            for column in 0..seats {
-                if row == column {
-                    cells.push(format!("<span class=\"{MUTED_CLASSES}\">\u{00b7}</span>"));
+    let mut met: Vec<Vec<Option<Met>>> = (0..seats)
+        .map(|_| (0..seats).map(|_| None).collect())
+        .collect();
+    for (index, round) in record.rounds.iter().enumerate() {
+        if round.finished_seconds.is_none() {
+            continue;
+        }
+        for pairing in tournament::pairings(record, round)? {
+            let mirrored = ava_wire::Tally {
+                won: pairing.tally.lost,
+                drawn: pairing.tally.drawn,
+                lost: pairing.tally.won,
+            };
+            for (row, column, view) in [
+                (pairing.first, pairing.second, pairing.tally),
+                (pairing.second, pairing.first, mirrored),
+            ] {
+                if row == column || row >= seats || column >= seats {
                     continue;
                 }
-
-                let fought = pairings.iter().find_map(|pairing| {
-                    if pairing.first == row && pairing.second == column {
-                        Some((
-                            pairing.tally,
-                            pairing.reason.as_deref(),
-                            pairing.run.as_deref(),
-                        ))
-                    } else if !ordered && pairing.first == column && pairing.second == row {
-                        Some((
-                            ava_wire::Tally {
-                                won: pairing.tally.lost,
-                                drawn: pairing.tally.drawn,
-                                lost: pairing.tally.won,
-                            },
-                            pairing.reason.as_deref(),
-                            pairing.run.as_deref(),
-                        ))
-                    } else {
-                        None
+                let cell = met[row][column].get_or_insert_with(Met::default);
+                cell.tally.won += view.won;
+                cell.tally.drawn += view.drawn;
+                cell.tally.lost += view.lost;
+                cell.rounds.push(match &pairing.reason {
+                    Some(reason) => {
+                        format!("round {}: {}, {reason}", index + 1, tally_label(&view))
                     }
+                    None => format!("round {}: {}", index + 1, tally_label(&view)),
                 });
-
-                match fought {
-                    Some((tally, None, Some(run))) if live && tally.rounds() == 0 => {
-                        let started = std::path::Path::new(docker::RUN_DIRECTORY)
-                            .join(run)
-                            .join(docker::RUN_FILE)
-                            .is_file();
-                        cells.push(played(
-                            &if started {
-                                pill(LIVE_PILL, true, "live")
-                            } else {
-                                pill(STARTING_PILL, true, "queued")
-                            },
-                            Some(run),
-                        ));
-                    }
-                    Some((tally, reason, run)) => {
-                        match tally.won.cmp(&tally.lost) {
-                            _ if tally.rounds() == 0 => {}
-                            std::cmp::Ordering::Greater => total.won += 1,
-                            std::cmp::Ordering::Equal => total.drawn += 1,
-                            std::cmp::Ordering::Less => total.lost += 1,
-                        }
-                        cells.push(pairing_cell(&tally, reason, run));
-                    }
-                    None => cells.push(String::new()),
-                }
             }
+        }
+    }
 
-            cells.push(format!(
-                "<span class=\"{MONO_CLASSES} {}\">{}</span>",
-                tint(&total),
-                tally_label(&total)
-            ));
+    Ok(met
+        .into_iter()
+        .enumerate()
+        .map(|(row, cells)| {
             cells
+                .into_iter()
+                .enumerate()
+                .map(|(column, cell)| {
+                    if row == column {
+                        return format!("<span class=\"{MUTED_CLASSES}\">\u{00b7}</span>");
+                    }
+                    let Some(cell) = cell else {
+                        return String::new();
+                    };
+                    let label = if cell.tally.rounds() == 0 {
+                        format!("<span class=\"{MUTED_CLASSES}\">none</span>")
+                    } else {
+                        format!(
+                            "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+                            tint(&cell.tally),
+                            tally_label(&cell.tally)
+                        )
+                    };
+                    explained(&label, &cell.rounds.join(" \u{00b7} "))
+                })
+                .collect()
         })
-        .collect();
-
-    table(&headers, rows, None)
+        .collect())
 }
 
 /// The colour of a tally from the view of its first side.
@@ -2423,41 +2389,6 @@ fn tint(tally: &ava_wire::Tally) -> &'static str {
         std::cmp::Ordering::Greater => AHEAD_CLASSES,
         std::cmp::Ordering::Less => BEHIND_CLASSES,
         std::cmp::Ordering::Equal => LEVEL_CLASSES,
-    }
-}
-
-/// A tally as `won-drawn-lost`, tinted by who came out ahead, with the reason
-/// behind it as a tooltip when there is one and the run that played it linked.
-/// One pairing of the cross table, from the view of the row: the tally of a
-/// fight with its run, `forfeit` tinted by who took it, or `none` for a
-/// pairing that saw no fight, the reason behind the hover either way.
-fn pairing_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) -> String {
-    let reason = reason.unwrap_or_default();
-    if tally.rounds() == 0 {
-        return played(&format!("<span class=\"{MUTED_CLASSES}\">none</span>"), run);
-    }
-
-    let label = if run.is_none() && !reason.is_empty() {
-        format!("<span class=\"{}\">forfeit</span>", tint(tally))
-    } else {
-        format!(
-            "<span class=\"{MONO_CLASSES} {}\">{}</span>",
-            tint(tally),
-            tally_label(tally)
-        )
-    };
-
-    played(&explained(&label, reason), run)
-}
-
-/// `label`, linking to the run that played the pairing when one did.
-fn played(label: &str, run: Option<&str>) -> String {
-    match run {
-        Some(run) => format!(
-            "<a class=\"hover:opacity-70 transition-opacity\" href=\"/run/{run}\">{label}</a>",
-            run = escape(run)
-        ),
-        None => label.to_string(),
     }
 }
 
@@ -3210,22 +3141,38 @@ fn meter(value: u64, ceiling: u64, fill: &str, label: &str, label_width: &str) -
     )
 }
 
-/// A table in a card whose `#` marked headers hold right-aligned numbers and
-/// whose `*` marked headers share the slack evenly. Without rows it shows
-/// `empty`, or nothing when there is no note to show.
+/// A table in a card. The markers leading a header set its column: `#`
+/// right-aligns numbers, `^` centers, `*` takes a share of the slack, and
+/// they combine. Without a `*` the last column takes the slack. Without rows
+/// the table shows `empty`, or nothing when there is no note to show.
 fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> String {
     if rows.is_empty() && empty.is_none() {
         return String::new();
     }
 
-    let numeric: Vec<bool> = headers
+    let markers = |header: &str| -> Vec<char> {
+        header
+            .chars()
+            .take_while(|character| MARKERS.contains(character))
+            .collect()
+    };
+    let alignment: Vec<&str> = headers
         .iter()
-        .map(|header| header.starts_with(NUMERIC_MARKER))
+        .map(|header| {
+            let markers = markers(header);
+            if markers.contains(&NUMERIC_MARKER) {
+                NUMERIC_CLASSES
+            } else if markers.contains(&CENTER_MARKER) {
+                CENTERED_CLASSES
+            } else {
+                ""
+            }
+        })
         .collect();
     let mut slack: Vec<usize> = headers
         .iter()
         .enumerate()
-        .filter(|(_, header)| header.starts_with(SLACK_MARKER))
+        .filter(|(_, header)| markers(header).contains(&SLACK_MARKER))
         .map(|(index, _)| index)
         .collect();
     if slack.is_empty() {
@@ -3239,19 +3186,28 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
         }
     };
 
+    // The slack columns are the same width, so a block of packed columns
+    // between two of them sits where their contents do not push it.
+    let share = format!(" style=\"width:{}%\"", 100 / slack.len().max(1));
     let mut html = format!(
         "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"><thead><tr>"
     );
-    for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
-        let align = if *numeric { "text-right" } else { "text-left" };
+    for (index, (header, alignment)) in headers.iter().zip(&alignment).enumerate() {
+        let align = match *alignment {
+            NUMERIC_CLASSES => "text-right",
+            CENTERED_CLASSES => "text-center",
+            _ => "text-left",
+        };
         let classes = column(index);
+        let width = if slack.contains(&index) {
+            share.as_str()
+        } else {
+            ""
+        };
         let (title, tooltip) = header.split_once(TOOLTIP_SEPARATOR).unwrap_or((header, ""));
         html.push_str(&format!(
-            "<th class=\"{classes} {HEADER_CLASSES} {align}\">{}</th>",
-            explained(
-                title.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER]),
-                tooltip
-            )
+            "<th class=\"{classes} {HEADER_CLASSES} {align}\"{width}>{}</th>",
+            explained(title.trim_start_matches(MARKERS), tooltip)
         ));
     }
     html.push_str("</tr></thead><tbody>");
@@ -3266,8 +3222,7 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
 
     for row in rows {
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
-        for (index, (cell, numeric)) in row.iter().zip(&numeric).enumerate() {
-            let align = if *numeric { NUMERIC_CLASSES } else { "" };
+        for (index, (cell, align)) in row.iter().zip(&alignment).enumerate() {
             let classes = column(index);
             html.push_str(&format!(
                 "<td class=\"{classes} {CELL_CLASSES} {align}\">{cell}</td>"
