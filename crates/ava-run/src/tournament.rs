@@ -623,10 +623,13 @@ pub fn play_round(
         record.game
     );
 
+    let analyses = Analyses::new(name, record.analyst.clone(), parallel);
     let seat_runs: Vec<(docker::Launch, String)> = launches.into_iter().zip(runs.clone()).collect();
     let outcomes = bounded(seat_runs.len(), parallel, |index| {
         let (launch, run) = &seat_runs[index];
-        docker::play(launch, run)
+        let outcome = docker::play(launch, run);
+        analyses.start(run);
+        outcome
     });
 
     let mut code = 0;
@@ -668,15 +671,15 @@ pub fn play_round(
         ava_game::Playout::Automated => {
             fight_round(name, &record, round, &entries, &mut code)?;
         }
-        ava_game::Playout::Played { challenge } => {
+        ava_game::Playout::Played { .. } => {
             let attacked = attack_round(
                 name,
                 &record,
-                challenge,
                 &runs,
                 &entries,
                 force_build_images,
                 parallel,
+                &analyses,
             )?;
             if code == 0 {
                 code = attacked;
@@ -693,12 +696,110 @@ pub fn play_round(
         Ok(())
     })?;
     log::info!("{name}: round {round} is over");
-
-    if let Some(analyst) = &record.analyst {
-        analyze_round(name, analyst, parallel)?;
-    }
+    analyses.finish();
 
     Ok(code)
+}
+
+/// The analyses of a round: every run is analyzed the moment it is over, in
+/// parallel with whatever the round still plays, under the same cap as the
+/// runs. A failed analysis is logged and fails nothing, the run page offers
+/// it again.
+struct Analyses {
+    name: String,
+    analyst: Option<ava_wire::Agent>,
+    /// The queue the capped workers take runs from.
+    queue: Option<std::sync::Mutex<std::sync::mpsc::Sender<String>>>,
+    handles: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl Analyses {
+    /// Ready to analyze the runs of the named tournament with `analyst`, at
+    /// most `parallel` at a time, or as many as end without a cap.
+    fn new(name: &str, analyst: Option<ava_wire::Agent>, parallel: Option<usize>) -> Self {
+        let mut analyses = Self {
+            name: name.to_string(),
+            analyst,
+            queue: None,
+            handles: std::sync::Mutex::new(Vec::new()),
+        };
+
+        if let (Some(analyst), Some(workers)) = (&analyses.analyst, parallel) {
+            let (sender, receiver) = std::sync::mpsc::channel::<String>();
+            let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+            let mut handles = Vec::new();
+            for _ in 0..workers.max(1) {
+                let receiver = receiver.clone();
+                let name = analyses.name.clone();
+                let analyst = analyst.clone();
+                handles.push(std::thread::spawn(move || {
+                    loop {
+                        let next = receiver.lock().expect("the queue is not poisoned").recv();
+                        let Ok(run) = next else {
+                            return;
+                        };
+                        analyze(&name, &analyst, &run);
+                    }
+                }));
+            }
+            analyses.queue = Some(std::sync::Mutex::new(sender));
+            analyses.handles = std::sync::Mutex::new(handles);
+        }
+
+        analyses
+    }
+
+    /// Analyze `run`, unless the tournament has no analyst.
+    fn start(&self, run: &str) {
+        let Some(analyst) = &self.analyst else {
+            return;
+        };
+
+        if let Some(queue) = &self.queue {
+            let _ = queue
+                .lock()
+                .expect("the queue is not poisoned")
+                .send(run.to_string());
+            return;
+        }
+
+        let name = self.name.clone();
+        let analyst = analyst.clone();
+        let run = run.to_string();
+        self.handles
+            .lock()
+            .expect("the handles are not poisoned")
+            .push(std::thread::spawn(move || analyze(&name, &analyst, &run)));
+    }
+
+    /// Wait for every analysis started.
+    fn finish(self) {
+        drop(self.queue);
+        for handle in self
+            .handles
+            .into_inner()
+            .expect("the handles are not poisoned")
+        {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Analyze `run` of the named tournament with `analyst`, logging a failure.
+fn analyze(name: &str, analyst: &ava_wire::Agent, run: &str) {
+    log::info!("{name}: analyzing {run} with {}", analyst.label());
+    let outcome = docker::analyze(&docker::Analyze {
+        run: run.to_string(),
+        analyst: docker::Analyst {
+            name: analyst.harness.clone(),
+            model: analyst.model.clone(),
+            thinking: analyst.thinking.clone(),
+        },
+        limit: docker::Analyze::DEFAULT_LIMIT_SECONDS,
+    });
+    if let Err(error) = outcome {
+        log::error!("{name}: the analysis of {run} failed: {error}");
+    }
 }
 
 /// Play `runs` with at most `parallel` sandboxes at a time, or all at once
@@ -843,16 +944,22 @@ fn fight_round(
 /// other seat in a run of the `challenge` game, all at once. Each pairing is
 /// recorded with its run as the attack starts, without rounds, and completed
 /// as the run ends. The attacks on a seat that left no entry are forfeited to
-/// the attacker.
+/// the attacker, and count for nothing when the attacker left none either.
 fn attack_round(
     name: &str,
     record: &ava_wire::Tournament,
-    challenge: &str,
     runs: &[String],
     entries: &[Option<crate::runs::Entry>],
     force_build_images: bool,
     parallel: Option<usize>,
+    analyses: &Analyses,
 ) -> std::io::Result<i32> {
+    let ava_game::Playout::Played { challenge } = find(&record.game)?.playout() else {
+        return Err(std::io::Error::other(format!(
+            "{} has no played playout",
+            record.game
+        )));
+    };
     let mut attacks: Vec<(docker::Launch, String)> = Vec::new();
     let mut seats: std::collections::HashMap<String, (usize, usize)> =
         std::collections::HashMap::new();
@@ -863,14 +970,16 @@ fn attack_round(
             }
 
             let Some(kept) = &entries[defender] else {
+                let (tally, reason) =
+                    forfeit(attacker, entries[attacker].is_some(), defender, false);
                 record_pairing(
                     name,
                     ava_wire::Pairing {
                         first: attacker,
                         second: defender,
                         seconds: crate::usage::epoch_now(),
-                        tally: ava_wire::Tally::FIRST_WON,
-                        reason: Some(no_entry(defender)),
+                        tally,
+                        reason,
                         run: None,
                     },
                 )?;
@@ -942,6 +1051,7 @@ fn attack_round(
                 .unwrap_or_default()
         );
         complete_pairing(name, run, tally, reason)?;
+        analyses.start(run);
         outcome
     });
 
@@ -958,53 +1068,4 @@ fn attack_round(
     }
 
     Ok(code)
-}
-
-/// Analyze every run of the last round of the named tournament with
-/// `analyst`, the runs of the seats and the runs of the attacks alike, under
-/// the same cap as the round. A failed analysis is logged and fails nothing,
-/// the run page offers it again.
-fn analyze_round(
-    name: &str,
-    analyst: &ava_wire::Agent,
-    parallel: Option<usize>,
-) -> std::io::Result<()> {
-    let record = load(name)?;
-    let round = record.rounds.last().expect("the round was written");
-    let runs: Vec<&str> = round
-        .entries
-        .iter()
-        .map(|entry| entry.run.as_str())
-        .chain(
-            round
-                .pairings
-                .iter()
-                .filter_map(|pairing| pairing.run.as_deref()),
-        )
-        .collect();
-    log::info!(
-        "{name}: analyzing the {} runs of round {} with {}",
-        runs.len(),
-        record.rounds.len(),
-        analyst.label()
-    );
-
-    let outcomes = bounded(runs.len(), parallel, |index| {
-        docker::analyze(&docker::Analyze {
-            run: runs[index].to_string(),
-            analyst: docker::Analyst {
-                name: analyst.harness.clone(),
-                model: analyst.model.clone(),
-                thinking: analyst.thinking.clone(),
-            },
-            limit: docker::Analyze::DEFAULT_LIMIT_SECONDS,
-        })
-    });
-    for (run, outcome) in runs.iter().zip(outcomes) {
-        if let Err(error) = outcome {
-            log::error!("{name}: the analysis of {run} failed: {error}");
-        }
-    }
-
-    Ok(())
 }

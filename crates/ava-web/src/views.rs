@@ -794,7 +794,11 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                 })
                 .collect();
             body.push_str(&format!(
-                "<p class=\"{TITLE_CLASSES}\">entries <span class=\"{NOTE_CLASSES} font-normal\">what the passing pushes left, ranked as the game ranks them today</span></p>"
+                "<p class=\"{TITLE_CLASSES}\">{}</p>",
+                explained(
+                    "entries",
+                    "what the passing pushes left, ranked as the game ranks them today"
+                )
             ));
             body.push_str(&table(
                 &["#SECONDS", "#BYTES", "*POINTS", "", "FILE"],
@@ -932,7 +936,11 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         .collect();
 
     let body = format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">scoreboard <span class=\"{NOTE_CLASSES} font-normal\">the best entry of every pairing, ranked as the games rank today</span></p>{}",
+        "<p class=\"{FIRST_TITLE_CLASSES}\">{}</p>{}",
+        explained(
+            "scoreboard",
+            "the best entry of every pairing, ranked as the games rank today"
+        ),
         table(
             &[
                 "GAME", "MODEL", "HARNESS", "#RUNS", "#PASSED", "*BEST", "#SECONDS",
@@ -961,20 +969,20 @@ pub(crate) fn games_page() -> std::io::Result<String> {
 
         let playout = ava_game::find(&game)
             .filter(|game| game.playout() == ava_game::Playout::Automated)
-            .map(|_| ", played in tournaments")
+            .map(|_| "the entries fight each other in tournaments")
             .unwrap_or_default();
         let record = match standing.first() {
             Some((best, record)) => match record.points {
                 Some(points) => format!(
-                    "{} runs, {passed} passed, the record is {points} by {} on {}{playout}",
+                    "{} runs, {passed} passed, the record is {points} by {} on {}",
                     played.len(),
                     escape(&best.run.model),
                     best.agent()
                 ),
-                None => format!("{} runs, {passed} passed{playout}", played.len()),
+                None => format!("{} runs, {passed} passed", played.len()),
             },
-            None if played.is_empty() => format!("not played yet{playout}"),
-            None => format!("{} runs, none passing{playout}", played.len()),
+            None if played.is_empty() => "not played yet".to_string(),
+            None => format!("{} runs, none passing", played.len()),
         };
 
         let title_classes = if index == 0 {
@@ -984,7 +992,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         };
         body.push_str(&format!(
             "<p class=\"{title_classes}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{record}</span></p>",
-            escape(&game)
+            explained(&escape(&game), playout)
         ));
 
         let task = std::fs::read_to_string(
@@ -1241,13 +1249,11 @@ pub(crate) fn tournament_page(
         })
         .collect();
     body.push_str(&format!(
-        "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">lobby <span class=\"{NOTE_CLASSES} font-normal\">{} seats{}</span></p>{}</div>",
-        record.seats.len(),
-        if record.played() {
-            ", fixed by the rounds played"
-        } else {
-            ""
-        },
+        "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
+        explained(
+            "lobby",
+            "the seats of the tournament, joining between rounds and fixed once a round was played"
+        ),
         table(
             &["#SEAT", "HARNESS", "*MODEL", "#ROUNDS", ""],
             seat_rows,
@@ -1268,37 +1274,42 @@ pub(crate) fn tournament_page(
     // The standings.
     let standings = standings(&record)?;
     if !standings.is_empty() {
-        let matches = tournament::matches(&record)?.len();
         let rows = standings
             .iter()
             .map(|standing| {
                 vec![
                     escape(&standing.agent),
                     standing.seats.to_string(),
-                    standing.matches.to_string(),
-                    standing.tally.won.to_string(),
-                    standing.tally.drawn.to_string(),
-                    standing.tally.lost.to_string(),
+                    tally_label(&standing.fights),
+                    standing
+                        .rounds
+                        .score()
+                        .map(|score| format!("{score:.2}"))
+                        .unwrap_or_default(),
                     rating_label(standing.elo),
                     rating_label(standing.bradley_terry),
                 ]
             })
             .collect();
         body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES}\">standings <span class=\"{NOTE_CLASSES} font-normal\">derived from the {matches} matches of the finished rounds{}, Bradley-Terry first</span></p>{}",
-            if compared {
-                ", the entries compared by their points"
-            } else {
-                ""
-            },
+            "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
+            explained(
+                "standings",
+                &format!(
+                    "derived from the matches of the finished rounds between different agents{}, ordered by Bradley-Terry",
+                    if compared {
+                        ", the entries compared by their points"
+                    } else {
+                        ""
+                    }
+                )
+            ),
             table(
                 &[
                     "*AGENT",
                     "#SEATS|the seats the agent holds, two seats of one agent count as one entry here",
-                    "#MATCHES|the pairings against another agent that saw a round fought",
-                    "#WON|rounds won across every pairing",
-                    "#DRAWN",
-                    "#LOST",
+                    "#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
+                    "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
                     "#ELO|updated in match order, anchored at 1000",
                     "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
                 ],
@@ -1412,9 +1423,12 @@ pub(crate) fn tournament_page(
 struct Standing {
     agent: String,
     seats: usize,
-    matches: usize,
-    /// The rounds across every pairing, from the agent's view.
-    tally: ava_wire::Tally,
+    /// The fights against another agent by outcome, from the agent's view: a
+    /// fight with more rounds won than lost is won.
+    fights: ava_wire::Tally,
+    /// The rounds across those fights, from the agent's view, whose share
+    /// won is the score.
+    rounds: ava_wire::Tally,
     elo: Option<f64>,
     bradley_terry: Option<f64>,
 }
@@ -1447,24 +1461,32 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
     let mut standings: Vec<Standing> = agents
         .into_iter()
         .map(|agent| {
-            let mut tally = ava_wire::Tally::default();
-            let mut played = 0;
+            let mut fights = ava_wire::Tally::default();
+            let mut rounds = ava_wire::Tally::default();
             for pairing in &pairings {
                 let first = record.seats.get(pairing.first).map(ava_wire::Agent::label);
                 let second = record.seats.get(pairing.second).map(ava_wire::Agent::label);
                 if first == second || pairing.tally.rounds() == 0 {
                     continue;
                 }
-                if first.as_deref() == Some(&agent) {
-                    played += 1;
-                    tally.won += pairing.tally.won;
-                    tally.drawn += pairing.tally.drawn;
-                    tally.lost += pairing.tally.lost;
+                let view = if first.as_deref() == Some(&agent) {
+                    pairing.tally
                 } else if second.as_deref() == Some(&agent) {
-                    played += 1;
-                    tally.won += pairing.tally.lost;
-                    tally.drawn += pairing.tally.drawn;
-                    tally.lost += pairing.tally.won;
+                    ava_wire::Tally {
+                        won: pairing.tally.lost,
+                        drawn: pairing.tally.drawn,
+                        lost: pairing.tally.won,
+                    }
+                } else {
+                    continue;
+                };
+                rounds.won += view.won;
+                rounds.drawn += view.drawn;
+                rounds.lost += view.lost;
+                match view.won.cmp(&view.lost) {
+                    std::cmp::Ordering::Greater => fights.won += 1,
+                    std::cmp::Ordering::Equal => fights.drawn += 1,
+                    std::cmp::Ordering::Less => fights.lost += 1,
                 }
             }
 
@@ -1474,8 +1496,8 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
                     .iter()
                     .filter(|seat| seat.label() == agent)
                     .count(),
-                matches: played,
-                tally,
+                fights,
+                rounds,
                 elo: rating(&elo, &agent),
                 bradley_terry: rating(&bradley_terry, &agent),
                 agent,
@@ -1495,6 +1517,11 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
 }
 
 /// A rating rounded to the point, or nothing for an agent without matches.
+/// A tally as won-drawn-lost.
+fn tally_label(tally: &ava_wire::Tally) -> String {
+    format!("{}-{}-{}", tally.won, tally.drawn, tally.lost)
+}
+
 fn rating_label(rating: Option<f64>) -> String {
     rating
         .map(|rating| format!("{}", rating.round() as i64))
@@ -1520,7 +1547,10 @@ fn cross_table(
         "*SEAT".to_string()
     }];
     headers.extend((1..=seats).map(|seat| format!("#{seat}")));
-    headers.push("#TOTAL|rounds won, drawn and lost across the row".to_string());
+    headers.push(
+        "#TOTAL|fights won, drawn and lost across the row, forfeits included, pairings without a fight left out"
+            .to_string(),
+    );
     let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
 
     let rows = (0..seats)
@@ -1584,35 +1614,105 @@ fn cross_table(
                         ));
                     }
                     Some((tally, reason, run)) => {
-                        total.won += tally.won;
-                        total.drawn += tally.drawn;
-                        total.lost += tally.lost;
-                        cells.push(tally_cell(&tally, reason, run));
+                        match tally.won.cmp(&tally.lost) {
+                            _ if tally.rounds() == 0 => {}
+                            std::cmp::Ordering::Greater => total.won += 1,
+                            std::cmp::Ordering::Equal => total.drawn += 1,
+                            std::cmp::Ordering::Less => total.lost += 1,
+                        }
+                        cells.push(pairing_cell(&tally, reason, run));
                     }
                     None => cells.push(String::new()),
                 }
             }
 
-            cells.push(tally_cell(&total, None, None));
+            cells.push(format!(
+                "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+                tint(&total),
+                tally_label(&total)
+            ));
             cells
         })
         .collect();
 
-    table(&headers, rows, None)
+    format!(
+        "<p class=\"{NOTE_CLASSES} mb-2\">{}</p>{}",
+        round_summary(round, pairings),
+        table(&headers, rows, None)
+    )
+}
+
+/// One line on what a round came to: who left an entry and what became of
+/// the pairings.
+fn round_summary(round: &ava_wire::Round, pairings: &[ava_wire::Pairing]) -> String {
+    let entries = round
+        .entries
+        .iter()
+        .filter(|entry| entry.attempt.is_some())
+        .count();
+    let mut fought = 0;
+    let mut forfeited = 0;
+    let mut unplayed = 0;
+    let mut playing = 0;
+    for pairing in pairings {
+        match (pairing.tally.rounds(), &pairing.reason, &pairing.run) {
+            (0, None, Some(_)) => playing += 1,
+            (0, _, _) => unplayed += 1,
+            (_, Some(_), None) => forfeited += 1,
+            _ => fought += 1,
+        }
+    }
+
+    let mut parts = vec![format!(
+        "{entries} of {} seats left an entry",
+        round.entries.len()
+    )];
+    for (count, what) in [
+        (fought, "fought"),
+        (forfeited, "forfeited"),
+        (unplayed, "without a fight"),
+        (playing, "playing"),
+    ] {
+        if count > 0 {
+            parts.push(format!("{count} {what}"));
+        }
+    }
+
+    parts.join(" \u{00b7} ")
+}
+
+/// The colour of a tally from the view of its first side.
+fn tint(tally: &ava_wire::Tally) -> &'static str {
+    match tally.won.cmp(&tally.lost) {
+        std::cmp::Ordering::Greater => AHEAD_CLASSES,
+        std::cmp::Ordering::Less => BEHIND_CLASSES,
+        std::cmp::Ordering::Equal => LEVEL_CLASSES,
+    }
 }
 
 /// A tally as `won-drawn-lost`, tinted by who came out ahead, with the reason
 /// behind it as a tooltip when there is one and the run that played it linked.
-fn tally_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) -> String {
-    let tint = match tally.won.cmp(&tally.lost) {
-        std::cmp::Ordering::Greater => AHEAD_CLASSES,
-        std::cmp::Ordering::Less => BEHIND_CLASSES,
-        std::cmp::Ordering::Equal => LEVEL_CLASSES,
+/// One pairing of the cross table, from the view of the row: the tally of a
+/// fight with its run, `forfeit` tinted by who took it, or `none` for a
+/// pairing that saw no fight, the reason behind the hover either way.
+fn pairing_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) -> String {
+    let reason = reason.unwrap_or_default();
+    if tally.rounds() == 0 {
+        return explained(
+            &format!("<span class=\"{MUTED_CLASSES}\">none</span>"),
+            reason,
+        );
+    }
+
+    let label = if run.is_none() && !reason.is_empty() {
+        format!("<span class=\"{}\">forfeit</span>", tint(tally))
+    } else {
+        format!(
+            "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+            tint(tally),
+            tally_label(tally)
+        )
     };
-    let label = format!(
-        "<span class=\"{MONO_CLASSES} {tint}\">{}-{}-{}</span>",
-        tally.won, tally.drawn, tally.lost
-    );
     let played = match run {
         Some(run) => format!(
             " <a class=\"{LINK_CLASSES} text-xs\" href=\"/run/{run}\">run</a>",
@@ -1621,7 +1721,7 @@ fn tally_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) 
         None => String::new(),
     };
 
-    format!("{}{played}", explained(&label, reason.unwrap_or_default()))
+    format!("{}{played}", explained(&label, reason))
 }
 
 /// The registry, the credentials and the docker images runs are built from.
@@ -1721,7 +1821,11 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         .collect();
 
     let mut body = format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">backends <span class=\"{NOTE_CLASSES} font-normal\">with the key of each and the usage recorded over every run on disk</span></p>"
+        "<p class=\"{FIRST_TITLE_CLASSES}\">{}</p>",
+        explained(
+            "backends",
+            "with the key of each and the usage recorded over every run on disk"
+        )
     );
     body.push_str(&table(
         &[
@@ -1742,7 +1846,8 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         None,
     ));
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">limits <span class=\"{NOTE_CLASSES} font-normal\">as each backend reports them when asked: {}</span></p>",
+        "<p class=\"{TITLE_CLASSES}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{}</span></p>",
+        explained("limits", "as each backend reports them when asked"),
         sources.join(", ")
     ));
     body.push_str(&table(
