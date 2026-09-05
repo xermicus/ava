@@ -2230,6 +2230,15 @@ fn analysis_mounts(run: &str) -> std::io::Result<Vec<String>> {
 
 fn read_only_mount(source: &str, target: &str) -> std::io::Result<String> {
     let source = std::env::current_dir()?.join(source);
+    // Docker creates a missing bind source as a root owned directory, which
+    // then blocks git from writing there.
+    if !source.exists() {
+        return Err(std::io::Error::other(format!(
+            "{} does not exist, nothing to mount at {target}",
+            source.display()
+        )));
+    }
+
     Ok(format!("{}:{target}{READ_ONLY}", source.display()))
 }
 
