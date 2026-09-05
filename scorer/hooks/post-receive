@@ -9,12 +9,13 @@ set -uo pipefail
 
 HOME_DIR=/home/agent
 GAME=$(cat "$HOME_DIR/game")
+TURN=$(cat "$HOME_DIR/turn")
 STARTED=$(cat "$HOME_DIR/started")
 
-# The entry this run attacks, mounted by ava when the run plays a pairing.
-CHALLENGE=()
-if [ -d "$HOME_DIR/challenge" ]; then
-	CHALLENGE=(--challenge "$HOME_DIR/challenge")
+# The inputs of the turn, the entries of the other seats, mounted by ava.
+INPUTS=()
+if [ -d "$HOME_DIR/inputs" ]; then
+	INPUTS=(--inputs "$HOME_DIR/inputs")
 fi
 
 while read -r _ new ref; do
@@ -34,7 +35,7 @@ while read -r _ new ref; do
 	mkdir "$scratch/submission"
 	git archive "$new" | tar -x -C "$scratch/submission"
 
-	report=$(cd "$scratch" && timeout 90 ava score --game "$GAME" "${CHALLENGE[@]}" 2>"$scratch/stderr")
+	report=$(cd "$scratch" && timeout 90 ava score --game "$GAME" --turn "$TURN" "${INPUTS[@]}" 2>"$scratch/stderr")
 	status=$?
 
 	if [ $status -ne 0 ]; then
@@ -51,6 +52,8 @@ verdict = report["verdict"]
 attempt = {"seconds": seconds, "passed": verdict["passed"]}
 if verdict.get("reason"):
     attempt["reason"] = verdict["reason"]
+if verdict.get("defeated"):
+    attempt["defeated"] = verdict["defeated"]
 if verdict["passed"]:
     kept = os.path.join(home, "entries", str(seconds))
     os.makedirs(kept, exist_ok=True)

@@ -251,7 +251,8 @@ impl ScoreCli {
     const ATTEMPTS_LONG: &str = "attempts";
     const FIGHT_LONG: &str = "fight";
     const COMBATS_LONG: &str = "combats";
-    const CHALLENGE_LONG: &str = "challenge";
+    const TURN_LONG: &str = "turn";
+    const INPUTS_LONG: &str = "inputs";
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
@@ -272,8 +273,12 @@ impl ScoreCli {
             "the combats the fight plays, 1 by default",
         );
         arg_help_str(
-            &format!("--{}", Self::CHALLENGE_LONG),
-            "the directory holding the entry the submission attacks",
+            &format!("--{}", Self::TURN_LONG),
+            "the turn of the game the submission plays, counted from 0 like the records",
+        );
+        arg_help_str(
+            &format!("--{}", Self::INPUTS_LONG),
+            "the directory holding the inputs of the turn, the entries of the other seats by name",
         );
         arg_help_str(
             &format!("--{}", Self::ATTEMPTS_LONG),
@@ -291,9 +296,11 @@ impl ScoreCli {
                 Self::ATTEMPTS_LONG
             ));
         }
-        if (command.fight.is_some() || command.challenge.is_some()) && command.game.is_none() {
+        if (command.fight.is_some() || command.turn.is_some() || command.inputs.is_some())
+            && command.game.is_none()
+        {
             fail(&format!(
-                "a fight or a challenge needs the game, pass it with --{}",
+                "a fight, a turn or inputs need the game, pass it with --{}",
                 Self::GAME_LONG
             ));
         }
@@ -762,15 +769,27 @@ impl Parser {
                 };
                 command.analyst = Some(analyst);
             }
-            ScoreCli::CHALLENGE_LONG => {
-                let directory = Self::long_value(args, next, "missing challenge directory");
+            ScoreCli::TURN_LONG => {
+                let turn = Self::long_value(args, next, "missing turn");
                 let Some(SubCommand::Score(ref mut command)) = self.command else {
                     bail(
                         next,
                         &format!("only valid in the {} subcommand", ScoreCli::NAME),
                     );
                 };
-                command.challenge = Some(directory);
+                command.turn = Some(turn.parse().unwrap_or_else(|_| {
+                    bail(next, "the turn is a number counted from 0");
+                }));
+            }
+            ScoreCli::INPUTS_LONG => {
+                let directory = Self::long_value(args, next, "missing inputs directory");
+                let Some(SubCommand::Score(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", ScoreCli::NAME),
+                    );
+                };
+                command.inputs = Some(directory);
             }
             RemoteCli::SOCKET_LONG => {
                 let socket = Self::long_value(args, next, "missing socket path");

@@ -42,11 +42,14 @@ const TIMEOUT_STATUS: i32 = 124;
 /// The host a posted tar is scored under.
 const SCORER_HOST: &str = "score";
 
-/// Written by the scorer entrypoint next to the repository.
+/// Written by the scorer entrypoint next to the repository: the game, and the
+/// turn of it the run plays.
 const GAME_FILE: &str = "game";
+const TURN_FILE: &str = "turn";
 
-/// Mounted next to the repository when the run attacks the entry of another.
-const CHALLENGE_DIRECTORY: &str = "challenge";
+/// Mounted next to the repository when the turn has inputs, the entries of the
+/// other seats by name.
+const INPUTS_DIRECTORY: &str = "inputs";
 
 /// One scratch directory is enough, requests are answered one at a time.
 const SCRATCH_PREFIX: &str = "ava-score-";
@@ -151,30 +154,33 @@ fn score(request: &mut tiny_http::Request, root: &str) -> std::io::Result<Answer
     };
 
     let game = std::fs::read_to_string(std::path::Path::new(root).join(GAME_FILE))?;
+    let turn = std::fs::read_to_string(std::path::Path::new(root).join(TURN_FILE))?;
 
     let scratch = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(scratch.join(crate::score::SUBMISSION_DIRECTORY))?;
 
-    let challenge = std::path::Path::new(root).join(CHALLENGE_DIRECTORY);
+    let inputs = std::path::Path::new(root).join(INPUTS_DIRECTORY);
     let answer = unpack_and_score(
         &scratch,
         &tarball,
         game.trim(),
-        challenge.is_dir().then_some(challenge.as_path()),
+        turn.trim(),
+        inputs.is_dir().then_some(inputs.as_path()),
     );
     let _ = std::fs::remove_dir_all(&scratch);
 
     answer
 }
 
-/// Unpack `tarball` under `scratch` and run the verifier over it, against the
-/// `challenge` when the run attacks one.
+/// Unpack `tarball` under `scratch` and run the verifier of `turn` over it,
+/// with the `inputs` of the turn when it has any.
 fn unpack_and_score(
     scratch: &std::path::Path,
     tarball: &[u8],
     game: &str,
-    challenge: Option<&std::path::Path>,
+    turn: &str,
+    inputs: Option<&std::path::Path>,
 ) -> std::io::Result<Answer> {
     let archive = scratch.join(TARBALL_FILE);
     std::fs::write(&archive, tarball)?;
@@ -199,9 +205,9 @@ fn unpack_and_score(
     verifier
         .arg(SCORE_TIMEOUT_SECONDS)
         .arg(std::env::current_exe()?)
-        .args(["score", "--game", game]);
-    if let Some(challenge) = challenge {
-        verifier.arg("--challenge").arg(challenge);
+        .args(["score", "--game", game, "--turn", turn]);
+    if let Some(inputs) = inputs {
+        verifier.arg("--inputs").arg(inputs);
     }
     let scored = verifier.current_dir(scratch).output()?;
 

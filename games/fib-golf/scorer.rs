@@ -41,20 +41,24 @@ const OUTPUT_LIMIT: u64 = 1 << 20;
 /// The fib-golf game, verified by running the submitted ELF and ranked by its size.
 pub struct FibGolf;
 
+/// The one turn of the game.
+const TURNS: [crate::Turn; 1] = [crate::single_turn(SUBMISSION_BINARY)];
+
 impl crate::Game for FibGolf {
     fn name(&self) -> &'static str {
         GAME_NAME
     }
 
-    fn entry(&self) -> &'static str {
-        SUBMISSION_BINARY
+    fn turns(&self) -> &[crate::Turn] {
+        &TURNS
     }
 
     /// Verify the ELF submitted as `fibonacci` by running it for every N.
     fn verify(
         &self,
+        _turn: usize,
         submission: &std::path::Path,
-        _challenge: Option<&std::path::Path>,
+        _inputs: &std::path::Path,
     ) -> std::io::Result<ava_wire::Verdict> {
         let binary = submission.join(SUBMISSION_BINARY);
 

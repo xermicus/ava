@@ -5,6 +5,12 @@
 /// the metrics and the end it holds.
 const LEGACY_REPORT_FILE: &str = "score.json";
 
+/// The game the attacks of a crackme tournament were recorded as before the
+/// attack became a turn of the crackme game itself, and the turn they read as.
+const LEGACY_ATTACK_GAME: &str = "crackme-solve";
+const LEGACY_ATTACKED_GAME: &str = "crackme";
+const LEGACY_ATTACK_TURN: usize = 1;
+
 #[derive(Default, serde::Deserialize)]
 struct LegacyReport {
     #[serde(default)]
@@ -21,6 +27,20 @@ pub fn read(directory: &std::path::Path) -> std::io::Result<ava_wire::Run> {
         .map_err(|error| std::io::Error::other(format!("{}: {error}", path.display())))?;
     let mut run: ava_wire::Run = serde_json::from_str(&contents)
         .map_err(|error| std::io::Error::other(format!("{}: {error}", path.display())))?;
+
+    if run.game == LEGACY_ATTACK_GAME {
+        run.game = LEGACY_ATTACKED_GAME.to_string();
+    }
+    if let Some(challenge) = run.challenge.take() {
+        run.turn = LEGACY_ATTACK_TURN;
+        run.inputs.push(ava_wire::Input {
+            run: challenge.run,
+            attempt: challenge.attempt,
+            name: ava_game::find(&run.game)
+                .map(|game| game.turns()[0].entry.to_string())
+                .unwrap_or_default(),
+        });
+    }
 
     if run.finished_seconds.is_none() {
         let legacy = directory.join(LEGACY_REPORT_FILE);
@@ -79,10 +99,33 @@ pub struct Entry {
     pub points: Option<u64>,
 }
 
-/// Every entry the run in `directory` kept, oldest first.
+/// The file a passing push of `run` left as its entry: what the turn it
+/// plays asks for.
+pub fn kept_file(game: &dyn ava_game::Game, run: &ava_wire::Run) -> &'static str {
+    turn_entry(game, run.turn)
+}
+
+/// The file the task of `turn` asks for, the first turn's for a turn the game
+/// does not have.
+pub fn turn_entry(game: &dyn ava_game::Game, turn: usize) -> &'static str {
+    turn_of(game, turn).entry
+}
+
+/// The folder holding the task of `turn`, the first turn's for a turn the game
+/// does not have.
+pub fn turn_task(game: &dyn ava_game::Game, turn: usize) -> &'static str {
+    turn_of(game, turn).task
+}
+
+fn turn_of(game: &dyn ava_game::Game, turn: usize) -> &ava_game::Turn {
+    game.turns().get(turn).unwrap_or(&game.turns()[0])
+}
+
+/// Every entry the run in `directory` kept as `file`, oldest first.
 pub fn entries(
     game: &dyn ava_game::Game,
     directory: &std::path::Path,
+    file: &str,
 ) -> std::io::Result<Vec<Entry>> {
     let kept = directory.join(crate::docker::ENTRIES_DIRECTORY);
     let mut entries = Vec::new();
@@ -100,7 +143,7 @@ pub fn entries(
         else {
             continue;
         };
-        let path = attempt.path().join(game.entry());
+        let path = attempt.path().join(file);
         let Ok(metadata) = std::fs::metadata(&path) else {
             continue;
         };
@@ -123,8 +166,9 @@ pub fn entries(
 pub fn entry_of_record(
     game: &dyn ava_game::Game,
     directory: &std::path::Path,
+    file: &str,
 ) -> std::io::Result<Option<Entry>> {
-    Ok(entries(game, directory)?
+    Ok(entries(game, directory, file)?
         .into_iter()
         .max_by_key(|entry| (entry.points, entry.seconds)))
 }

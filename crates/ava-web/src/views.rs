@@ -5,12 +5,8 @@ use ava_game::scoring::Scoring;
 use ava_run::{docker, process, registry, runs, tournament, usage};
 
 const GAMES_DIRECTORY: &str = "games";
-const TASK_DIRECTORY: &str = "task";
 const TASK_FILE: &str = "task.md";
 const INSTRUCTIONS_FILE: &str = "README.md";
-
-/// How many passing runs a game lists on its standings.
-const STANDINGS_LIMIT: usize = 3;
 
 /// What the start panel offers preselected on a fresh page.
 const DEFAULT_GAME: &str = "sanity-check";
@@ -57,16 +53,23 @@ const NUMERIC_MARKER: char = '#';
 /// A `*` prefix on a header marks the column taking the slack of the row.
 const SLACK_MARKER: char = '*';
 
+/// A `^` marked header holds a centered column. The markers combine: `*#`
+/// is a right-aligned column taking slack, which pushes what follows it to
+/// the right edge.
+const CENTER_MARKER: char = '^';
+const MARKERS: [char; 3] = [NUMERIC_MARKER, SLACK_MARKER, CENTER_MARKER];
+
 /// Whatever follows a `|` in a header is the tooltip explaining that column
 /// rather than part of its title.
 const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
-const RUN_HEADERS: [&str; 11] = [
-    "RUN|the run directory under runs/, how long ago it started, and the tournament seat it plays",
+const RUN_HEADERS: [&str; 12] = [
+    "RUN|the run directory under runs/ and how long ago it started",
     "STATE|live or the last call while the run goes, whether a push passed the verifier once it is over",
     "ANALYSIS|whether an analyst was run over the finished run: analyzing, analyzed or failed",
     "GAME|the game that was played",
+    "TOURNAMENT|the tournament the run plays a seat in, or a dash for a run of its own",
     "MODEL|the model under test",
     "HARNESS|the harness driving the model, with the thinking level it was asked for",
     "*TIME|seconds spent of the time budget, red once the whole budget is gone",
@@ -78,6 +81,8 @@ const RUN_HEADERS: [&str; 11] = [
     "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
+/// What the tournament column shows for a run of its own.
+const NO_TOURNAMENT: &str = "-";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
 const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
 const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
@@ -105,6 +110,7 @@ const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoratio
 const CELL_CLASSES: &str = "py-2.5 border-t border-neutral-800 align-middle";
 const ROW_CLASSES: &str = "hover:bg-neutral-800/40 transition-colors";
 const NUMERIC_CLASSES: &str = "text-right font-mono tabular-nums";
+const CENTERED_CLASSES: &str = "text-center";
 const EMPTY_ROW_CLASSES: &str =
     "px-4 py-8 text-center text-neutral-500 border-t border-neutral-800";
 
@@ -185,7 +191,93 @@ const TILE_VALUE_CLASSES: &str =
     "mt-1 text-lg font-semibold text-neutral-100 font-mono tabular-nums";
 const TILE_TEXT_CLASSES: &str = "mt-1 text-sm font-semibold text-neutral-100 font-mono break-all";
 const TILE_DETAIL_CLASSES: &str = "mt-1 text-xs text-neutral-500 break-all";
+/// A tile listing names and links, one per line, none broken mid-word.
+const TILE_LIST_CLASSES: &str = "mt-1 text-sm text-neutral-100 font-mono";
 const TILE_GRID_CLASSES: &str = "mt-3 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3";
+
+/// The games page: a grid of cards, one per game, each folding out to the
+/// full width of the grid.
+const STOREFRONT_CLASSES: &str =
+    "grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start";
+const GAME_CARD_CLASSES: &str = "group rounded-lg border border-neutral-800 bg-neutral-900 \
+     overflow-hidden open:col-span-full";
+const GAME_FACE_CLASSES: &str = "block cursor-pointer list-none [&::-webkit-details-marker]:hidden \
+     p-4 hover:bg-neutral-800/40 transition-colors focus-visible:outline-none \
+     focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/50";
+const GAME_NAME_CLASSES: &str = "font-mono text-sm font-semibold text-neutral-100";
+const GAME_TAGLINE_CLASSES: &str = "flex items-baseline justify-between gap-3 mt-1";
+const FACT_VALUE_CLASSES: &str = "font-mono tabular-nums text-neutral-100";
+const CHEVRON_CLASSES: &str = "h-4 w-4 shrink-0 text-neutral-500 transition-transform \
+     motion-reduce:transition-none group-open:rotate-180";
+const GAME_BODY_CLASSES: &str = "border-t border-neutral-800 px-4 pb-4";
+/// Between the tasks of the turns of a game with several.
+const TASK_SEPARATOR: &str = "<hr class=\"my-6 border-neutral-800\">";
+
+/// The pill naming one turn of a game with several.
+const TURN_PILL: &str = "bg-neutral-800 text-neutral-400";
+
+/// The graph of a round: nodes of one size on a grid of turns and seats,
+/// edges bending between the columns, text set in the font size of the page.
+const GRAPH_NODE_WIDTH: f64 = 260.0;
+const GRAPH_NODE_HEIGHT: f64 = 54.0;
+const GRAPH_COLUMN_GAP: f64 = 88.0;
+const GRAPH_ROW_GAP: f64 = 12.0;
+const GRAPH_HEADER_HEIGHT: f64 = 28.0;
+const GRAPH_PADDING: f64 = 2.0;
+const GRAPH_TEXT_INSET: f64 = 12.0;
+const GRAPH_LINE_ONE: f64 = 21.0;
+const GRAPH_LINE_TWO: f64 = 41.0;
+const GRAPH_DOT_LIFT: f64 = 4.0;
+/// The dot sits before the state word, whose width is estimated per character.
+const GRAPH_CHARACTER_WIDTH: f64 = 6.6;
+const GRAPH_DOT_GAP: f64 = 9.0;
+const GRAPH_FONT_SIZE: u32 = 12;
+const GRAPH_LABEL_CHARS: usize = 34;
+const GRAPH_CLASSES: &str = "font-sans";
+const GRAPH_HEADER_TEXT_CLASSES: &str = "fill-neutral-500 font-mono";
+const GRAPH_NODE_CLASSES: &str =
+    "fill-neutral-950 stroke-neutral-800 hover:stroke-neutral-600 transition-colors";
+const GRAPH_LABEL_CLASSES: &str = "fill-neutral-300";
+const GRAPH_POINTS_CLASSES: &str = "fill-amber-400 font-mono";
+const GRAPH_RUN_CLASSES: &str = "fill-indigo-300 font-mono";
+const GRAPH_STATE_CLASSES: &str = "font-medium";
+const GRAPH_EDGE_CLASSES: &str = "stroke-neutral-700";
+/// What is not played yet is drawn faded and its edges dashed.
+const GRAPH_PLANNED_CLASSES: &str = "opacity-40";
+const GRAPH_PLANNED_DASH: &str = "4 4";
+const GRAPH_PLANNED_STATE: &str = "pending";
+/// The turn the attacks of a record from before the turns count as.
+const LEGACY_ATTACK_TURN: usize = 1;
+
+/// The cover of a card shows the entry of record as it is: the first bytes of
+/// a binary as a grid of cells shaded by their value, so the size and the
+/// shape of the file are the picture, and a text file as its text.
+const COVER_CLASSES: &str = "flex h-20 w-20 shrink-0 rounded-md border border-neutral-800 \
+     bg-neutral-950 overflow-hidden";
+const COVER_EMPTY_CLASSES: &str =
+    "h-20 w-20 shrink-0 rounded-md border border-dashed border-neutral-800";
+const COVER_ART_CLASSES: &str = "block h-full w-full text-neutral-200";
+const COVER_IMAGE_CLASSES: &str = "block h-full w-full object-cover";
+/// The image a game folder may hold for its cover, the first one found.
+const COVER_FILES: [(&str, &str); 4] = [
+    ("cover.png", "image/png"),
+    ("cover.svg", "image/svg+xml"),
+    ("cover.webp", "image/webp"),
+    ("cover.jpg", "image/jpeg"),
+];
+const COVER_TEXT_CLASSES: &str = "block w-full p-1.5 font-mono text-[10px] leading-tight \
+     text-neutral-300 whitespace-pre overflow-hidden";
+const COVER_SIDE: usize = 16;
+const COVER_BYTES: usize = COVER_SIDE * COVER_SIDE;
+/// A text entry no longer than this reads as text on the cover.
+const TEXT_ENTRY_LIMIT: u64 = 4096;
+/// The facts keep a reading width when the card spans the grid.
+const FACTS_CLASSES: &str = "flex-1 min-w-0 max-w-xl flex flex-col gap-1.5";
+const FACT_ROW_CLASSES: &str = "flex items-center gap-3 h-5";
+/// Who holds the record, under its row, kept as a line even when empty so
+/// every face stands the same height.
+const HOLDER_CLASSES: &str = "block h-4 mt-1 pl-[4.25rem] text-xs text-neutral-500 truncate";
+const FACT_LABEL_CLASSES: &str = "w-14 shrink-0 text-xs text-neutral-500";
 
 /// A tile with nothing to show says why, quietly.
 const PLACEHOLDER_CLASSES: &str = "text-sm font-normal text-neutral-500";
@@ -197,7 +289,7 @@ const NO_ENTRY: &str = "no entry";
 const NOT_KEPT: &str = "not kept";
 const UNRANKED: &str = "unranked";
 const UNFINISHED: &str = "unfinished";
-const NOT_ANALYZED: &str = "none";
+const NOT_ANALYZED: &str = "-";
 
 /// The figures of a live run count what its proxy logged up to the last look.
 const SO_FAR: &str = "so far";
@@ -304,8 +396,11 @@ impl RunEntry {
         let record = if live {
             None
         } else {
-            ava_game::find(&run.game)
-                .and_then(|game| runs::entry_of_record(game, directory).ok().flatten())
+            ava_game::find(&run.game).and_then(|game| {
+                runs::entry_of_record(game, directory, runs::kept_file(game, &run))
+                    .ok()
+                    .flatten()
+            })
         };
 
         let (attempts, metrics) = if live {
@@ -394,18 +489,20 @@ impl RunEntry {
     /// The run cell of the runs table: the link with the age beneath it, and
     /// the tournament seat it plays.
     fn run_cell(&self) -> String {
-        let mut cell = format!(
+        format!(
             "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} ago</div>",
             self.link(),
             usage::age(self.run.started_seconds)
-        );
-        if let Some(placement) = &self.placement {
-            cell.push_str(&format!(
-                "<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{}</div>",
-                placement_label(placement)
-            ));
+        )
+    }
+
+    /// The tournament the run plays a seat in, linked, or a dash for a run of
+    /// its own.
+    fn tournament_cell(&self) -> String {
+        match &self.placement {
+            Some(placement) => tournament_link(&placement.tournament),
+            None => format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>"),
         }
-        cell
     }
 
     /// The state of the run as a pill.
@@ -524,7 +621,8 @@ impl RunEntry {
             self.run_cell(),
             self.state(),
             self.analysis_cell(),
-            escape(&self.run.game),
+            game_label(&self.run),
+            self.tournament_cell(),
             escape(&self.run.model),
             self.agent(),
             self.time_cell(),
@@ -712,6 +810,7 @@ pub(crate) fn runs_page(
                 pill(STARTING_PILL, true, "starting"),
                 String::new(),
                 escape(&start.game),
+                format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>"),
                 escape(&start.model),
                 agent_label(&start.agent, &start.thinking),
                 String::new(),
@@ -743,7 +842,7 @@ pub(crate) fn runs_page(
 /// hold, with the carried `selection` or the defaults preselected.
 fn start_panel(selection: &Selection) -> std::io::Result<String> {
     let registry = registry::load()?;
-    let games = startable_games()?;
+    let games = games()?;
     let games = games.iter().map(String::as_str).collect::<Vec<_>>();
 
     let limit = selection
@@ -960,20 +1059,42 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             TILE_TEXT_CLASSES,
         ),
     ];
+    let turns = ava_game::find(&entry.run.game).map_or(1, |game| game.turns().len());
     if let Some(placement) = &entry.placement {
         facts.push(tile(
             "tournament",
             &tournament_link(&placement.tournament),
-            &placement_role(placement),
+            &placement_role(placement, turns),
             TILE_TEXT_CLASSES,
         ));
     }
-    if let Some(challenge) = &entry.run.challenge {
+    if turns > 1 {
         facts.push(tile(
-            "attacking",
-            &run_link(&challenge.run),
-            &format!("the entry kept at {}s", challenge.attempt),
+            "turn",
+            &format!("{} of {turns}", entry.run.turn + 1),
+            &ava_game::find(&entry.run.game)
+                .map(|game| runs::turn_task(game, entry.run.turn).to_string())
+                .unwrap_or_default(),
             TILE_TEXT_CLASSES,
+        ));
+    }
+    if !entry.run.inputs.is_empty() {
+        facts.push(tile(
+            "inputs",
+            &entry
+                .run
+                .inputs
+                .iter()
+                .map(|input| {
+                    format!(
+                        "<span class=\"block\">{} <span class=\"{MUTED_CLASSES}\">from</span> {}</span>",
+                        escape(&input.name),
+                        run_link(&input.run)
+                    )
+                })
+                .collect::<String>(),
+            "seeded into the workspace",
+            TILE_LIST_CLASSES,
         ));
     }
     body.push_str(&tiles(&facts));
@@ -1048,7 +1169,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     if let Some(game) = ava_game::find(&entry.run.game)
         && !entry.live
     {
-        let kept = runs::entries(game, &directory)?;
+        let file = runs::kept_file(game, &entry.run);
+        let kept = runs::entries(game, &directory, file)?;
         if !kept.is_empty() {
             let record = entry.record.as_ref().map(|record| record.seconds);
             let rows = kept
@@ -1067,8 +1189,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                             "<a class=\"{LINK_CLASSES}\" href=\"/run/{}/entries/{}/{}\">{}</a>",
                             escape(name),
                             kept.seconds,
-                            escape(game.entry()),
-                            escape(game.entry())
+                            escape(file),
+                            escape(file)
                         ),
                     ]
                 })
@@ -1153,7 +1275,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
     let mut standings: Vec<(String, String, String, Standing)> = Vec::new();
 
     for run in runs.iter().filter(|run| run.run.finished_seconds.is_some()) {
-        let key = (run.run.game.clone(), run.run.model.clone(), run.agent());
+        let key = (game_label(&run.run), run.run.model.clone(), run.agent());
 
         let standing = match standings
             .iter_mut()
@@ -1200,7 +1322,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         .iter()
         .map(|(game, model, agent, standing)| {
             vec![
-                escape(game),
+                game.clone(),
                 escape(model),
                 agent.clone(),
                 standing.runs.to_string(),
@@ -1235,86 +1357,29 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
     Ok(page("scoreboard", &body))
 }
 
-/// Every game: its task, its record and its standings.
+/// Every game as a card: the name, its turns and the record on its face,
+/// the standings, the heatmap and the task folded behind it.
 pub(crate) fn games_page() -> std::io::Result<String> {
     let runs = collect_runs()?;
-    let mut body = String::new();
+    let mut cards = String::new();
 
-    for (index, game) in games()?.into_iter().enumerate() {
-        let played: Vec<&RunEntry> = runs.iter().filter(|run| run.run.game == game).collect();
-        let passed = played.iter().filter(|run| run.passed()).count();
-        let mut standing: Vec<(&RunEntry, &runs::Entry)> = played
+    for game in games()? {
+        let played: Vec<&RunEntry> = runs
             .iter()
-            .filter_map(|run| run.record.as_ref().map(|record| (*run, record)))
-            .collect();
-        standing.sort_by_key(|(_, record)| std::cmp::Reverse((record.points, record.seconds)));
-
-        let playout = ava_game::find(&game)
-            .filter(|game| game.playout() == ava_game::Playout::Automated)
-            .map(|_| "the entries fight each other in tournaments")
-            .unwrap_or_default();
-        let record = match standing.first() {
-            Some((best, record)) => match record.points {
-                Some(points) => format!(
-                    "{} runs, {passed} passed, the record is {points} by {} on {}",
-                    played.len(),
-                    escape(&best.run.model),
-                    best.agent()
-                ),
-                None => format!("{} runs, {passed} passed", played.len()),
-            },
-            None if played.is_empty() => "not played yet".to_string(),
-            None => format!("{} runs, none passing", played.len()),
-        };
-
-        let title_classes = if index == 0 {
-            FIRST_TITLE_CLASSES
-        } else {
-            TITLE_CLASSES
-        };
-        body.push_str(&format!(
-            "<p class=\"{title_classes}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{record}</span></p>",
-            explained(&escape(&game), playout)
-        ));
-
-        let task = std::fs::read_to_string(
-            std::path::Path::new(GAMES_DIRECTORY)
-                .join(&game)
-                .join(TASK_DIRECTORY)
-                .join(TASK_FILE),
-        )
-        .unwrap_or_default();
-
-        let standings: Vec<Vec<String>> = standing
-            .iter()
-            .take(STANDINGS_LIMIT)
-            .map(|(run, record)| {
-                vec![
-                    escape(&run.run.model),
-                    run.agent(),
-                    record.points.map(points_meter).unwrap_or_default(),
-                    record.seconds.to_string(),
-                    run.link(),
-                ]
+            .filter(|run| {
+                run.run.game == game && run.run.turn == 0 && run.run.finished_seconds.is_some()
             })
             .collect();
-
-        body.push_str(&format!(
-            "<div class=\"{CARD_CLASSES} overflow-hidden\"><div class=\"px-4 pb-4\">{}</div>{}</div>",
-            ava_markdown::render(&task),
-            table(
-                &["MODEL", "HARNESS", "*POINTS", "#SECONDS", "RUN"],
-                standings,
-                None,
-            )
-        ));
+        cards.push_str(&game_card(&game, &played));
     }
+
+    let mut body = format!("<div class=\"{STOREFRONT_CLASSES}\">{cards}</div>");
 
     if let Ok(instructions) =
         std::fs::read_to_string(std::path::Path::new(GAMES_DIRECTORY).join(INSTRUCTIONS_FILE))
     {
         body.push_str(&format!(
-            "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">the instructions shared by every game</summary><div class=\"{CARD_CLASSES} mt-3 px-4 pb-4\">{}</div></details>",
+            "<div class=\"{CARD_CLASSES} mt-8 px-4 pb-4\">{}</div>",
             ava_markdown::render(&instructions)
         ));
     }
@@ -1322,13 +1387,233 @@ pub(crate) fn games_page() -> std::io::Result<String> {
     Ok(page("games", &body))
 }
 
+/// The card of one game over the finished runs that `played` it, folding
+/// out to the text of its task.
+fn game_card(game: &str, played: &[&RunEntry]) -> String {
+    let turns = ava_game::find(game).map_or(1, |found| found.turns().len());
+    let tasks: Vec<String> = (0..turns)
+        .map(|turn| {
+            std::fs::read_to_string(docker::task_directory(game, turn).join(TASK_FILE))
+                .unwrap_or_default()
+        })
+        .collect();
+    let task = tasks.first().cloned().unwrap_or_default();
+    let passed = played.iter().filter(|run| run.passed()).count() as u64;
+    let best = played
+        .iter()
+        .filter_map(|run| run.record.as_ref().map(|record| (*run, record)))
+        .max_by_key(|(_, record)| (record.points, record.seconds));
+
+    format!(
+        "<details class=\"{GAME_CARD_CLASSES}\">{}\
+         <div class=\"{GAME_BODY_CLASSES}\">{}</div></details>",
+        game_face(game, &task, played.len() as u64, passed, best),
+        tasks
+            .iter()
+            .filter(|text| !text.is_empty())
+            .map(|text| ava_markdown::render(text))
+            .collect::<Vec<String>>()
+            .join(TASK_SEPARATOR)
+    )
+}
+
+/// The face of a card: the name and its turns, the title of the task and
+/// the image it plays on, then the cover beside the runs and the record.
+fn game_face(
+    game: &str,
+    task: &str,
+    runs: u64,
+    passed: u64,
+    best: Option<(&RunEntry, &runs::Entry)>,
+) -> String {
+    let image = ava_game::find(game)
+        .and_then(|found| found.image())
+        .map(|image| {
+            format!(
+                "<span class=\"{MUTED_CLASSES} {MONO_CLASSES} text-xs whitespace-nowrap\">image {}</span>",
+                escape(image)
+            )
+        })
+        .unwrap_or_default();
+
+    let (record, holder) = match best {
+        Some((run, entry)) => match entry.points {
+            Some(points) => (
+                points_meter(points),
+                format!("{} \u{00b7} {}", escape(&run.run.model), run.agent()),
+            ),
+            None => (placeholder(UNRANKED), String::new()),
+        },
+        None if passed > 0 => (placeholder(NOT_KEPT), String::new()),
+        None => (placeholder(NO_ENTRY), String::new()),
+    };
+
+    format!(
+        "<summary class=\"{GAME_FACE_CLASSES}\">\
+         <span class=\"flex items-center gap-3\">\
+         <span class=\"{GAME_NAME_CLASSES}\">{}</span>{}<span class=\"flex-1\"></span>\
+         {}\
+         </span>\
+         <span class=\"{GAME_TAGLINE_CLASSES}\"><span class=\"{NOTE_CLASSES} truncate\">{}</span>{image}</span>\
+         <span class=\"flex items-start gap-4 mt-4\">{}\
+         <span class=\"{FACTS_CLASSES}\">{}{}<span class=\"{HOLDER_CLASSES}\">{holder}</span></span>\
+         </span>\
+         </summary>",
+        escape(game),
+        turn_badges(game),
+        chevron(CHEVRON_CLASSES),
+        escape(task_title(task)),
+        cover(game, best),
+        fact(
+            "runs",
+            &format!("<span class=\"{FACT_VALUE_CLASSES}\">{runs}</span>")
+        ),
+        fact("record", &record),
+    )
+}
+
+/// The cover of a card: the image the game folder provides, else the entry
+/// of record, else an empty frame.
+fn cover(game: &str, best: Option<(&RunEntry, &runs::Entry)>) -> String {
+    if cover_path(game).is_some() {
+        return format!(
+            "<span class=\"{COVER_CLASSES}\"><img class=\"{COVER_IMAGE_CLASSES}\" src=\"/games/{}/cover\" alt=\"\"></span>",
+            escape(game)
+        );
+    }
+
+    let Some((run, entry)) = best else {
+        return format!("<span class=\"{COVER_EMPTY_CLASSES}\"></span>");
+    };
+
+    let head = read_head(&entry.path, COVER_BYTES).unwrap_or_default();
+    let art = if entry.bytes <= TEXT_ENTRY_LIMIT && is_text(&head) {
+        text_cover(&head)
+    } else {
+        byte_cover(&head)
+    };
+
+    format!(
+        "<span class=\"{COVER_CLASSES}\" title=\"{}\">{art}</span>",
+        escape(&format!(
+            "the entry of record, {} bytes, kept by {}",
+            entry.bytes, run.name
+        ))
+    )
+}
+
+/// The cover image of the game `name` in its folder, with its content type,
+/// for a name the games directory knows.
+fn cover_path(name: &str) -> Option<(std::path::PathBuf, &'static str)> {
+    if !games().ok()?.iter().any(|known| known == name) {
+        return None;
+    }
+
+    COVER_FILES.iter().find_map(|(file, content_type)| {
+        let path = std::path::Path::new(GAMES_DIRECTORY).join(name).join(file);
+        path.is_file().then_some((path, *content_type))
+    })
+}
+
+/// The cover image of the game `name` with its content type, if it has one.
+pub(crate) fn game_cover(name: &str) -> Option<(Vec<u8>, &'static str)> {
+    let (path, content_type) = cover_path(name)?;
+    Some((std::fs::read(path).ok()?, content_type))
+}
+
+/// The first `limit` bytes of the file at `path`.
+fn read_head(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut head = Vec::with_capacity(limit);
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit as u64), &mut head)?;
+
+    Ok(head)
+}
+
+/// Whether `bytes` are printable ASCII and whitespace throughout.
+fn is_text(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
+}
+
+/// A text entry as its text, one line centered and more read from the top.
+fn text_cover(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let align = if text.trim().lines().count() <= 1 {
+        "self-center text-center"
+    } else {
+        "self-start"
+    };
+
+    format!(
+        "<span class=\"{COVER_TEXT_CLASSES} {align}\">{}</span>",
+        escape(text.trim_end())
+    )
+}
+
+/// A binary entry as a grid of its first bytes, one cell each, shaded by
+/// value: a zero byte leaves the surface bare and the cells past the end of
+/// a short file stay empty, so the size of the file is part of the picture.
+fn byte_cover(bytes: &[u8]) -> String {
+    let mut cells = String::new();
+    for (index, byte) in bytes.iter().enumerate().filter(|(_, byte)| **byte != 0) {
+        cells.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"1\" height=\"1\" fill-opacity=\"{:.2}\"/>",
+            index % COVER_SIDE,
+            index / COVER_SIDE,
+            f64::from(*byte) / f64::from(u8::MAX)
+        ));
+    }
+
+    format!(
+        "<svg class=\"{COVER_ART_CLASSES}\" viewBox=\"0 0 {COVER_SIDE} {COVER_SIDE}\" fill=\"currentColor\" shape-rendering=\"crispEdges\">{cells}</svg>"
+    )
+}
+
+/// A chevron pointing down, turned by `classes` where it marks an open fold.
+fn chevron(classes: &str) -> String {
+    format!(
+        "<svg class=\"{classes}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 9l6 6 6-6\"/></svg>"
+    )
+}
+
+/// The first heading of a task, or nothing when it has none.
+fn task_title(task: &str) -> &str {
+    task.lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .unwrap_or_default()
+        .trim()
+}
+
+/// One figure on the face of a card, its label beside it.
+fn fact(label: &str, value: &str) -> String {
+    format!(
+        "<span class=\"{FACT_ROW_CLASSES}\"><span class=\"{FACT_LABEL_CLASSES}\">{label}</span><span class=\"flex-1 min-w-0\">{value}</span></span>"
+    )
+}
+
+/// The turns of a game with several, one pill per task, nothing for a game
+/// with one turn.
+fn turn_badges(game: &str) -> String {
+    let Some(found) = ava_game::find(game) else {
+        return String::new();
+    };
+    if found.turns().len() < 2 {
+        return String::new();
+    }
+
+    found
+        .turns()
+        .iter()
+        .map(|turn| pill(TURN_PILL, false, &escape(turn.task)))
+        .collect()
+}
+
 /// The tournaments: the form opening one, and every tournament on disk.
 pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
-    let games: Vec<&str> = ava_game::GAMES
-        .iter()
-        .map(|game| game.name())
-        .filter(|game| ava_game::attacked_by(game).is_none())
-        .collect();
+    let games: Vec<&str> = ava_game::GAMES.iter().map(|game| game.name()).collect();
     let limit = selection
         .get("limit", "")
         .parse::<u64>()
@@ -1369,7 +1654,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         ),
         explained(
             "combats",
-            "the combats every fight of an automated playout plays, each best of three rounds",
+            "the combats every fight between two entries plays, each best of three rounds",
         ),
         agent_fields(
             &registry::load()?,
@@ -1458,9 +1743,7 @@ pub(crate) fn tournament_page(
     let playing = tournament::playing(name);
     let running = live_runs();
     let registry = registry::load()?;
-    let playout = ava_game::find(&record.game).map(|game| game.playout());
-    let compared = playout == Some(ava_game::Playout::Single);
-    let ordered = matches!(playout, Some(ava_game::Playout::Played { .. }));
+    let game = ava_game::find(&record.game);
 
     let play_form = if playing || record.seats.is_empty() {
         String::new()
@@ -1507,23 +1790,49 @@ pub(crate) fn tournament_page(
         usage::age(record.created_seconds),
     ));
 
-    // The lobby.
+    // The seats with their standings: one table, the ratings blank until a
+    // round finished, ranked by Bradley-Terry once one did.
     let removable = !record.played() && !playing;
-    let seat_rows: Vec<Vec<String>> = record
-        .seats
-        .iter()
-        .enumerate()
-        .map(|(seat, agent)| {
-            let played = record
-                .rounds
+    let rated = record.finished_rounds().next().is_some();
+    let standings = standings(&record)?;
+    let mut seats: Vec<(usize, &ava_wire::Agent)> = record.seats.iter().enumerate().collect();
+    if rated {
+        seats.sort_by_key(|(seat, agent)| {
+            let rank = standings
                 .iter()
-                .filter(|round| round.entries.iter().any(|entry| entry.seat == seat))
-                .count();
-            vec![
+                .position(|standing| standing.agent == agent.label())
+                .unwrap_or(usize::MAX);
+            (rank, *seat)
+        });
+    }
+    let cells = pairing_cells(&record)?;
+    let seat_rows: Vec<Vec<String>> = seats
+        .iter()
+        .map(|(seat, agent)| {
+            let standing = standings
+                .iter()
+                .find(|standing| standing.agent == agent.label())
+                .filter(|_| rated);
+            let mut row = vec![
                 (seat + 1).to_string(),
                 agent_label(&agent.harness, agent.thinking.as_deref().unwrap_or("")),
                 escape(&agent.model),
-                played.to_string(),
+            ];
+            row.extend(cells[*seat].iter().cloned());
+            row.extend([
+                standing
+                    .map(|standing| tally_label(&standing.fights))
+                    .unwrap_or_default(),
+                standing
+                    .and_then(|standing| standing.rounds.score())
+                    .map(|score| format!("{score:.2}"))
+                    .unwrap_or_default(),
+                standing
+                    .map(|standing| rating_label(standing.elo))
+                    .unwrap_or_default(),
+                standing
+                    .map(|standing| rating_label(standing.bradley_terry))
+                    .unwrap_or_default(),
                 if removable {
                     format!(
                         "<form method=\"post\" action=\"/tournament/{}/unseat\"><input type=\"hidden\" name=\"seat\" value=\"{seat}\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
@@ -1532,20 +1841,38 @@ pub(crate) fn tournament_page(
                 } else {
                     String::new()
                 },
-            ]
+            ]);
+            row
         })
         .collect();
+    let mut headers: Vec<String> = vec![
+        "#SEAT".to_string(),
+        "HARNESS".to_string(),
+        "*MODEL".to_string(),
+    ];
+    headers.extend((1..=record.seats.len()).map(|seat| {
+        format!(
+            "^{seat}|the row's rounds against seat {seat} over the finished rounds as won-drawn-lost, the rounds behind the hover"
+        )
+    }));
+    headers.extend(
+        [
+            "*#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
+            "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+            "#ELO|updated in match order, anchored at 1000",
+            "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
+            "",
+        ]
+        .map(str::to_string),
+    );
+    let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
     body.push_str(&format!(
         "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
         explained(
-            "lobby",
-            "the seats of the tournament, joining between rounds and fixed once a round was played"
+            "standings",
+            "the seats of the tournament, joining between rounds and fixed once a round was played, their rounds against each other over the finished rounds, and their ratings over the matches between different agents, ordered by Bradley-Terry"
         ),
-        table(
-            &["#SEAT", "HARNESS", "*MODEL", "#ROUNDS", ""],
-            seat_rows,
-            Some(NO_SEATS_NOTE),
-        )
+        table(&headers, seat_rows, Some(NO_SEATS_NOTE))
     ));
     if removable {
         body.push_str(&format!(
@@ -1557,54 +1884,6 @@ pub(crate) fn tournament_page(
     }
 
     body.push_str("<div data-refresh=\"rounds\">");
-
-    // The standings.
-    let standings = standings(&record)?;
-    if !standings.is_empty() {
-        let rows = standings
-            .iter()
-            .map(|standing| {
-                vec![
-                    escape(&standing.agent),
-                    standing.seats.to_string(),
-                    tally_label(&standing.fights),
-                    standing
-                        .rounds
-                        .score()
-                        .map(|score| format!("{score:.2}"))
-                        .unwrap_or_default(),
-                    rating_label(standing.elo),
-                    rating_label(standing.bradley_terry),
-                ]
-            })
-            .collect();
-        body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
-            explained(
-                "standings",
-                &format!(
-                    "derived from the matches of the finished rounds between different agents{}, ordered by Bradley-Terry",
-                    if compared {
-                        ", the entries compared by their points"
-                    } else {
-                        ""
-                    }
-                )
-            ),
-            table(
-                &[
-                    "*AGENT",
-                    "#SEATS|the seats the agent holds, two seats of one agent count as one entry here",
-                    "#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
-                    "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
-                    "#ELO|updated in match order, anchored at 1000",
-                    "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
-                ],
-                rows,
-                None,
-            )
-        ));
-    }
 
     // The rounds, newest first.
     for (index, round) in record.rounds.iter().enumerate().rev() {
@@ -1624,69 +1903,8 @@ pub(crate) fn tournament_page(
             usage::age(round.started_seconds)
         ));
 
-        let entry_rows: Vec<Vec<String>> = round
-            .entries
-            .iter()
-            .map(|entry| {
-                let agent = record.seats.get(entry.seat);
-                let run =
-                    runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(&entry.run)).ok();
-                let live = running.contains(&docker::scorer_container(&entry.run));
-                let state = match (&run, live) {
-                    (_, true) => pill(LIVE_PILL, true, "live"),
-                    (Some(run), false) if run.passed() => pill(PASSED_PILL, false, "passed"),
-                    (Some(run), false) if run.finished_seconds.is_some() => {
-                        pill(FAILED_PILL, false, "failed")
-                    }
-                    (Some(_), false) => pill(BROKEN_PILL, false, "unfinished"),
-                    (None, false) if playing && index + 1 == record.rounds.len() => {
-                        pill(STARTING_PILL, true, "queued")
-                    }
-                    (None, false) => pill(BROKEN_PILL, false, "missing"),
-                };
-                vec![
-                    (entry.seat + 1).to_string(),
-                    agent
-                        .map(|agent| escape(&agent.label()))
-                        .unwrap_or_default(),
-                    format!(
-                        "<a class=\"{LINK_CLASSES}\" href=\"/run/{run}\">{run}</a>",
-                        run = escape(&entry.run)
-                    ),
-                    state,
-                    match entry.attempt {
-                        Some(seconds) => format!("{seconds}s"),
-                        None if live => String::new(),
-                        None => "none".to_string(),
-                    },
-                ]
-            })
-            .collect();
-        body.push_str(&table(
-            &[
-                "#SEAT",
-                "*AGENT",
-                "RUN",
-                "STATE",
-                "ENTRY|the passing push whose entry fights, by its seconds",
-            ],
-            entry_rows,
-            None,
-        ));
-
-        let pairings = tournament::pairings(&record, round)?;
-        if !pairings.is_empty() {
-            body.push_str(&format!(
-                "<div class=\"mt-3\">{}</div>",
-                cross_table(
-                    &record,
-                    round,
-                    &pairings,
-                    ordered,
-                    playing && index + 1 == record.rounds.len()
-                )
-            ));
-        }
+        let live = playing && index + 1 == record.rounds.len();
+        body.push_str(&round_graph(&record, round, game, &running, live));
     }
 
     body.push_str(&format!(
@@ -1706,10 +1924,289 @@ pub(crate) fn tournament_page(
     Ok(page(name, &body))
 }
 
+/// The runs of a round as the graph the tournament walks: a column per turn,
+/// a row per seat, every run a node linking its page with its state, and an
+/// edge from every entry a run got as its input to that run. Every seat and
+/// turn not reached yet is drawn faded, with the edges the game will ask for
+/// dashed, so the whole round shows and the part played stands out. While
+/// the round is `live`, a run named but not started shows as queued.
+fn round_graph(
+    record: &ava_wire::Tournament,
+    round: &ava_wire::Round,
+    game: Option<&dyn ava_game::Game>,
+    running: &[String],
+    live: bool,
+) -> String {
+    /// An edge the game will ask for once a turn starts, by seat and turn.
+    struct Planned {
+        from: (usize, usize),
+        to: (usize, usize),
+        name: String,
+    }
+
+    struct Node {
+        seat: usize,
+        turn: usize,
+        /// The run, empty for a node not played yet.
+        run: String,
+        record: Option<ava_wire::Run>,
+        points: Option<u64>,
+        x: f64,
+        y: f64,
+    }
+
+    let seats = record.seats.len();
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut place = |seat: usize, turn: usize, run: &str, attempt: Option<u64>| {
+        if nodes.iter().any(|node| node.run == run) {
+            return;
+        }
+        let directory = std::path::Path::new(docker::RUN_DIRECTORY).join(run);
+        let record = runs::read(&directory).ok();
+        let points = match (game, attempt) {
+            (Some(game), Some(attempt)) => {
+                runs::entries(game, &directory, runs::turn_entry(game, turn))
+                    .ok()
+                    .and_then(|kept| kept.into_iter().find(|kept| kept.seconds == attempt))
+                    .and_then(|kept| kept.points)
+            }
+            _ => None,
+        };
+        nodes.push(Node {
+            seat,
+            turn,
+            run: run.to_string(),
+            record,
+            points,
+            x: 0.0,
+            y: 0.0,
+        });
+    };
+    for entry in &round.entries {
+        place(entry.seat, entry.turn, &entry.run, entry.attempt);
+    }
+    // The attacks of a record from before the turns played the second turn.
+    for pairing in &round.pairings {
+        if let Some(run) = &pairing.run {
+            place(pairing.first, LEGACY_ATTACK_TURN, run, None);
+        }
+    }
+
+    let turns = game
+        .map_or(1, |game| game.turns().len())
+        .max(nodes.iter().map(|node| node.turn + 1).max().unwrap_or(1));
+
+    // Every seat and turn without a run yet is a planned node, with the edges
+    // the game will ask for once the turn starts.
+    let mut planned_edges: Vec<Planned> = Vec::new();
+    for turn in 0..turns {
+        for seat in 0..seats {
+            if nodes
+                .iter()
+                .any(|node| node.seat == seat && node.turn == turn)
+            {
+                continue;
+            }
+            nodes.push(Node {
+                seat,
+                turn,
+                run: String::new(),
+                record: None,
+                points: None,
+                x: 0.0,
+                y: 0.0,
+            });
+            if let Some(game) = game {
+                let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
+                for input in game.inputs(turn, &opponents) {
+                    planned_edges.push(Planned {
+                        from: (input.seat, input.turn),
+                        to: (seat, turn),
+                        name: input.name,
+                    });
+                }
+            }
+        }
+    }
+
+    // A seat's row is as tall as its fullest column, so nodes never overlap
+    // when a turn holds several runs of one seat.
+    let mut stacked: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    let mut rows = vec![1usize; seats];
+    for node in &nodes {
+        let count = stacked.entry((node.seat, node.turn)).or_default();
+        *count += 1;
+        if node.seat < seats {
+            rows[node.seat] = rows[node.seat].max(*count);
+        }
+    }
+    let row_height =
+        |stack: usize| stack as f64 * GRAPH_NODE_HEIGHT + (stack as f64 - 1.0) * GRAPH_ROW_GAP;
+    let mut row_top = Vec::with_capacity(seats);
+    let mut y = GRAPH_HEADER_HEIGHT;
+    for stack in &rows {
+        row_top.push(y);
+        y += row_height(*stack) + GRAPH_ROW_GAP;
+    }
+    let height = y - GRAPH_ROW_GAP + GRAPH_PADDING;
+    let width = turns as f64 * GRAPH_NODE_WIDTH + (turns as f64 - 1.0) * GRAPH_COLUMN_GAP;
+
+    let mut filled: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for node in &mut nodes {
+        let slot = filled.entry((node.seat, node.turn)).or_default();
+        node.x = node.turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+        node.y = row_top
+            .get(node.seat)
+            .copied()
+            .unwrap_or(GRAPH_HEADER_HEIGHT)
+            + *slot as f64 * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP);
+        *slot += 1;
+    }
+    let at = |seat: usize, turn: usize| {
+        nodes
+            .iter()
+            .find(|node| node.seat == seat && node.turn == turn)
+            .map(|node| (node.x, node.y))
+    };
+    let edge = |from: (f64, f64), to: (f64, f64), name: &str, planned: bool| {
+        let (from_x, from_y) = (from.0 + GRAPH_NODE_WIDTH, from.1 + GRAPH_NODE_HEIGHT / 2.0);
+        let (to_x, to_y) = (to.0, to.1 + GRAPH_NODE_HEIGHT / 2.0);
+        let bend = (from_x + to_x) / 2.0;
+        let dashed = if planned {
+            format!(
+                " stroke-dasharray=\"{GRAPH_PLANNED_DASH}\" class=\"{GRAPH_EDGE_CLASSES} {GRAPH_PLANNED_CLASSES}\""
+            )
+        } else {
+            format!(" class=\"{GRAPH_EDGE_CLASSES}\"")
+        };
+        format!(
+            "<path d=\"M{from_x} {from_y} C{bend} {from_y} {bend} {to_y} {to_x} {to_y}\"{dashed} fill=\"none\"><title>{}</title></path>",
+            escape(name)
+        )
+    };
+
+    let mut svg = format!(
+        "<svg class=\"block w-full {GRAPH_CLASSES}\" style=\"max-width:{width}px\" viewBox=\"0 0 {width} {height}\" font-size=\"{GRAPH_FONT_SIZE}\">"
+    );
+
+    for turn in 0..turns {
+        let task = game
+            .and_then(|game| game.turns().get(turn))
+            .map(|turn| turn.task.to_string())
+            .unwrap_or_else(|| format!("turn {}", turn + 1));
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" class=\"{GRAPH_HEADER_TEXT_CLASSES}\">{}</text>",
+            turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP),
+            GRAPH_HEADER_HEIGHT - GRAPH_ROW_GAP,
+            escape(&task)
+        ));
+    }
+
+    for node in &nodes {
+        let Some(run) = &node.record else {
+            continue;
+        };
+        for input in &run.inputs {
+            let Some(source) = nodes.iter().find(|source| source.run == input.run) else {
+                continue;
+            };
+            svg.push_str(&edge(
+                (source.x, source.y),
+                (node.x, node.y),
+                &input.name,
+                false,
+            ));
+        }
+    }
+    for planned in &planned_edges {
+        if let (Some(from), Some(to)) = (
+            at(planned.from.0, planned.from.1),
+            at(planned.to.0, planned.to.1),
+        ) {
+            svg.push_str(&edge(from, to, &planned.name, true));
+        }
+    }
+
+    for node in &nodes {
+        let planned = node.run.is_empty();
+        let live_run = !planned && running.contains(&docker::scorer_container(&node.run));
+        let (state, tint, pulsing) = match (&node.record, live_run) {
+            _ if planned => (GRAPH_PLANNED_STATE, MUTED_CLASSES, false),
+            (_, true) => ("live", LIVE_PILL, true),
+            (Some(run), false) if run.passed() => ("passed", PASSED_PILL, false),
+            (Some(run), false) if run.finished_seconds.is_some() => ("failed", FAILED_PILL, false),
+            (Some(_), false) => ("unfinished", BROKEN_PILL, false),
+            (None, false) if live => ("queued", STARTING_PILL, true),
+            (None, false) => ("missing", BROKEN_PILL, false),
+        };
+        let agent = record
+            .seats
+            .get(node.seat)
+            .map(|agent| format!("{} on {}", agent.harness, agent.model))
+            .unwrap_or_default();
+        let label = format!("{} \u{00b7} {agent}", node.seat + 1);
+        let shown = if label.chars().count() > GRAPH_LABEL_CHARS {
+            format!(
+                "{}\u{2026}",
+                label
+                    .chars()
+                    .take(GRAPH_LABEL_CHARS - 1)
+                    .collect::<String>()
+            )
+        } else {
+            label.clone()
+        };
+        let points = node
+            .points
+            .map(|points| {
+                format!(
+                    "<text x=\"{}\" y=\"{}\" text-anchor=\"end\" class=\"{GRAPH_POINTS_CLASSES}\">{points}</text>",
+                    node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET,
+                    node.y + GRAPH_LINE_ONE
+                )
+            })
+            .unwrap_or_default();
+        let dot_class = if pulsing { "animate-pulse" } else { "" };
+        let body = format!(
+            "<title>{title}</title>\
+             <rect x=\"{x}\" y=\"{y}\" width=\"{GRAPH_NODE_WIDTH}\" height=\"{GRAPH_NODE_HEIGHT}\" rx=\"6\" class=\"{GRAPH_NODE_CLASSES}\"/>\
+             <text x=\"{text_x}\" y=\"{line_one}\" class=\"{GRAPH_LABEL_CLASSES}\">{shown}</text>{points}\
+             <text x=\"{text_x}\" y=\"{line_two}\" class=\"{GRAPH_RUN_CLASSES}\">{run}</text>\
+             <circle cx=\"{dot_x}\" cy=\"{dot_y}\" r=\"3\" fill=\"currentColor\" class=\"{tint} {dot_class}\"/>\
+             <text x=\"{state_x}\" y=\"{line_two}\" text-anchor=\"end\" fill=\"currentColor\" class=\"{GRAPH_STATE_CLASSES} {tint}\">{state}</text>",
+            run = escape(&node.run),
+            title = escape(&format!("{label}, {state}")),
+            x = node.x,
+            y = node.y,
+            text_x = node.x + GRAPH_TEXT_INSET,
+            line_one = node.y + GRAPH_LINE_ONE,
+            line_two = node.y + GRAPH_LINE_TWO,
+            dot_x = node.x + GRAPH_NODE_WIDTH
+                - GRAPH_TEXT_INSET
+                - state.len() as f64 * GRAPH_CHARACTER_WIDTH
+                - GRAPH_DOT_GAP,
+            dot_y = node.y + GRAPH_LINE_TWO - GRAPH_DOT_LIFT,
+            state_x = node.x + GRAPH_NODE_WIDTH - GRAPH_TEXT_INSET,
+        );
+        if planned {
+            svg.push_str(&format!("<g class=\"{GRAPH_PLANNED_CLASSES}\">{body}</g>"));
+        } else {
+            svg.push_str(&format!(
+                "<a href=\"/run/{}\">{body}</a>",
+                escape(&node.run)
+            ));
+        }
+    }
+
+    svg.push_str("</svg>");
+    format!("<div class=\"{CARD_CLASSES} p-4 overflow-x-auto\">{svg}</div>")
+}
+
 /// The place of one agent on the leaderboard of a tournament.
 struct Standing {
     agent: String,
-    seats: usize,
     /// The fights against another agent by outcome, from the agent's view: a
     /// fight with more rounds won than lost is won.
     fights: ava_wire::Tally,
@@ -1778,11 +2275,6 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
             }
 
             Standing {
-                seats: record
-                    .seats
-                    .iter()
-                    .filter(|seat| seat.label() == agent)
-                    .count(),
                 fights,
                 rounds,
                 elo: rating(&elo, &agent),
@@ -1815,156 +2307,80 @@ fn rating_label(rating: Option<f64>) -> String {
         .unwrap_or_default()
 }
 
-/// The `pairings` of one round as a cross table: the tally of the row's seat
-/// against the column's seat, and its total across the row. An `ordered`
-/// playout pairs every seat with every other twice, once attacking and once
-/// defending, so the row is the attacker and nothing is mirrored. While the
-/// round is `live`, a pairing without rounds is an attack still going.
-fn cross_table(
-    record: &ava_wire::Tournament,
-    round: &ava_wire::Round,
-    pairings: &[ava_wire::Pairing],
-    ordered: bool,
-    live: bool,
-) -> String {
-    let seats = round.entries.len();
-    let mut headers: Vec<String> = vec![if ordered {
-        "*SEAT|the seat of the row attacks the entry of the column".to_string()
-    } else {
-        "*SEAT".to_string()
-    }];
-    headers.extend((1..=seats).map(|seat| format!("#{seat}")));
-    headers.push(
-        "#TOTAL|fights won, drawn and lost across the row, forfeits included, pairings without a fight left out"
-            .to_string(),
-    );
-    let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
+/// The cells of the standings, by seat row and seat column: the row's rounds
+/// against the column over the finished rounds, tinted by who came out ahead,
+/// `none` where nothing was counted, the rounds behind the hover with their
+/// reasons. A pairing recorded the other way round is read mirrored.
+fn pairing_cells(record: &ava_wire::Tournament) -> std::io::Result<Vec<Vec<String>>> {
+    #[derive(Default)]
+    struct Met {
+        tally: ava_wire::Tally,
+        rounds: Vec<String>,
+    }
 
-    let rows = (0..seats)
-        .map(|row| {
-            let mut total = ava_wire::Tally::default();
-            let mut cells = vec![format!(
-                "{} {}",
-                row + 1,
-                record
-                    .seats
-                    .get(row)
-                    .map(|agent| format!(
-                        "<span class=\"{MUTED_CLASSES}\">{}</span>",
-                        escape(&agent.label())
-                    ))
-                    .unwrap_or_default()
-            )];
-
-            for column in 0..seats {
-                if row == column {
-                    cells.push(format!("<span class=\"{MUTED_CLASSES}\">\u{00b7}</span>"));
+    let seats = record.seats.len();
+    let mut met: Vec<Vec<Option<Met>>> = (0..seats)
+        .map(|_| (0..seats).map(|_| None).collect())
+        .collect();
+    for (index, round) in record.rounds.iter().enumerate() {
+        if round.finished_seconds.is_none() {
+            continue;
+        }
+        for pairing in tournament::pairings(record, round)? {
+            let mirrored = ava_wire::Tally {
+                won: pairing.tally.lost,
+                drawn: pairing.tally.drawn,
+                lost: pairing.tally.won,
+            };
+            for (row, column, view) in [
+                (pairing.first, pairing.second, pairing.tally),
+                (pairing.second, pairing.first, mirrored),
+            ] {
+                if row == column || row >= seats || column >= seats {
                     continue;
                 }
-
-                let fought = pairings.iter().find_map(|pairing| {
-                    if pairing.first == row && pairing.second == column {
-                        Some((
-                            pairing.tally,
-                            pairing.reason.as_deref(),
-                            pairing.run.as_deref(),
-                        ))
-                    } else if !ordered && pairing.first == column && pairing.second == row {
-                        Some((
-                            ava_wire::Tally {
-                                won: pairing.tally.lost,
-                                drawn: pairing.tally.drawn,
-                                lost: pairing.tally.won,
-                            },
-                            pairing.reason.as_deref(),
-                            pairing.run.as_deref(),
-                        ))
-                    } else {
-                        None
+                let cell = met[row][column].get_or_insert_with(Met::default);
+                cell.tally.won += view.won;
+                cell.tally.drawn += view.drawn;
+                cell.tally.lost += view.lost;
+                cell.rounds.push(match &pairing.reason {
+                    Some(reason) => {
+                        format!("round {}: {}, {reason}", index + 1, tally_label(&view))
                     }
+                    None => format!("round {}: {}", index + 1, tally_label(&view)),
                 });
-
-                match fought {
-                    Some((tally, None, Some(run))) if live && tally.rounds() == 0 => {
-                        let started = std::path::Path::new(docker::RUN_DIRECTORY)
-                            .join(run)
-                            .join(docker::RUN_FILE)
-                            .is_file();
-                        cells.push(played(
-                            &if started {
-                                pill(LIVE_PILL, true, "live")
-                            } else {
-                                pill(STARTING_PILL, true, "queued")
-                            },
-                            Some(run),
-                        ));
-                    }
-                    Some((tally, reason, run)) => {
-                        match tally.won.cmp(&tally.lost) {
-                            _ if tally.rounds() == 0 => {}
-                            std::cmp::Ordering::Greater => total.won += 1,
-                            std::cmp::Ordering::Equal => total.drawn += 1,
-                            std::cmp::Ordering::Less => total.lost += 1,
-                        }
-                        cells.push(pairing_cell(&tally, reason, run));
-                    }
-                    None => cells.push(String::new()),
-                }
             }
+        }
+    }
 
-            cells.push(format!(
-                "<span class=\"{MONO_CLASSES} {}\">{}</span>",
-                tint(&total),
-                tally_label(&total)
-            ));
+    Ok(met
+        .into_iter()
+        .enumerate()
+        .map(|(row, cells)| {
             cells
+                .into_iter()
+                .enumerate()
+                .map(|(column, cell)| {
+                    if row == column {
+                        return format!("<span class=\"{MUTED_CLASSES}\">\u{00b7}</span>");
+                    }
+                    let Some(cell) = cell else {
+                        return String::new();
+                    };
+                    let label = if cell.tally.rounds() == 0 {
+                        format!("<span class=\"{MUTED_CLASSES}\">none</span>")
+                    } else {
+                        format!(
+                            "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+                            tint(&cell.tally),
+                            tally_label(&cell.tally)
+                        )
+                    };
+                    explained(&label, &cell.rounds.join(" \u{00b7} "))
+                })
+                .collect()
         })
-        .collect();
-
-    format!(
-        "<p class=\"{NOTE_CLASSES} mb-2\">{}</p>{}",
-        round_summary(round, pairings),
-        table(&headers, rows, None)
-    )
-}
-
-/// One line on what a round came to: who left an entry and what became of
-/// the pairings.
-fn round_summary(round: &ava_wire::Round, pairings: &[ava_wire::Pairing]) -> String {
-    let entries = round
-        .entries
-        .iter()
-        .filter(|entry| entry.attempt.is_some())
-        .count();
-    let mut fought = 0;
-    let mut forfeited = 0;
-    let mut unplayed = 0;
-    let mut playing = 0;
-    for pairing in pairings {
-        match (pairing.tally.rounds(), &pairing.reason, &pairing.run) {
-            (0, None, Some(_)) => playing += 1,
-            (0, _, _) => unplayed += 1,
-            (_, Some(_), None) => forfeited += 1,
-            _ => fought += 1,
-        }
-    }
-
-    let mut parts = vec![format!(
-        "{entries} of {} seats left an entry",
-        round.entries.len()
-    )];
-    for (count, what) in [
-        (fought, "fought"),
-        (forfeited, "forfeited"),
-        (unplayed, "without a fight"),
-        (playing, "playing"),
-    ] {
-        if count > 0 {
-            parts.push(format!("{count} {what}"));
-        }
-    }
-
-    parts.join(" \u{00b7} ")
+        .collect())
 }
 
 /// The colour of a tally from the view of its first side.
@@ -1973,41 +2389,6 @@ fn tint(tally: &ava_wire::Tally) -> &'static str {
         std::cmp::Ordering::Greater => AHEAD_CLASSES,
         std::cmp::Ordering::Less => BEHIND_CLASSES,
         std::cmp::Ordering::Equal => LEVEL_CLASSES,
-    }
-}
-
-/// A tally as `won-drawn-lost`, tinted by who came out ahead, with the reason
-/// behind it as a tooltip when there is one and the run that played it linked.
-/// One pairing of the cross table, from the view of the row: the tally of a
-/// fight with its run, `forfeit` tinted by who took it, or `none` for a
-/// pairing that saw no fight, the reason behind the hover either way.
-fn pairing_cell(tally: &ava_wire::Tally, reason: Option<&str>, run: Option<&str>) -> String {
-    let reason = reason.unwrap_or_default();
-    if tally.rounds() == 0 {
-        return played(&format!("<span class=\"{MUTED_CLASSES}\">none</span>"), run);
-    }
-
-    let label = if run.is_none() && !reason.is_empty() {
-        format!("<span class=\"{}\">forfeit</span>", tint(tally))
-    } else {
-        format!(
-            "<span class=\"{MONO_CLASSES} {}\">{}</span>",
-            tint(tally),
-            tally_label(tally)
-        )
-    };
-
-    played(&explained(&label, reason), run)
-}
-
-/// `label`, linking to the run that played the pairing when one did.
-fn played(label: &str, run: Option<&str>) -> String {
-    match run {
-        Some(run) => format!(
-            "<a class=\"hover:opacity-70 transition-opacity\" href=\"/run/{run}\">{label}</a>",
-            run = escape(run)
-        ),
-        None => label.to_string(),
     }
 }
 
@@ -2202,21 +2583,12 @@ pub(crate) fn error_page(message: &str) -> String {
 }
 
 /// The known game folders, sorted.
-/// The games a run or a tournament can be started on: every game but the ones
-/// only starting as an attack on the entry of another.
-pub(crate) fn startable_games() -> std::io::Result<Vec<String>> {
-    Ok(games()?
-        .into_iter()
-        .filter(|game| ava_game::attacked_by(game).is_none())
-        .collect())
-}
-
 pub(crate) fn games() -> std::io::Result<Vec<String>> {
     let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)
         .map_err(|error| at_path(GAMES_DIRECTORY, error))?
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().join(TASK_DIRECTORY).is_dir())
         .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| docker::task_directory(name, 0).is_dir())
         .collect();
     games.sort();
 
@@ -2239,7 +2611,7 @@ pub(crate) fn run_entry(name: &str, seconds: &str, file: &str) -> Option<Vec<u8>
     let directory = run_directory(name).ok()?;
     let run = runs::read(&directory).ok()?;
     let game = ava_game::find(&run.game)?;
-    if file != game.entry() {
+    if file != runs::kept_file(game, &run) {
         return None;
     }
 
@@ -2629,29 +3001,18 @@ fn version_label(version: &str) -> String {
     )
 }
 
-/// The seat a run plays in its round, and the seat it attacks when it does.
-fn placement_role(placement: &tournament::Placement) -> String {
-    match placement.attacking {
-        Some(defender) => format!(
-            "seat {} attacking seat {} in round {}",
-            placement.seat + 1,
-            defender + 1,
-            placement.round + 1
-        ),
-        None => format!(
-            "seat {} in round {}",
-            placement.seat + 1,
-            placement.round + 1
-        ),
-    }
-}
+/// The seat a run plays in its round, and its turn for a game with several.
+fn placement_role(placement: &tournament::Placement, turns: usize) -> String {
+    let turn = if turns > 1 {
+        format!(", turn {}", placement.turn + 1)
+    } else {
+        String::new()
+    };
 
-/// Where a run sits in a tournament, linking the tournament.
-fn placement_label(placement: &tournament::Placement) -> String {
     format!(
-        "{} of {}",
-        placement_role(placement),
-        tournament_link(&placement.tournament)
+        "seat {} in round {}{turn}",
+        placement.seat + 1,
+        placement.round + 1
     )
 }
 
@@ -2661,6 +3022,23 @@ fn tournament_link(name: &str) -> String {
         "<a class=\"{LINK_CLASSES}\" href=\"/tournament/{name}\">{name}</a>",
         name = escape(name)
     )
+}
+
+/// The game of a run, with the task of its turn when it is not the first.
+fn game_label(run: &ava_wire::Run) -> String {
+    if run.turn > 0 {
+        return format!(
+            "{} <span class=\"{MUTED_CLASSES}\">{}</span>",
+            escape(&run.game),
+            escape(
+                ava_game::find(&run.game)
+                    .map(|game| runs::turn_task(game, run.turn))
+                    .unwrap_or_default()
+            )
+        );
+    }
+
+    escape(&run.game)
 }
 
 /// The name of a run as a link into its page.
@@ -2763,22 +3141,38 @@ fn meter(value: u64, ceiling: u64, fill: &str, label: &str, label_width: &str) -
     )
 }
 
-/// A table in a card whose `#` marked headers hold right-aligned numbers and
-/// whose `*` marked headers share the slack evenly. Without rows it shows
-/// `empty`, or nothing when there is no note to show.
+/// A table in a card. The markers leading a header set its column: `#`
+/// right-aligns numbers, `^` centers, `*` takes a share of the slack, and
+/// they combine. Without a `*` the last column takes the slack. Without rows
+/// the table shows `empty`, or nothing when there is no note to show.
 fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> String {
     if rows.is_empty() && empty.is_none() {
         return String::new();
     }
 
-    let numeric: Vec<bool> = headers
+    let markers = |header: &str| -> Vec<char> {
+        header
+            .chars()
+            .take_while(|character| MARKERS.contains(character))
+            .collect()
+    };
+    let alignment: Vec<&str> = headers
         .iter()
-        .map(|header| header.starts_with(NUMERIC_MARKER))
+        .map(|header| {
+            let markers = markers(header);
+            if markers.contains(&NUMERIC_MARKER) {
+                NUMERIC_CLASSES
+            } else if markers.contains(&CENTER_MARKER) {
+                CENTERED_CLASSES
+            } else {
+                ""
+            }
+        })
         .collect();
     let mut slack: Vec<usize> = headers
         .iter()
         .enumerate()
-        .filter(|(_, header)| header.starts_with(SLACK_MARKER))
+        .filter(|(_, header)| markers(header).contains(&SLACK_MARKER))
         .map(|(index, _)| index)
         .collect();
     if slack.is_empty() {
@@ -2792,19 +3186,28 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
         }
     };
 
+    // The slack columns are the same width, so a block of packed columns
+    // between two of them sits where their contents do not push it.
+    let share = format!(" style=\"width:{}%\"", 100 / slack.len().max(1));
     let mut html = format!(
         "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"><thead><tr>"
     );
-    for (index, (header, numeric)) in headers.iter().zip(&numeric).enumerate() {
-        let align = if *numeric { "text-right" } else { "text-left" };
+    for (index, (header, alignment)) in headers.iter().zip(&alignment).enumerate() {
+        let align = match *alignment {
+            NUMERIC_CLASSES => "text-right",
+            CENTERED_CLASSES => "text-center",
+            _ => "text-left",
+        };
         let classes = column(index);
+        let width = if slack.contains(&index) {
+            share.as_str()
+        } else {
+            ""
+        };
         let (title, tooltip) = header.split_once(TOOLTIP_SEPARATOR).unwrap_or((header, ""));
         html.push_str(&format!(
-            "<th class=\"{classes} {HEADER_CLASSES} {align}\">{}</th>",
-            explained(
-                title.trim_start_matches([NUMERIC_MARKER, SLACK_MARKER]),
-                tooltip
-            )
+            "<th class=\"{classes} {HEADER_CLASSES} {align}\"{width}>{}</th>",
+            explained(title.trim_start_matches(MARKERS), tooltip)
         ));
     }
     html.push_str("</tr></thead><tbody>");
@@ -2819,8 +3222,7 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
 
     for row in rows {
         html.push_str(&format!("<tr class=\"{ROW_CLASSES}\">"));
-        for (index, (cell, numeric)) in row.iter().zip(&numeric).enumerate() {
-            let align = if *numeric { NUMERIC_CLASSES } else { "" };
+        for (index, (cell, align)) in row.iter().zip(&alignment).enumerate() {
             let classes = column(index);
             html.push_str(&format!(
                 "<td class=\"{classes} {CELL_CLASSES} {align}\">{cell}</td>"
@@ -2880,4 +3282,25 @@ fn strip_ansi(text: &str) -> String {
     }
 
     stripped
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_cover_tells_text_from_bytes() {
+        assert!(super::is_text(b"; a warrior\nmov eax, 1\n"));
+        assert!(!super::is_text(b"\x7fELF\x02\x01"));
+        assert!(!super::is_text(b""));
+        assert_eq!(
+            super::task_title("# Sanity check\n\nSubmit"),
+            "Sanity check"
+        );
+        assert_eq!(super::task_title("no heading"), "");
+    }
+
+    #[test]
+    fn no_cover_comes_from_outside_the_games_directory() {
+        assert!(super::cover_path("../Cargo.toml").is_none());
+        assert!(super::game_cover("no-such-game").is_none());
+    }
 }
