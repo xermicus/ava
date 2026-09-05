@@ -87,7 +87,7 @@ The metrics also record which models were accessed through the proxy, exposing a
 
 ## Game definitions
 
-Benchmarks are implemented as games. A game verifies what an agent left and ranks the entries it kept, and a game with an automated playout fights two entries against each other, which is what tournaments are made of.
+Benchmarks are implemented as games. A game verifies what an agent left and ranks the entries it kept, and a multiplayer game fights two entries against each other or has agents attack them, which is what tournaments are made of.
 
 ### Verdicts, fights and metrics
 

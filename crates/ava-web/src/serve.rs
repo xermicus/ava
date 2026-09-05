@@ -189,6 +189,14 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         [""] => views::runs_page(&notice, &selection, &pending),
         ["scoreboard"] => views::scoreboard_page(),
         ["games"] => views::games_page(),
+        ["games", name, "cover"] => {
+            return match views::game_cover(name) {
+                Some((contents, kind)) => {
+                    tiny_http::Response::from_data(contents).with_header(content_type(kind))
+                }
+                None => plain_response(404, "no such cover\n"),
+            };
+        }
         ["tournaments"] => views::tournaments_page(&notice, &selection),
         ["tournament", name] => views::tournament_page(name, &notice, &selection),
         ["tournament", name, file] => {
@@ -373,7 +381,7 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
     };
 
     let game = value(form, "game");
-    let games = views::startable_games().map_err(|error| Refusal::Failed(error.to_string()))?;
+    let games = views::games().map_err(|error| Refusal::Failed(error.to_string()))?;
     if !games.iter().any(|known| known == game) {
         return Err(Refusal::Rejected(format!("unknown game `{game}`")));
     }

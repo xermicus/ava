@@ -317,6 +317,10 @@ const SCORER_DOCKERFILE: &str = "scorer/Dockerfile";
 const REPOSITORY_CONTEXT: &str = ".";
 const GAMES_DIRECTORY: &str = "games";
 const TASK_DIRECTORY: &str = "task";
+/// The tasks of a multiplayer game whose entries agents attack: defending an
+/// entry, and attacking the entry of another seat.
+const DEFEND_DIRECTORY: &str = "defend";
+const ATTACK_DIRECTORY: &str = "attack";
 const TASK_INSTRUCTIONS: &str = "README.md";
 
 const TASK_MOUNT: &str = "/home/agent/task";
@@ -710,7 +714,9 @@ fn start_score_server(
     log::info!("starting the scoring server {container}");
 
     let task = read_only_mount(
-        &format!("{GAMES_DIRECTORY}/{game}/{TASK_DIRECTORY}"),
+        &task_directory(game, challenge.is_some())
+            .display()
+            .to_string(),
         TASK_MOUNT,
     )?;
     let readme = read_only_mount(
@@ -911,6 +917,32 @@ pub fn write_run(run: &str, record: &ava_wire::Run) -> std::io::Result<()> {
 
 /// The commit the folder of `game`, and the folder of its image, was last
 /// changed in, marked when the working tree differs from it. Empty outside a
+/// Whether the entries of `game` are attacked by agents, which is what an
+/// attack task in its folder says.
+pub fn attacked(game: &str) -> bool {
+    std::path::Path::new(GAMES_DIRECTORY)
+        .join(game)
+        .join(ATTACK_DIRECTORY)
+        .is_dir()
+}
+
+/// The folder holding the task a run of `game` gets: the attack task when the
+/// run `attacks` an entry, else the defence when the game has one, else the
+/// task.
+pub fn task_directory(game: &str, attacks: bool) -> std::path::PathBuf {
+    let folder = std::path::Path::new(GAMES_DIRECTORY).join(game);
+    if attacks {
+        return folder.join(ATTACK_DIRECTORY);
+    }
+
+    let defend = folder.join(DEFEND_DIRECTORY);
+    if defend.is_dir() {
+        return defend;
+    }
+
+    folder.join(TASK_DIRECTORY)
+}
+
 /// repository.
 pub fn game_version(game: &str) -> String {
     let mut folders = vec![format!("{GAMES_DIRECTORY}/{game}")];
@@ -1390,19 +1422,13 @@ fn require_game(game: &str, challenge: Option<&Challenge>) -> std::io::Result<()
         ));
     }
 
-    if challenge.is_none()
-        && let Some(attacked) = ava_game::attacked_by(game)
-    {
+    if challenge.is_some() && !attacked(game) {
         return Err(std::io::Error::other(format!(
-            "{game} attacks the entries of {} runs and only starts as one, play a {} tournament",
-            attacked.name(),
-            attacked.name()
+            "{game} has no attack task, nothing attacks its entries"
         )));
     }
 
-    let task = std::path::Path::new(GAMES_DIRECTORY)
-        .join(game)
-        .join(TASK_DIRECTORY);
+    let task = task_directory(game, challenge.is_some());
     if !task.is_dir() {
         return Err(std::io::Error::other(format!(
             "the task folder {} does not exist",

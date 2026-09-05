@@ -1,5 +1,5 @@
 //! The r2wars games, one per architecture: a warrior is verified by whether
-//! r2wars accepts it and fights the other warriors in the playout.
+//! r2wars accepts it and fights the other warriors in the tournaments.
 
 /// The folder holding the Dockerfile every r2wars game plays on.
 const IMAGE: &str = "r2wars";
@@ -68,8 +68,8 @@ impl crate::Game for R2wars {
         self.entry
     }
 
-    fn playout(&self) -> crate::Playout {
-        crate::Playout::Automated
+    fn mode(&self) -> crate::Mode {
+        crate::Mode::Multiplayer
     }
 
     /// Verify the submitted assembly the way r2wars loads it.

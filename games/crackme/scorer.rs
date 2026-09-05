@@ -1,4 +1,4 @@
-//! The crackme games: one seat writes a crackme with the keygen that unlocks
+//! The crackme game: one seat writes a crackme with the keygen that unlocks
 //! it, the other seats write a keygen for that crackme.
 //!
 //! A keygen turns a number into a key: the same key for the same number, a
@@ -6,15 +6,14 @@
 //! and exits 0 when the key is the one its keygen makes for that number, 1
 //! for anything else. Since the crackme checks the key against the number,
 //! keys found for other numbers open nothing, and a solver has to reproduce
-//! the function. Authoring is verified by running a sample of random numbers
+//! the function. The defence is verified by running a sample of random numbers
 //! through the author's keygen into the crackme, and by pairs the crackme
-//! must refuse. Solving is verified by running the sample through the
+//! must refuse. The attack is verified by running the sample through the
 //! attacker's keygen into the crackme of the defending seat, mounted as the
 //! challenge. Both binaries run confined to the system directories and
 //! themselves, so neither can read or run the other.
 
-const AUTHOR_GAME: &str = "crackme";
-const SOLVE_GAME: &str = "crackme-solve";
+const GAME_NAME: &str = "crackme";
 
 /// The crackme, an ELF started with a number and a key as its arguments.
 const CRACKME: &str = "crackme";
@@ -48,124 +47,116 @@ const SYSTEM_DIRECTORIES: [&str; 6] = ["/usr", "/lib", "/lib64", "/bin", "/sbin"
 /// and the keys of other numbers.
 const REFUSED_KEYS: [&str; 2] = ["", "password"];
 
-/// The authoring game: write a crackme and the keygen unlocking it.
-pub struct Author;
+/// The crackme game: defended with a crackme and the keygen unlocking it,
+/// attacked with a keygen for the crackme mounted as the challenge.
+pub struct Crackme;
 
-/// The solving game: write a keygen for the crackme mounted as the challenge.
-pub struct Solve;
-
-impl crate::Game for Author {
+impl crate::Game for Crackme {
     fn name(&self) -> &'static str {
-        AUTHOR_GAME
+        GAME_NAME
     }
 
     fn entry(&self) -> &'static str {
         CRACKME
     }
 
-    fn playout(&self) -> crate::Playout {
-        crate::Playout::Played {
-            challenge: SOLVE_GAME,
-        }
-    }
-
-    /// Verify that the crackme accepts the key the keygen makes for a number,
-    /// and refuses altered keys, the keys of other numbers and fixed wrong keys.
-    fn verify(
-        &self,
-        submission: &std::path::Path,
-        _challenge: Option<&std::path::Path>,
-    ) -> std::io::Result<ava_wire::Verdict> {
-        let crackme = submission.join(CRACKME);
-        let keygen = submission.join(KEYGEN);
-        for (binary, name) in [(&crackme, CRACKME), (&keygen, KEYGEN)] {
-            if let Some(reason) = unfit_binary(binary, name)? {
-                return Ok(crate::failed(reason));
-            }
-        }
-
-        let numbers = sample();
-        let keys = match generated(&keygen, &numbers)? {
-            Ok(keys) => keys,
-            Err(reason) => return Ok(crate::failed(reason)),
-        };
-
-        for (number, key) in numbers.iter().zip(&keys) {
-            if let Some(reason) = refused(&crackme, *number, key)? {
-                return Ok(crate::failed(format!(
-                    "{CRACKME} refuses the key of {number} from its own {KEYGEN}: {reason}"
-                )));
-            }
-        }
-
-        for (index, (number, key)) in numbers.iter().zip(&keys).enumerate().take(ALTERED) {
-            let other = &keys[(index + 1) % keys.len()];
-            for wrong in REFUSED_KEYS
-                .iter()
-                .map(|wrong| wrong.to_string())
-                .chain([altered(key), other.clone()])
-            {
-                if refused(&crackme, *number, &wrong)?.is_none() {
-                    return Ok(crate::failed(format!(
-                        "{CRACKME} accepts `{wrong}` for {number}, which its {KEYGEN} never made for it"
-                    )));
-                }
-            }
-        }
-
-        log::info!(
-            "{CRACKME} accepts the {SAMPLE} keys of its {KEYGEN} for their numbers and refuses the wrong ones"
-        );
-
-        Ok(ava_wire::Verdict::passed())
-    }
-}
-
-impl crate::Game for Solve {
-    fn name(&self) -> &'static str {
-        SOLVE_GAME
-    }
-
-    fn entry(&self) -> &'static str {
+    fn attack_entry(&self) -> &'static str {
         KEYGEN
     }
 
-    /// Verify that the submitted keygen unlocks the crackme mounted as the challenge.
+    fn mode(&self) -> crate::Mode {
+        crate::Mode::Multiplayer
+    }
+
+    /// Verify the defence without a challenge and the attack against one.
     fn verify(
         &self,
         submission: &std::path::Path,
         challenge: Option<&std::path::Path>,
     ) -> std::io::Result<ava_wire::Verdict> {
-        let Some(challenge) = challenge else {
-            return Err(std::io::Error::other(format!(
-                "{SOLVE_GAME} verifies against a challenge and none was mounted"
-            )));
-        };
-        let crackme = challenge.join(CRACKME);
-        let keygen = submission.join(KEYGEN);
+        match challenge {
+            Some(challenge) => verify_attack(submission, challenge),
+            None => verify_defence(submission),
+        }
+    }
+}
 
-        if let Some(reason) = unfit_binary(&keygen, KEYGEN)? {
+/// Verify that the crackme accepts the key the keygen makes for a number,
+/// and refuses altered keys, the keys of other numbers and fixed wrong keys.
+fn verify_defence(submission: &std::path::Path) -> std::io::Result<ava_wire::Verdict> {
+    let crackme = submission.join(CRACKME);
+    let keygen = submission.join(KEYGEN);
+    for (binary, name) in [(&crackme, CRACKME), (&keygen, KEYGEN)] {
+        if let Some(reason) = unfit_binary(binary, name)? {
             return Ok(crate::failed(reason));
         }
+    }
 
-        let numbers = sample();
-        let keys = match generated(&keygen, &numbers)? {
-            Ok(keys) => keys,
-            Err(reason) => return Ok(crate::failed(reason)),
-        };
+    let numbers = sample();
+    let keys = match generated(&keygen, &numbers)? {
+        Ok(keys) => keys,
+        Err(reason) => return Ok(crate::failed(reason)),
+    };
 
-        for (number, key) in numbers.iter().zip(&keys) {
-            if let Some(reason) = refused(&crackme, *number, key)? {
+    for (number, key) in numbers.iter().zip(&keys) {
+        if let Some(reason) = refused(&crackme, *number, key)? {
+            return Ok(crate::failed(format!(
+                "{CRACKME} refuses the key of {number} from its own {KEYGEN}: {reason}"
+            )));
+        }
+    }
+
+    for (index, (number, key)) in numbers.iter().zip(&keys).enumerate().take(ALTERED) {
+        let other = &keys[(index + 1) % keys.len()];
+        for wrong in REFUSED_KEYS
+            .iter()
+            .map(|wrong| wrong.to_string())
+            .chain([altered(key), other.clone()])
+        {
+            if refused(&crackme, *number, &wrong)?.is_none() {
                 return Ok(crate::failed(format!(
-                    "the {CRACKME} refuses the key of {number}: {reason}"
+                    "{CRACKME} accepts `{wrong}` for {number}, which its {KEYGEN} never made for it"
                 )));
             }
         }
-
-        log::info!("the {CRACKME} accepts the {SAMPLE} keys of the {KEYGEN} for their numbers");
-
-        Ok(ava_wire::Verdict::passed())
     }
+
+    log::info!(
+        "{CRACKME} accepts the {SAMPLE} keys of its {KEYGEN} for their numbers and refuses the wrong ones"
+    );
+
+    Ok(ava_wire::Verdict::passed())
+}
+
+/// Verify that the submitted keygen unlocks the crackme mounted as the challenge.
+fn verify_attack(
+    submission: &std::path::Path,
+    challenge: &std::path::Path,
+) -> std::io::Result<ava_wire::Verdict> {
+    let crackme = challenge.join(CRACKME);
+    let keygen = submission.join(KEYGEN);
+
+    if let Some(reason) = unfit_binary(&keygen, KEYGEN)? {
+        return Ok(crate::failed(reason));
+    }
+
+    let numbers = sample();
+    let keys = match generated(&keygen, &numbers)? {
+        Ok(keys) => keys,
+        Err(reason) => return Ok(crate::failed(reason)),
+    };
+
+    for (number, key) in numbers.iter().zip(&keys) {
+        if let Some(reason) = refused(&crackme, *number, key)? {
+            return Ok(crate::failed(format!(
+                "the {CRACKME} refuses the key of {number}: {reason}"
+            )));
+        }
+    }
+
+    log::info!("the {CRACKME} accepts the {SAMPLE} keys of the {KEYGEN} for their numbers");
+
+    Ok(ava_wire::Verdict::passed())
 }
 
 /// Random numbers for one verification, distinct from each other, so a

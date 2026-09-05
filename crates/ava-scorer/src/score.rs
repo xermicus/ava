@@ -134,7 +134,11 @@ pub fn run(command: &Score) -> std::io::Result<i32> {
                     if verdict.passed { "passed" } else { "failed" }
                 );
                 report.verdict = Some(verdict);
-                report.entry = Some(game.entry());
+                report.entry = Some(if command.challenge.is_some() {
+                    game.attack_entry()
+                } else {
+                    game.entry()
+                });
             }
         }
     }

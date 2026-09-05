@@ -179,7 +179,7 @@ pub struct Metrics {
     pub mean_first_token_seconds: f64,
 }
 
-/// The entry a run attacks, for a playout an agent plays: the run that kept it
+/// The entry a run attacks, for an attack an agent plays: the run that kept it
 /// and the seconds of the attempt it came from.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Challenge {
@@ -301,7 +301,7 @@ pub struct Tournament {
     pub pairing: String,
     /// The seconds every run of the tournament is given.
     pub limit_seconds: u64,
-    /// The combats every fight of an automated playout plays.
+    /// The combats every fight the scorer plays.
     #[serde(default = "one_combat")]
     pub combats: u64,
     /// The agent analyzing every run of a round once the round is over.
@@ -367,7 +367,7 @@ pub struct Pairing {
     /// Why the tally is not the outcome of a fight: a forfeit, or a fight that failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The run that played the pairing, for a playout an agent plays.
+    /// The run that played the pairing, for an attack an agent plays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
 }

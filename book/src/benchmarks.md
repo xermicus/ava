@@ -7,6 +7,7 @@ Run `ava agent -a <agent> -m <model> -g <name>`, where `-t` sets the seconds the
 `ava image` rebuilds every docker image ahead of runs; `-a <agent>`, `-p` (proxy) and `-s` (scorer) select single images.
 
 `ava serve` starts the web interface on `localhost:2828`, `-p` picks another port. It starts and stops runs and shows them with their live state, next to the scoreboard, the games with their standings, the tournaments with their lobbies and rounds, and the setup, rendered from the records on disk.
+The games page is one card per game, its entry of record on the cover, folding out to the text of its task.
 
 `ava --usage` asks every backend for its limits and prints them with the usage recorded over the runs on disk. The setup page shows the same.
 

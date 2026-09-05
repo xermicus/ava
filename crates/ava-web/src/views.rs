@@ -5,12 +5,8 @@ use ava_game::scoring::Scoring;
 use ava_run::{docker, process, registry, runs, tournament, usage};
 
 const GAMES_DIRECTORY: &str = "games";
-const TASK_DIRECTORY: &str = "task";
 const TASK_FILE: &str = "task.md";
 const INSTRUCTIONS_FILE: &str = "README.md";
-
-/// How many passing runs a game lists on its standings.
-const STANDINGS_LIMIT: usize = 3;
 
 /// What the start panel offers preselected on a fresh page.
 const DEFAULT_GAME: &str = "sanity-check";
@@ -181,6 +177,58 @@ const TILE_TEXT_CLASSES: &str = "mt-1 text-sm font-semibold text-neutral-100 fon
 const TILE_DETAIL_CLASSES: &str = "mt-1 text-xs text-neutral-500 break-all";
 const TILE_GRID_CLASSES: &str = "mt-3 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3";
 
+/// The games page: a grid of cards, one per game, each folding out to the
+/// full width of the grid.
+const STOREFRONT_CLASSES: &str =
+    "grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start";
+const GAME_CARD_CLASSES: &str = "group rounded-lg border border-neutral-800 bg-neutral-900 \
+     overflow-hidden open:col-span-full";
+const GAME_FACE_CLASSES: &str = "block cursor-pointer list-none [&::-webkit-details-marker]:hidden \
+     p-4 hover:bg-neutral-800/40 transition-colors focus-visible:outline-none \
+     focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/50";
+const GAME_NAME_CLASSES: &str = "font-mono text-sm font-semibold text-neutral-100";
+const GAME_TAGLINE_CLASSES: &str = "flex items-baseline justify-between gap-3 mt-1";
+const FACT_VALUE_CLASSES: &str = "font-mono tabular-nums text-neutral-100";
+const CHEVRON_CLASSES: &str = "h-4 w-4 shrink-0 text-neutral-500 transition-transform \
+     motion-reduce:transition-none group-open:rotate-180";
+const GAME_BODY_CLASSES: &str = "border-t border-neutral-800 px-4 pb-4";
+/// Between the defend task and the attack task of a game holding both.
+const TASK_SEPARATOR: &str = "<hr class=\"my-6 border-neutral-800\">";
+
+/// The pills naming who an entry is up against.
+const SINGLE_PLAYER_PILL: &str = "bg-neutral-800 text-neutral-400";
+const MULTIPLAYER_PILL: &str = "bg-indigo-500/10 text-indigo-300";
+
+/// The cover of a card shows the entry of record as it is: the first bytes of
+/// a binary as a grid of cells shaded by their value, so the size and the
+/// shape of the file are the picture, and a text file as its text.
+const COVER_CLASSES: &str = "flex h-20 w-20 shrink-0 rounded-md border border-neutral-800 \
+     bg-neutral-950 overflow-hidden";
+const COVER_EMPTY_CLASSES: &str =
+    "h-20 w-20 shrink-0 rounded-md border border-dashed border-neutral-800";
+const COVER_ART_CLASSES: &str = "block h-full w-full text-neutral-200";
+const COVER_IMAGE_CLASSES: &str = "block h-full w-full object-cover";
+/// The image a game folder may hold for its cover, the first one found.
+const COVER_FILES: [(&str, &str); 4] = [
+    ("cover.png", "image/png"),
+    ("cover.svg", "image/svg+xml"),
+    ("cover.webp", "image/webp"),
+    ("cover.jpg", "image/jpeg"),
+];
+const COVER_TEXT_CLASSES: &str = "block w-full p-1.5 font-mono text-[10px] leading-tight \
+     text-neutral-300 whitespace-pre overflow-hidden";
+const COVER_SIDE: usize = 16;
+const COVER_BYTES: usize = COVER_SIDE * COVER_SIDE;
+/// A text entry no longer than this reads as text on the cover.
+const TEXT_ENTRY_LIMIT: u64 = 4096;
+/// The facts keep a reading width when the card spans the grid.
+const FACTS_CLASSES: &str = "flex-1 min-w-0 max-w-xl flex flex-col gap-1.5";
+const FACT_ROW_CLASSES: &str = "flex items-center gap-3 h-5";
+/// Who holds the record, under its row, kept as a line even when empty so
+/// every face stands the same height.
+const HOLDER_CLASSES: &str = "block h-4 mt-1 pl-[4.25rem] text-xs text-neutral-500 truncate";
+const FACT_LABEL_CLASSES: &str = "w-14 shrink-0 text-xs text-neutral-500";
+
 /// A tile with nothing to show says why, quietly.
 const PLACEHOLDER_CLASSES: &str = "text-sm font-normal text-neutral-500";
 const AFTER_THE_RUN: &str = "after the run";
@@ -298,8 +346,11 @@ impl RunEntry {
         let record = if live {
             None
         } else {
-            ava_game::find(&run.game)
-                .and_then(|game| runs::entry_of_record(game, directory).ok().flatten())
+            ava_game::find(&run.game).and_then(|game| {
+                runs::entry_of_record(game, directory, run.challenge.is_some())
+                    .ok()
+                    .flatten()
+            })
         };
 
         let (attempts, metrics) = if live {
@@ -518,7 +569,7 @@ impl RunEntry {
             self.run_cell(),
             self.state(),
             self.analysis_cell(),
-            escape(&self.run.game),
+            game_label(&self.run),
             escape(&self.run.model),
             self.agent(),
             self.time_cell(),
@@ -666,7 +717,7 @@ pub(crate) fn runs_page(
 /// hold, with the carried `selection` or the defaults preselected.
 fn start_panel(selection: &Selection) -> std::io::Result<String> {
     let registry = registry::load()?;
-    let games = startable_games()?;
+    let games = games()?;
     let games = games.iter().map(String::as_str).collect::<Vec<_>>();
 
     let limit = selection
@@ -978,7 +1029,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     if let Some(game) = ava_game::find(&entry.run.game)
         && !entry.live
     {
-        let kept = runs::entries(game, &directory)?;
+        let file = runs::kept_file(game, entry.run.challenge.is_some());
+        let kept = runs::entries(game, &directory, entry.run.challenge.is_some())?;
         if !kept.is_empty() {
             let record = entry.record.as_ref().map(|record| record.seconds);
             let rows = kept
@@ -997,8 +1049,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                             "<a class=\"{LINK_CLASSES}\" href=\"/run/{}/entries/{}/{}\">{}</a>",
                             escape(name),
                             kept.seconds,
-                            escape(game.entry()),
-                            escape(game.entry())
+                            escape(file),
+                            escape(file)
                         ),
                     ]
                 })
@@ -1083,7 +1135,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
     let mut standings: Vec<(String, String, String, Standing)> = Vec::new();
 
     for run in runs.iter().filter(|run| run.run.finished_seconds.is_some()) {
-        let key = (run.run.game.clone(), run.run.model.clone(), run.agent());
+        let key = (game_label(&run.run), run.run.model.clone(), run.agent());
 
         let standing = match standings
             .iter_mut()
@@ -1130,7 +1182,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         .iter()
         .map(|(game, model, agent, standing)| {
             vec![
-                escape(game),
+                game.clone(),
                 escape(model),
                 agent.clone(),
                 standing.runs.to_string(),
@@ -1165,86 +1217,31 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
     Ok(page("scoreboard", &body))
 }
 
-/// Every game: its task, its record and its standings.
+/// Every game as a card: the name, the mode and the record on its face,
+/// the standings, the heatmap and the task folded behind it.
 pub(crate) fn games_page() -> std::io::Result<String> {
     let runs = collect_runs()?;
-    let mut body = String::new();
+    let mut cards = String::new();
 
-    for (index, game) in games()?.into_iter().enumerate() {
-        let played: Vec<&RunEntry> = runs.iter().filter(|run| run.run.game == game).collect();
-        let passed = played.iter().filter(|run| run.passed()).count();
-        let mut standing: Vec<(&RunEntry, &runs::Entry)> = played
+    for game in games()? {
+        let played: Vec<&RunEntry> = runs
             .iter()
-            .filter_map(|run| run.record.as_ref().map(|record| (*run, record)))
-            .collect();
-        standing.sort_by_key(|(_, record)| std::cmp::Reverse((record.points, record.seconds)));
-
-        let playout = ava_game::find(&game)
-            .filter(|game| game.playout() == ava_game::Playout::Automated)
-            .map(|_| "the entries fight each other in tournaments")
-            .unwrap_or_default();
-        let record = match standing.first() {
-            Some((best, record)) => match record.points {
-                Some(points) => format!(
-                    "{} runs, {passed} passed, the record is {points} by {} on {}",
-                    played.len(),
-                    escape(&best.run.model),
-                    best.agent()
-                ),
-                None => format!("{} runs, {passed} passed", played.len()),
-            },
-            None if played.is_empty() => "not played yet".to_string(),
-            None => format!("{} runs, none passing", played.len()),
-        };
-
-        let title_classes = if index == 0 {
-            FIRST_TITLE_CLASSES
-        } else {
-            TITLE_CLASSES
-        };
-        body.push_str(&format!(
-            "<p class=\"{title_classes}\">{} <span class=\"{NOTE_CLASSES} font-normal\">{record}</span></p>",
-            explained(&escape(&game), playout)
-        ));
-
-        let task = std::fs::read_to_string(
-            std::path::Path::new(GAMES_DIRECTORY)
-                .join(&game)
-                .join(TASK_DIRECTORY)
-                .join(TASK_FILE),
-        )
-        .unwrap_or_default();
-
-        let standings: Vec<Vec<String>> = standing
-            .iter()
-            .take(STANDINGS_LIMIT)
-            .map(|(run, record)| {
-                vec![
-                    escape(&run.run.model),
-                    run.agent(),
-                    record.points.map(points_meter).unwrap_or_default(),
-                    record.seconds.to_string(),
-                    run.link(),
-                ]
+            .filter(|run| {
+                run.run.game == game
+                    && run.run.challenge.is_none()
+                    && run.run.finished_seconds.is_some()
             })
             .collect();
-
-        body.push_str(&format!(
-            "<div class=\"{CARD_CLASSES} overflow-hidden\"><div class=\"px-4 pb-4\">{}</div>{}</div>",
-            ava_markdown::render(&task),
-            table(
-                &["MODEL", "HARNESS", "*POINTS", "#SECONDS", "RUN"],
-                standings,
-                None,
-            )
-        ));
+        cards.push_str(&game_card(&game, &played));
     }
+
+    let mut body = format!("<div class=\"{STOREFRONT_CLASSES}\">{cards}</div>");
 
     if let Ok(instructions) =
         std::fs::read_to_string(std::path::Path::new(GAMES_DIRECTORY).join(INSTRUCTIONS_FILE))
     {
         body.push_str(&format!(
-            "<details class=\"mt-8\"><summary class=\"{SUMMARY_CLASSES}\">the instructions shared by every game</summary><div class=\"{CARD_CLASSES} mt-3 px-4 pb-4\">{}</div></details>",
+            "<div class=\"{CARD_CLASSES} mt-8 px-4 pb-4\">{}</div>",
             ava_markdown::render(&instructions)
         ));
     }
@@ -1252,13 +1249,238 @@ pub(crate) fn games_page() -> std::io::Result<String> {
     Ok(page("games", &body))
 }
 
+/// The card of one game over the finished runs that `played` it, folding
+/// out to the text of its task.
+fn game_card(game: &str, played: &[&RunEntry]) -> String {
+    let task = std::fs::read_to_string(docker::task_directory(game, false).join(TASK_FILE))
+        .unwrap_or_default();
+    let attack = if docker::attacked(game) {
+        std::fs::read_to_string(docker::task_directory(game, true).join(TASK_FILE))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let passed = played.iter().filter(|run| run.passed()).count() as u64;
+    let best = played
+        .iter()
+        .filter_map(|run| run.record.as_ref().map(|record| (*run, record)))
+        .max_by_key(|(_, record)| (record.points, record.seconds));
+
+    format!(
+        "<details class=\"{GAME_CARD_CLASSES}\">{}\
+         <div class=\"{GAME_BODY_CLASSES}\">{}</div></details>",
+        game_face(game, &task, played.len() as u64, passed, best),
+        [task, attack]
+            .iter()
+            .filter(|text| !text.is_empty())
+            .map(|text| ava_markdown::render(text))
+            .collect::<Vec<String>>()
+            .join(TASK_SEPARATOR)
+    )
+}
+
+/// The face of a card: the name and the mode, the title of the task and
+/// the image it plays on, then the cover beside the runs and the record.
+fn game_face(
+    game: &str,
+    task: &str,
+    runs: u64,
+    passed: u64,
+    best: Option<(&RunEntry, &runs::Entry)>,
+) -> String {
+    let image = ava_game::find(game)
+        .and_then(|found| found.image())
+        .map(|image| {
+            format!(
+                "<span class=\"{MUTED_CLASSES} {MONO_CLASSES} text-xs whitespace-nowrap\">image {}</span>",
+                escape(image)
+            )
+        })
+        .unwrap_or_default();
+
+    let (record, holder) = match best {
+        Some((run, entry)) => match entry.points {
+            Some(points) => (
+                points_meter(points),
+                format!("{} \u{00b7} {}", escape(&run.run.model), run.agent()),
+            ),
+            None => (placeholder(UNRANKED), String::new()),
+        },
+        None if passed > 0 => (placeholder(NOT_KEPT), String::new()),
+        None => (placeholder(NO_ENTRY), String::new()),
+    };
+
+    format!(
+        "<summary class=\"{GAME_FACE_CLASSES}\">\
+         <span class=\"flex items-center gap-3\">\
+         <span class=\"{GAME_NAME_CLASSES}\">{}</span>{}<span class=\"flex-1\"></span>\
+         {}\
+         </span>\
+         <span class=\"{GAME_TAGLINE_CLASSES}\"><span class=\"{NOTE_CLASSES} truncate\">{}</span>{image}</span>\
+         <span class=\"flex items-start gap-4 mt-4\">{}\
+         <span class=\"{FACTS_CLASSES}\">{}{}<span class=\"{HOLDER_CLASSES}\">{holder}</span></span>\
+         </span>\
+         </summary>",
+        escape(game),
+        mode_badge(game),
+        chevron(CHEVRON_CLASSES),
+        escape(task_title(task)),
+        cover(game, best),
+        fact(
+            "runs",
+            &format!("<span class=\"{FACT_VALUE_CLASSES}\">{runs}</span>")
+        ),
+        fact("record", &record),
+    )
+}
+
+/// The cover of a card: the image the game folder provides, else the entry
+/// of record, else an empty frame.
+fn cover(game: &str, best: Option<(&RunEntry, &runs::Entry)>) -> String {
+    if cover_path(game).is_some() {
+        return format!(
+            "<span class=\"{COVER_CLASSES}\"><img class=\"{COVER_IMAGE_CLASSES}\" src=\"/games/{}/cover\" alt=\"\"></span>",
+            escape(game)
+        );
+    }
+
+    let Some((run, entry)) = best else {
+        return format!("<span class=\"{COVER_EMPTY_CLASSES}\"></span>");
+    };
+
+    let head = read_head(&entry.path, COVER_BYTES).unwrap_or_default();
+    let art = if entry.bytes <= TEXT_ENTRY_LIMIT && is_text(&head) {
+        text_cover(&head)
+    } else {
+        byte_cover(&head)
+    };
+
+    format!(
+        "<span class=\"{COVER_CLASSES}\" title=\"{}\">{art}</span>",
+        escape(&format!(
+            "the entry of record, {} bytes, kept by {}",
+            entry.bytes, run.name
+        ))
+    )
+}
+
+/// The cover image of the game `name` in its folder, with its content type,
+/// for a name the games directory knows.
+fn cover_path(name: &str) -> Option<(std::path::PathBuf, &'static str)> {
+    if !games().ok()?.iter().any(|known| known == name) {
+        return None;
+    }
+
+    COVER_FILES.iter().find_map(|(file, content_type)| {
+        let path = std::path::Path::new(GAMES_DIRECTORY).join(name).join(file);
+        path.is_file().then_some((path, *content_type))
+    })
+}
+
+/// The cover image of the game `name` with its content type, if it has one.
+pub(crate) fn game_cover(name: &str) -> Option<(Vec<u8>, &'static str)> {
+    let (path, content_type) = cover_path(name)?;
+    Some((std::fs::read(path).ok()?, content_type))
+}
+
+/// The first `limit` bytes of the file at `path`.
+fn read_head(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut head = Vec::with_capacity(limit);
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit as u64), &mut head)?;
+
+    Ok(head)
+}
+
+/// Whether `bytes` are printable ASCII and whitespace throughout.
+fn is_text(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
+}
+
+/// A text entry as its text, one line centered and more read from the top.
+fn text_cover(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let align = if text.trim().lines().count() <= 1 {
+        "self-center text-center"
+    } else {
+        "self-start"
+    };
+
+    format!(
+        "<span class=\"{COVER_TEXT_CLASSES} {align}\">{}</span>",
+        escape(text.trim_end())
+    )
+}
+
+/// A binary entry as a grid of its first bytes, one cell each, shaded by
+/// value: a zero byte leaves the surface bare and the cells past the end of
+/// a short file stay empty, so the size of the file is part of the picture.
+fn byte_cover(bytes: &[u8]) -> String {
+    let mut cells = String::new();
+    for (index, byte) in bytes.iter().enumerate().filter(|(_, byte)| **byte != 0) {
+        cells.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"1\" height=\"1\" fill-opacity=\"{:.2}\"/>",
+            index % COVER_SIDE,
+            index / COVER_SIDE,
+            f64::from(*byte) / f64::from(u8::MAX)
+        ));
+    }
+
+    format!(
+        "<svg class=\"{COVER_ART_CLASSES}\" viewBox=\"0 0 {COVER_SIDE} {COVER_SIDE}\" fill=\"currentColor\" shape-rendering=\"crispEdges\">{cells}</svg>"
+    )
+}
+
+/// A chevron pointing down, turned by `classes` where it marks an open fold.
+fn chevron(classes: &str) -> String {
+    format!(
+        "<svg class=\"{classes}\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 9l6 6 6-6\"/></svg>"
+    )
+}
+
+/// The first heading of a task, or nothing when it has none.
+fn task_title(task: &str) -> &str {
+    task.lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .unwrap_or_default()
+        .trim()
+}
+
+/// One figure on the face of a card, its label beside it.
+fn fact(label: &str, value: &str) -> String {
+    format!(
+        "<span class=\"{FACT_ROW_CLASSES}\"><span class=\"{FACT_LABEL_CLASSES}\">{label}</span><span class=\"flex-1 min-w-0\">{value}</span></span>"
+    )
+}
+
+/// The mode of a game as a pill, its meaning behind the hover.
+fn mode_badge(game: &str) -> String {
+    let Some(found) = ava_game::find(game) else {
+        return String::new();
+    };
+
+    let (tint, label, tooltip) = match found.mode() {
+        ava_game::Mode::SinglePlayer => (
+            SINGLE_PLAYER_PILL,
+            "single player",
+            "the entries are ranked alone against the ceiling of the game",
+        ),
+        ava_game::Mode::Multiplayer => (
+            MULTIPLAYER_PILL,
+            "multiplayer",
+            "the entries of the seats meet in tournaments",
+        ),
+    };
+
+    format!("<span class=\"{PILL_CLASSES} {tint} cursor-help\" title=\"{tooltip}\">{label}</span>")
+}
+
 /// The tournaments: the form opening one, and every tournament on disk.
 pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
-    let games: Vec<&str> = ava_game::GAMES
-        .iter()
-        .map(|game| game.name())
-        .filter(|game| ava_game::attacked_by(game).is_none())
-        .collect();
+    let games: Vec<&str> = ava_game::GAMES.iter().map(|game| game.name()).collect();
     let limit = selection
         .get("limit", "")
         .parse::<u64>()
@@ -1299,7 +1521,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         ),
         explained(
             "combats",
-            "the combats every fight of an automated playout plays, each best of three rounds",
+            "the combats every fight between two entries plays, each best of three rounds",
         ),
         agent_fields(
             &registry::load()?,
@@ -1388,9 +1610,9 @@ pub(crate) fn tournament_page(
     let playing = tournament::playing(name);
     let running = live_runs();
     let registry = registry::load()?;
-    let playout = ava_game::find(&record.game).map(|game| game.playout());
-    let compared = playout == Some(ava_game::Playout::Single);
-    let ordered = matches!(playout, Some(ava_game::Playout::Played { .. }));
+    let compared = ava_game::find(&record.game)
+        .is_some_and(|game| game.mode() == ava_game::Mode::SinglePlayer);
+    let ordered = docker::attacked(&record.game);
 
     let play_form = if playing || record.seats.is_empty() {
         String::new()
@@ -1747,7 +1969,7 @@ fn rating_label(rating: Option<f64>) -> String {
 
 /// The `pairings` of one round as a cross table: the tally of the row's seat
 /// against the column's seat, and its total across the row. An `ordered`
-/// playout pairs every seat with every other twice, once attacking and once
+/// round pairs every seat with every other twice, once attacking and once
 /// defending, so the row is the attacker and nothing is mirrored. While the
 /// round is `live`, a pairing without rounds is an attack still going.
 fn cross_table(
@@ -2132,21 +2354,12 @@ pub(crate) fn error_page(message: &str) -> String {
 }
 
 /// The known game folders, sorted.
-/// The games a run or a tournament can be started on: every game but the ones
-/// only starting as an attack on the entry of another.
-pub(crate) fn startable_games() -> std::io::Result<Vec<String>> {
-    Ok(games()?
-        .into_iter()
-        .filter(|game| ava_game::attacked_by(game).is_none())
-        .collect())
-}
-
 pub(crate) fn games() -> std::io::Result<Vec<String>> {
     let mut games: Vec<String> = std::fs::read_dir(GAMES_DIRECTORY)
         .map_err(|error| at_path(GAMES_DIRECTORY, error))?
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().join(TASK_DIRECTORY).is_dir())
         .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| docker::task_directory(name, false).is_dir())
         .collect();
     games.sort();
 
@@ -2169,7 +2382,7 @@ pub(crate) fn run_entry(name: &str, seconds: &str, file: &str) -> Option<Vec<u8>
     let directory = run_directory(name).ok()?;
     let run = runs::read(&directory).ok()?;
     let game = ava_game::find(&run.game)?;
-    if file != game.entry() {
+    if file != runs::kept_file(game, run.challenge.is_some()) {
         return None;
     }
 
@@ -2583,6 +2796,18 @@ fn tournament_link(name: &str) -> String {
     )
 }
 
+/// The game of a run, marked when the run attacks the entry of another.
+fn game_label(run: &ava_wire::Run) -> String {
+    if run.challenge.is_some() {
+        return format!(
+            "{} <span class=\"{MUTED_CLASSES}\">attack</span>",
+            escape(&run.game)
+        );
+    }
+
+    escape(&run.game)
+}
+
 /// The name of a run as a link into its page.
 fn run_link(name: &str) -> String {
     format!(
@@ -2800,4 +3025,25 @@ fn strip_ansi(text: &str) -> String {
     }
 
     stripped
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_cover_tells_text_from_bytes() {
+        assert!(super::is_text(b"; a warrior\nmov eax, 1\n"));
+        assert!(!super::is_text(b"\x7fELF\x02\x01"));
+        assert!(!super::is_text(b""));
+        assert_eq!(
+            super::task_title("# Sanity check\n\nSubmit"),
+            "Sanity check"
+        );
+        assert_eq!(super::task_title("no heading"), "");
+    }
+
+    #[test]
+    fn no_cover_comes_from_outside_the_games_directory() {
+        assert!(super::cover_path("../Cargo.toml").is_none());
+        assert!(super::game_cover("no-such-game").is_none());
+    }
 }

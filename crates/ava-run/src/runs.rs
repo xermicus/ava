@@ -5,6 +5,11 @@
 /// the metrics and the end it holds.
 const LEGACY_REPORT_FILE: &str = "score.json";
 
+/// The game the attacks of a crackme tournament were recorded as before the
+/// attack became a task of the crackme game itself.
+const LEGACY_ATTACK_GAME: &str = "crackme-solve";
+const LEGACY_ATTACKED_GAME: &str = "crackme";
+
 #[derive(Default, serde::Deserialize)]
 struct LegacyReport {
     #[serde(default)]
@@ -21,6 +26,10 @@ pub fn read(directory: &std::path::Path) -> std::io::Result<ava_wire::Run> {
         .map_err(|error| std::io::Error::other(format!("{}: {error}", path.display())))?;
     let mut run: ava_wire::Run = serde_json::from_str(&contents)
         .map_err(|error| std::io::Error::other(format!("{}: {error}", path.display())))?;
+
+    if run.game == LEGACY_ATTACK_GAME {
+        run.game = LEGACY_ATTACKED_GAME.to_string();
+    }
 
     if run.finished_seconds.is_none() {
         let legacy = directory.join(LEGACY_REPORT_FILE);
@@ -79,10 +88,22 @@ pub struct Entry {
     pub points: Option<u64>,
 }
 
-/// Every entry the run in `directory` kept, oldest first.
+/// The file a passing push of `game` leaves as its entry: the attacker's
+/// file when the run `attacks` the entry of another, the entry otherwise.
+pub fn kept_file(game: &dyn ava_game::Game, attacks: bool) -> &'static str {
+    if attacks {
+        game.attack_entry()
+    } else {
+        game.entry()
+    }
+}
+
+/// Every entry the run in `directory` kept, oldest first, the attacker's
+/// files when the run `attacks`.
 pub fn entries(
     game: &dyn ava_game::Game,
     directory: &std::path::Path,
+    attacks: bool,
 ) -> std::io::Result<Vec<Entry>> {
     let kept = directory.join(crate::docker::ENTRIES_DIRECTORY);
     let mut entries = Vec::new();
@@ -100,7 +121,7 @@ pub fn entries(
         else {
             continue;
         };
-        let path = attempt.path().join(game.entry());
+        let path = attempt.path().join(kept_file(game, attacks));
         let Ok(metadata) = std::fs::metadata(&path) else {
             continue;
         };
@@ -123,8 +144,9 @@ pub fn entries(
 pub fn entry_of_record(
     game: &dyn ava_game::Game,
     directory: &std::path::Path,
+    attacks: bool,
 ) -> std::io::Result<Option<Entry>> {
-    Ok(entries(game, directory)?
+    Ok(entries(game, directory, attacks)?
         .into_iter()
         .max_by_key(|entry| (entry.points, entry.seconds)))
 }

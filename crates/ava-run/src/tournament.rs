@@ -281,12 +281,6 @@ pub fn create(
     ava_game::find(game).ok_or_else(|| {
         crate::registry::unknown(game, "game", ava_game::GAMES.iter().map(|game| game.name()))
     })?;
-    if let Some(attacked) = ava_game::attacked_by(game) {
-        return Err(std::io::Error::other(format!(
-            "{game} only starts as an attack, open the tournament on {}",
-            attacked.name()
-        )));
-    }
     docker::Agent::checked_limit(limit)?;
     checked_combats(combats)?;
     docker::Analyst::checked_limit(analyst_seconds)?;
@@ -437,7 +431,7 @@ pub fn placements() -> std::io::Result<std::collections::HashMap<String, Placeme
 }
 
 /// The pairings of `round` as the standings see them: the fights or attacks
-/// recorded for an automated or played playout, or, for a game whose entries
+/// recorded for a multiplayer game, or, for a game whose entries
 /// stand alone, every pair of seats compared by the points of their entries of
 /// record, which draws every pairing of a game ranking nothing. The comparison
 /// is derived when asked, so a changed curve changes who won.
@@ -446,7 +440,7 @@ pub fn pairings(
     round: &ava_wire::Round,
 ) -> std::io::Result<Vec<ava_wire::Pairing>> {
     let game = find(&record.game)?;
-    if game.playout() != ava_game::Playout::Single {
+    if game.mode() != ava_game::Mode::SinglePlayer {
         return Ok(round.pairings.clone());
     }
 
@@ -503,6 +497,7 @@ fn entry_points(
     let kept = crate::runs::entries(
         game,
         &std::path::Path::new(docker::RUN_DIRECTORY).join(&entry.run),
+        false,
     )?;
 
     Ok(kept
@@ -666,6 +661,7 @@ pub fn play_round(
             crate::runs::entry_of_record(
                 game,
                 &std::path::Path::new(docker::RUN_DIRECTORY).join(run),
+                false,
             )
             .unwrap_or_else(|error| {
                 log::warn!("{name}: the entries of {run} cannot be read: {error}");
@@ -681,13 +677,13 @@ pub fn play_round(
         Ok(())
     })?;
 
-    match game.playout() {
+    match game.mode() {
         // The entries stand alone: the standings compare them when shown.
-        ava_game::Playout::Single => {}
-        ava_game::Playout::Automated => {
+        ava_game::Mode::SinglePlayer => {}
+        ava_game::Mode::Multiplayer if !docker::attacked(&record.game) => {
             fight_round(name, &record, round, &entries, &mut code)?;
         }
-        ava_game::Playout::Played { .. } => {
+        ava_game::Mode::Multiplayer => {
             let attacked = attack_round(
                 name,
                 &record,
@@ -976,8 +972,9 @@ fn fight_round(
     Ok(())
 }
 
-/// The second phase of a played round: every seat attacks the entry of every
-/// other seat in a run of the `challenge` game, all at once. Each pairing is
+/// The second phase of a round whose entries agents attack: every seat
+/// attacks the entry of every other seat in a run of the attack task, all at
+/// once. Each pairing is
 /// recorded with its run as the attack starts, without rounds, and completed
 /// as the run ends. The attacks on a seat that left no entry are forfeited to
 /// the attacker, and count for nothing when the attacker left none either.
@@ -990,12 +987,6 @@ fn attack_round(
     parallel: Option<usize>,
     analyses: &Analyses,
 ) -> std::io::Result<i32> {
-    let ava_game::Playout::Played { challenge } = find(&record.game)?.playout() else {
-        return Err(std::io::Error::other(format!(
-            "{} has no played playout",
-            record.game
-        )));
-    };
     let mut attacks: Vec<(docker::Launch, String)> = Vec::new();
     let mut seats: std::collections::HashMap<String, (usize, usize)> =
         std::collections::HashMap::new();
@@ -1026,7 +1017,7 @@ fn attack_round(
             let launch = docker::prepare(&docker::Agent {
                 name: seat.harness.clone(),
                 model: seat.model.clone(),
-                game: challenge.to_string(),
+                game: record.game.clone(),
                 limit: record.limit_seconds,
                 parallel: 1,
                 thinking: seat.thinking.clone(),
@@ -1056,10 +1047,7 @@ fn attack_round(
             attacks.push((launch, run));
         }
     }
-    log::info!(
-        "{name}: {} attacks start, playing {challenge}",
-        attacks.len()
-    );
+    log::info!("{name}: {} attacks start", attacks.len());
 
     let outcomes = bounded(attacks.len(), parallel, |index| {
         let (launch, run) = &attacks[index];

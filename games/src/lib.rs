@@ -11,9 +11,8 @@ pub mod sanity_check;
 pub mod scoring;
 
 /// Every game a benchmark run can play.
-pub const GAMES: [&dyn Game; 6] = [
-    &crackme::Author,
-    &crackme::Solve,
+pub const GAMES: [&dyn Game; 5] = [
+    &crackme::Crackme,
     &fib_golf::FibGolf,
     &r2wars::GAMES[0],
     &r2wars::GAMES[1],
@@ -54,16 +53,14 @@ pub(crate) fn binary_command(binary: &std::path::Path) -> std::process::Command 
 /// beyond passing ranks nothing.
 pub const MAXIMUM_POINTS: u64 = 10_000;
 
-/// How the entries of a game meet.
+/// Who an entry is up against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Playout {
+pub enum Mode {
     /// The entry stands alone against the ceiling of the game.
-    Single,
-    /// The scorer fights two entries and reports the rounds, without an agent.
-    Automated,
-    /// An agent attacks the entry of another in a run of the named game, which
-    /// is started with the entry as its challenge and verified against it.
-    Played { challenge: &'static str },
+    SinglePlayer,
+    /// The entries of the seats of a tournament meet: fought by the scorer,
+    /// or attacked by the other agents when the game has an attack task.
+    Multiplayer,
 }
 
 /// A benchmark task able to verify the submission an agent left and to rank
@@ -86,14 +83,20 @@ pub trait Game {
     /// The file the task asks for, kept as the entry of every passing attempt.
     fn entry(&self) -> &'static str;
 
-    /// How the entries of the game meet.
-    fn playout(&self) -> Playout {
-        Playout::Single
+    /// Who an entry of the game is up against.
+    fn mode(&self) -> Mode {
+        Mode::SinglePlayer
+    }
+
+    /// The file the attack task asks for, kept as the entry of a passing
+    /// attack, for a multiplayer game whose entries agents attack.
+    fn attack_entry(&self) -> &'static str {
+        self.entry()
     }
 
     /// Whether the contents of the `submission` directory do what the task asks.
     ///
-    /// A game attacking the entry of another gets that entry as the file under
+    /// An attack on the entry of another run gets that entry as the file under
     /// `challenge`, the way it was mounted into the scoring container.
     fn verify(
         &self,
@@ -109,8 +112,8 @@ pub trait Game {
     }
 
     /// Fight the entry at `first` against the entry at `second` over `combats`
-    /// combats and report the rounds from the view of `first`, for a game with
-    /// an automated playout.
+    /// combats and report the rounds from the view of `first`, for a
+    /// multiplayer game the scorer fights.
     fn fight(
         &self,
         first: &std::path::Path,
@@ -119,7 +122,7 @@ pub trait Game {
     ) -> std::io::Result<ava_wire::Tally> {
         let _ = (first, second, combats);
         Err(std::io::Error::other(format!(
-            "{} has no automated playout",
+            "{} is not fought by the scorer",
             self.name()
         )))
     }
@@ -128,14 +131,6 @@ pub trait Game {
 /// Look up the game registered under `name`.
 pub fn find(name: &str) -> Option<&'static dyn Game> {
     GAMES.into_iter().find(|game| game.name() == name)
-}
-
-/// The game whose entries the game `name` attacks, if `name` is the challenge
-/// game of another and so only ever starts as an attack.
-pub fn attacked_by(name: &str) -> Option<&'static dyn Game> {
-    GAMES
-        .into_iter()
-        .find(|game| matches!(game.playout(), Playout::Played { challenge } if challenge == name))
 }
 
 /// The contents of the file at `path`, or nothing when it holds more than
