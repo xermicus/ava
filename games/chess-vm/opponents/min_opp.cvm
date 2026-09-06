@@ -1,0 +1,4 @@
+    oppmob r0
+    neg r0, r0
+    score r0
+    halt

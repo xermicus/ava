@@ -1,0 +1,72 @@
+    matein1 r1
+    jz r1, not_mate
+    ldi r0, 1000000
+    score r0
+    halt
+not_mate:
+    ldi r0, 0
+    material r1
+    add r0, r0, r1
+    see r4
+    ldi r3, 0
+    jge r4, r3, see_nonneg
+    muli r2, r4, 16
+    add r0, r0, r2
+    jmp after_see
+see_nonneg:
+    add r0, r0, r4
+after_see:
+    mobility r5
+    oppmob r6
+    sub r1, r5, r6
+    muli r1, r1, 10
+    add r0, r0, r1
+    givescheck r1
+    muli r1, r1, 30
+    add r0, r0, r1
+    center r1
+    muli r1, r1, 6
+    add r0, r0, r1
+    iscastle r1
+    muli r1, r1, 40
+    add r0, r0, r1
+    ispromo r1
+    jz r1, no_promo
+    ldi r1, 80
+    add r0, r0, r1
+no_promo:
+    enemykingdist r1
+    add r0, r0, r1
+    movedpiece r1
+    ldi r3, 6
+    sub r2, r1, r3
+    jnz r2, not_king
+    iscastle r1
+    jnz r1, not_king
+    ldi r1, -40
+    add r0, r0, r1
+not_king:
+    movedpiece r1
+    ldi r3, 1
+    sub r2, r1, r3
+    jnz r2, not_pawn
+    torank r2
+    ldi r14, 3
+    jlt r2, r14, not_adv
+    sub r2, r2, r14
+    muli r2, r2, 12
+    add r0, r0, r2
+not_adv:
+not_pawn:
+    exposed r1
+    ldi r4, 4
+    div r1, r1, r4
+    neg r1, r1
+    add r0, r0, r1
+    safe r1
+    jnz r1, safe_done
+    ldi r1, -40
+    add r0, r0, r1
+safe_done:
+    score r0
+    halt

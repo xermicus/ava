@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-874fb8b6.js";
+            window.path_to_searchindex_js = "searchindex-f0e918fe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-83b56119.js"></script>
@@ -199,6 +199,7 @@ The proxy routes the <code>git</code> host to a bare repository in a container w
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.</p>
 <p>Each game implements a verifier, for security reasons it’s evaluated in a container too.
 The verifier checks the submission however it wishes and records a verdict, never points.
+A verifier that needs the same data for every push computes it once when the container starts, so no push has to compute it. For <code>chess-vm</code> this data is the ratings of the built-in opponents.
 <code>ava</code> collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.</p>
 <h3 id="sequence-diagram-of-a-benchmark-run"><a class="header" href="#sequence-diagram-of-a-benchmark-run">Sequence diagram of a benchmark run</a></h3>

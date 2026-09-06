@@ -26,6 +26,7 @@ The isolation rests on the containers sharing nothing but a volume of unix socke
 
 Each game implements a verifier, for security reasons it's evaluated in a container too.
 The verifier checks the submission however it wishes and records a verdict, never points.
+A verifier that needs the same data for every push computes it once when the container starts, so no push has to compute it. For `chess-vm` this data is the ratings of the built-in opponents.
 `ava` collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.
 

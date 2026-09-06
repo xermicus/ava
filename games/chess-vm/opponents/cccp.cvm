@@ -1,0 +1,11 @@
+    matein1 r0
+    muli r0, r0, 1000000
+    givescheck r1
+    muli r1, r1, 10000
+    add r0, r0, r1
+    gain r2
+    add r0, r0, r2
+    torank r3
+    add r0, r0, r3
+    score r0
+    halt

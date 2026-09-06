@@ -1,0 +1,36 @@
+ldi  r0, 0
+    material r1
+    score r1
+    matein1 r2
+    jz   r2, nm1
+    ldi  r3, 1000000
+    score r3
+    halt
+nm1:
+    mov  r9, r0
+    see  r4
+    jge  r4, r0, seeok
+    muli r4, r4, 8
+    add  r9, r9, r4
+    jmp  aftersee
+seeok:
+    muli r4, r4, 2
+    add  r9, r9, r4
+aftersee:
+    mobility r6
+    oppmob r7
+    sub  r7, r6, r7
+    muli r7, r7, 20
+    add  r9, r9, r7
+    center r8
+    muli r8, r8, 45
+    add  r9, r9, r8
+    givescheck r10
+    muli r10, r10, 80
+    add  r9, r9, r10
+    iscastle r11
+    muli r11, r11, 600
+    add  r9, r9, r11
+    add  r12, r1, r9
+    score r12
+    halt

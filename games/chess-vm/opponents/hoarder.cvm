@@ -1,0 +1,31 @@
+    ldi r15, 0
+    matein1 r0
+    jz r0, live
+    ldi r0, 1000000
+    score r0
+    halt
+live:
+    material r0
+    see r1
+    iscapture r2
+    jz r2, quiet
+    jgt r1, r15, wincap
+    addi r0, r0, -350
+    muli r3, r1, 3
+    add r0, r0, r3
+    jmp aftercap
+wincap:
+    add r0, r0, r1
+    addi r0, r0, -60
+    jmp aftercap
+quiet:
+    safe r4
+    muli r4, r4, 30
+    add r0, r0, r4
+aftercap:
+    ldi r14, 3
+    exposed r5
+    div r5, r5, r14
+    sub r0, r0, r5
+    score r0
+    halt

@@ -56,4 +56,6 @@ chown -R 1000:1000 "$REPOSITORY" "$HOME_DIR/game" "$HOME_DIR/turn" "$HOME_DIR/st
 
 ava remote &
 
+ava score --game "$GAME" --prepare &
+
 exec tail --lines +1 --follow "$HOME_DIR/attempts.jsonl"

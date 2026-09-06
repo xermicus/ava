@@ -1,0 +1,9 @@
+.search 3
+    material r0
+    mobility r1
+    oppmob r2
+    sub r1, r1, r2
+    muli r1, r1, 4
+    add r0, r0, r1
+    score r0
+    halt

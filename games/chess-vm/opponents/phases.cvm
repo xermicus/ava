@@ -1,0 +1,93 @@
+    ldi r15, 0
+    matein1 r0
+    jz r0, live
+    ldi r0, 1000000
+    score r0
+    halt
+live:
+    material r0
+    see r1
+    jge r1, r15, seeok
+    muli r1, r1, 4
+seeok:
+    add r0, r0, r1
+    ply r2
+    ldi r3, 24
+    jlt r2, r3, opening
+    ldi r3, 60
+    jlt r2, r3, middle
+    jmp endgame
+
+opening:
+    fromsq r4
+    movecount r5, r4
+    jz r5, fresh
+    addi r0, r0, -150
+    jmp aftermoved
+fresh:
+    movedpiece r6
+    ldi r7, 2
+    jlt r6, r7, aftermoved
+    ldi r7, 4
+    jge r6, r7, aftermoved
+    addi r0, r0, 120
+aftermoved:
+    movedpiece r6
+    ldi r7, 5
+    jlt r6, r7, aftercost
+    ldi r7, 6
+    jge r6, r7, kingmove
+    addi r0, r0, -250
+    jmp aftercost
+kingmove:
+    iscastle r8
+    jnz r8, aftercost
+    addi r0, r0, -300
+aftercost:
+    iscastle r8
+    muli r8, r8, 400
+    add r0, r0, r8
+    center r9
+    muli r9, r9, 20
+    add r0, r0, r9
+    jmp done
+
+middle:
+    givescheck r10
+    muli r10, r10, 40
+    add r0, r0, r10
+    center r9
+    muli r9, r9, 8
+    add r0, r0, r9
+    jmp done
+
+endgame:
+    movedpiece r6
+    ldi r7, 1
+    sub r11, r6, r7
+    jnz r11, notpawn
+    torank r12
+    muli r12, r12, 40
+    add r0, r0, r12
+notpawn:
+    ldi r7, 6
+    sub r11, r6, r7
+    jnz r11, notking
+    center r9
+    muli r9, r9, 35
+    add r0, r0, r9
+notking:
+    promo r13
+    jz r13, nopromo
+    ld r14, r13, values
+    add r0, r0, r14
+nopromo:
+    enemykingdist r14
+    muli r14, r14, 3
+    sub r0, r0, r14
+done:
+    score r0
+    halt
+
+.data
+values: .word 0, 100, 320, 330, 500, 900, 0

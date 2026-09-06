@@ -1,0 +1,62 @@
+    material r1
+    mobility r2
+    oppmob r3
+    exposed r4
+    see r6
+    enemykingdist r7
+    matein1 r8
+    iscapture r10
+    ispromo r11
+    givescheck r12
+    iscastle r13
+    center r14
+    safe r15
+
+    mov r5, r1
+
+    jz r8, not_mate
+    ldi r5, 2000000
+    score r5
+    halt
+not_mate:
+
+    sub r0, r2, r3
+    muli r0, r0, 4
+    add r5, r5, r0
+
+    muli r0, r4, 20
+    sub r5, r5, r0
+
+    muli r0, r12, 30
+    add r5, r5, r0
+
+    muli r0, r13, 250
+    add r5, r5, r0
+
+    add r5, r5, r14
+
+    jz r11, no_promo
+    ld r0, r11, pieces
+    addi r0, r0, -100
+    add r5, r5, r0
+no_promo:
+
+    jz r10, no_cap
+    gain r9
+    mov r0, r6
+    sub r0, r0, r9
+    add r5, r5, r0
+no_cap:
+
+    muli r0, r7, 3
+    sub r5, r5, r0
+
+    muli r0, r15, 40
+    add r5, r5, r0
+    addi r5, r5, -25
+
+    score r5
+    halt
+
+.data
+pieces: .word 0, 100, 320, 330, 500, 900, 0

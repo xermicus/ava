@@ -1,0 +1,28 @@
+    matein1 r0
+    jz r0, live
+    ldi r0, 1000000
+    score r0
+    halt
+live:
+    material r0
+    tosq r1
+    defenders r2, r1
+    attackers r3, r1
+    sub r4, r2, r3
+    muli r4, r4, 45
+    add r0, r0, r4
+    hangs r5
+    muli r5, r5, 400
+    sub r0, r0, r5
+    ldi r14, 3
+    exposed r6
+    div r6, r6, r14
+    sub r0, r0, r6
+    torank r7
+    muli r7, r7, 20
+    sub r0, r0, r7
+    iscastle r8
+    muli r8, r8, 200
+    add r0, r0, r8
+    score r0
+    halt
