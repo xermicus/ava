@@ -172,20 +172,45 @@ function countDeltas(window, tail) {
  * account as of the newest request. */
 const LIMIT_HEADER_PREFIXES = ['anthropic-ratelimit-', 'x-ratelimit-', 'x-litellm-key-'];
 
+/* LiteLLM forwards the headers of the provider under this prefix. */
+const FORWARDED_PREFIX = 'llm_provider-';
+
+const COST_HEADERS = ['x-litellm-response-cost-original', 'x-litellm-response-cost'];
+
+const NAME_SEPARATOR = ' ';
+
+/* An answer reporting neither limits nor a cost logs its header names instead. */
 function captureLimits(request) {
     const limits = [];
+    const names = [];
+    const headers = {};
 
     for (const name in request.headersOut) {
         const lowered = name.toLowerCase();
+        headers[lowered] = request.headersOut[name];
+        names.push(lowered);
+
+        const unwrapped = lowered.startsWith(FORWARDED_PREFIX)
+            ? lowered.slice(FORWARDED_PREFIX.length)
+            : lowered;
         for (let index = 0; index < LIMIT_HEADER_PREFIXES.length; index++) {
-            if (lowered.startsWith(LIMIT_HEADER_PREFIXES[index])) {
-                limits.push(lowered + '=' + request.headersOut[name]);
+            if (unwrapped.startsWith(LIMIT_HEADER_PREFIXES[index])) {
+                limits.push(unwrapped + '=' + request.headersOut[name]);
             }
         }
     }
 
+    for (let index = 0; index < COST_HEADERS.length; index++) {
+        if (headers[COST_HEADERS[index]] !== undefined) {
+            request.variables.ava_gateway_cost = headers[COST_HEADERS[index]];
+            break;
+        }
+    }
+
     if (limits.length > 0) {
-        request.variables.ava_ratelimits = limits.sort().join(' ');
+        request.variables.ava_ratelimits = limits.sort().join(NAME_SEPARATOR);
+    } else if (request.variables.ava_gateway_cost === '') {
+        request.variables.ava_gateway_headers = names.sort().join(NAME_SEPARATOR);
     }
 }
 

@@ -23,10 +23,10 @@ index aacbfdf..531e5ad 100644
  The browser version runs the tournament controller and radare2 ESIL locally in
 diff --git a/csharp/Headless.cs b/csharp/Headless.cs
 new file mode 100644
-index 0000000..d3d7ab5
+index 0000000..1b1b04b
 --- /dev/null
 +++ b/csharp/Headless.cs
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,77 @@
 +using System;
 +using System.IO;
 +using System.Threading;
@@ -54,6 +54,7 @@ index 0000000..d3d7ab5
 +            }
 +
 +            r2wars game = new r2wars();
++            game.Headless = true;
 +            ManualResetEventSlim finished = new ManualResetEventSlim();
 +            game.Event_roundEnd += (sender, e) => console.WriteLine(
 +                "round " + (e.round + 1) + ": " + e.winnername + " wins after " + e.ciclos + " cycles, " +
@@ -169,10 +170,27 @@ index 4ae7c22..9819c8c 100644
          r2Process.StandardInput.NewLine = "\n";
          // ignore first run
 diff --git a/csharp/r2wars.cs b/csharp/r2wars.cs
-index ac35028..4f8197d 100644
+index ac35028..585c7b4 100644
 --- a/csharp/r2wars.cs
 +++ b/csharp/r2wars.cs
-@@ -60,11 +60,11 @@ namespace r2warsTorneo
+@@ -7,7 +7,7 @@ namespace r2warsTorneo
+ {
+     public class r2wars
+     {
+-        private const int MAX_CYCLES = 2000;
++        private const int MAX_CYCLES = 50000;
+         private const int MAX_HISTORY_STATES = 2048;
+         private sealed class UiHistoryEntry
+         {
+@@ -31,6 +31,7 @@ namespace r2warsTorneo
+         public event MyHandler1 Event_roundEnd;
+         public event MyHandler1 Event_combatEnd;
+         public event MyHandler1 Event_roundExhausted;
++        public bool Headless = false;
+         public string answer = "";
+         string[] pColor = { "b", "r" };
+         string[] cRead =  { "q", "y" };
+@@ -60,11 +61,11 @@ namespace r2warsTorneo
              // this pause is magic
              //  Firefox can free memory
              //  chrome never consume memory and work smooth on drawing
@@ -187,7 +205,7 @@ index ac35028..4f8197d 100644
                  Event_draw(0, e1);
                  /*
                  Task t = Task.Factory.StartNew(() =>
-@@ -77,7 +77,6 @@ namespace r2warsTorneo
+@@ -77,7 +78,6 @@ namespace r2warsTorneo
                  t.Wait();
                  */
              }
@@ -195,3 +213,92 @@ index ac35028..4f8197d 100644
          }
          string json_output(UiHistoryEntry historyEntry = null)
          {
+@@ -146,6 +146,7 @@ namespace r2warsTorneo
+         }
+         private void PublishCurrentState()
+         {
++            if (Headless) return;
+             UiHistoryEntry entry = new UiHistoryEntry();
+             lock (rr)
+             {
+@@ -195,6 +196,7 @@ namespace r2warsTorneo
+         }
+         void pinta(long offset, string c, string s)
+         {
++            if (Headless) return;
+             lock (memoria)
+             {
+                 if (offset>=0 && offset<Engine.memsize)
+@@ -203,6 +205,7 @@ namespace r2warsTorneo
+         }
+         void pinta(long offset,  string c,string s,int count)
+         {
++            if (Headless) return;
+             lock (memoria)
+             {
+                 while ((count--) != 0)
+@@ -223,6 +226,7 @@ namespace r2warsTorneo
+         }
+         void pinta(int offset, string c)
+         {
++            if (Headless) return;
+             lock (memoria)
+             {
+                 if (offset >= 0 && offset < Engine.memsize)
+@@ -231,6 +235,7 @@ namespace r2warsTorneo
+         }
+         void pinta(int offset, int count, string c)
+         {
++            if (Headless) return;
+             lock (memoria)
+             {
+                 while ((count--) != 0)
+@@ -242,6 +247,7 @@ namespace r2warsTorneo
+         }
+         void drawplayerturn(int nplayer)
+         {
++            if (Headless) return;
+         }
+         string padlines(string t,int maxlen=54)
+         {
+@@ -263,6 +269,7 @@ namespace r2warsTorneo
+         }
+         void drawPC(int nplayer)
+         {
++            if (Headless) return;
+             long oldPC = Engine.players[nplayer].actual.oldpc;
+             if (oldPC >= 0 && oldPC <= Engine.memsize)
+             {
+@@ -277,6 +284,7 @@ namespace r2warsTorneo
+         }
+         void drawscreen(int nplayer)
+         {
++            if (Headless) return;
+             // seleccionamos el offset actual y lo pintamos invertido
+             string dasm = padlines(Engine.players[nplayer].actual.dasm);
+             string actual = padlines(Engine.players[nplayer].actual.ins);
+@@ -299,6 +307,7 @@ namespace r2warsTorneo
+         }
+         void drawmemaccess(int nplayer)
+         {
++            if (Headless) return;
+             Dictionary<int, int> dicMemRead = Engine.GetMemAccessReadDict(Engine.players[nplayer].actual.mem);
+             Dictionary<int, int> dicMemWrite = Engine.GetMemAccessWriteDict(Engine.players[nplayer].actual.mem);
+             if (dicMemRead.Count > 0)
+@@ -328,6 +337,7 @@ namespace r2warsTorneo
+         }
+         private void resetTablero()
+         {
++            if (Headless) return;
+             initmemoria();
+             pinta(Engine.GetAddressProgram(0), Engine.GetSizeProgram(0), "b");
+             pinta(Engine.GetAddressProgram(1), Engine.GetSizeProgram(1), "r");
+@@ -441,7 +451,7 @@ namespace r2warsTorneo
+             if (Engine.cyleszero())
+             {
+                 // Realizamos el STEP
+-                bDead = Engine.stepInfoNew(getmemoria());
++                bDead = Engine.stepInfoNew(Headless ? "" : getmemoria());
+                 //update(1);
+                 if (bDead)
+                 {

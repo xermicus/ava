@@ -160,7 +160,9 @@ impl Tally {
 #[serde(default)]
 pub struct Metrics {
     pub requests: u64,
-    /// The requests answered with a non-200 status.
+    /// The startup probes of a harness, every request that is not a POST.
+    pub probe_requests: u64,
+    /// The model calls answered with a non-200 status.
     pub failed_requests: u64,
     /// The requests a model answered in full without ever reporting its usage,
     /// so the stream was cut short upstream.

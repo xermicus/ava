@@ -11,7 +11,8 @@ use ava_run::{docker, process, registry, tournament};
 
 use crate::views;
 
-const BIND_ADDRESS: &str = "127.0.0.1";
+/// The address `serve` binds unless the command names another one.
+pub const DEFAULT_ADDRESS: &str = "0.0.0.0";
 
 /// How long a wait for a request is before the interrupt flag is polled.
 const INTERRUPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -22,13 +23,17 @@ pub const DEFAULT_PORT: u16 = 2828;
 /// The web interface command.
 #[derive(Debug)]
 pub struct Serve {
-    /// The local port the interface binds.
+    /// The address the interface binds.
+    pub address: String,
     pub port: u16,
 }
 
 impl Default for Serve {
     fn default() -> Self {
-        Self { port: DEFAULT_PORT }
+        Self {
+            address: DEFAULT_ADDRESS.to_string(),
+            port: DEFAULT_PORT,
+        }
     }
 }
 
@@ -110,7 +115,7 @@ type Answer = tiny_http::Response<std::io::Cursor<Vec<u8>>>;
 
 /// Serve the web interface until interrupted.
 pub fn run(command: &Serve) -> std::io::Result<i32> {
-    let address = format!("{BIND_ADDRESS}:{}", command.port);
+    let address = format!("{}:{}", command.address, command.port);
     let server = tiny_http::Server::http(&address)
         .map_err(|error| std::io::Error::other(format!("{address}: {error}")))?;
 

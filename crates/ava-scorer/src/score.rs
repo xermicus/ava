@@ -10,6 +10,9 @@ pub const SECOND_DIRECTORY: &str = "second";
 
 const SUCCESS_STATUS: u32 = 200;
 
+/// Every model call is a POST, the startup probes of a harness are GETs.
+const MODEL_CALL_METHOD: &str = "POST";
+
 /// The combats a fight plays unless the command asks for more.
 const DEFAULT_COMBATS: u64 = 1;
 
@@ -52,6 +55,8 @@ const NO_INPUTS_PREFIX: &str = "ava-no-inputs-";
 #[derive(serde::Deserialize)]
 struct Record {
     host: String,
+    #[serde(default = "model_call_method")]
+    method: String,
     status: u32,
     /// What the proxy logged for the completion of the request. Empty means the
     /// client went away before the answer was fully written, which is what the
@@ -203,8 +208,9 @@ pub fn aggregate_metrics(log: &str) -> std::io::Result<ava_wire::Metrics> {
         aggregate(&contents).map_err(|error| std::io::Error::other(format!("{log}: {error}")))?;
 
     log::info!(
-        "{log}: {} requests, {} failed, {} truncated, {} aborted, {} buffered, models: {}",
+        "{log}: {} requests, {} probes, {} failed, {} truncated, {} aborted, {} buffered, models: {}",
         metrics.requests,
+        metrics.probe_requests,
         metrics.failed_requests,
         metrics.truncated_requests,
         metrics.aborted_requests,
@@ -227,11 +233,20 @@ pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
         let record: Record = serde_json::from_str(line).map_err(std::io::Error::other)?;
 
         metrics.requests += 1;
+        record_distinct(&mut metrics.hosts, &record.host);
+        metrics.request_bytes += record.request_bytes;
+        metrics.response_bytes += record.response_bytes;
+        metrics.request_seconds += record.request_seconds;
+
+        if record.method != MODEL_CALL_METHOD {
+            metrics.probe_requests += 1;
+            continue;
+        }
+
         if record.status != SUCCESS_STATUS {
             metrics.failed_requests += 1;
         }
 
-        record_distinct(&mut metrics.hosts, &record.host);
         for model in record.served_models.split_whitespace() {
             record_distinct(&mut metrics.served_models, model);
         }
@@ -260,9 +275,6 @@ pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
         if let Ok(cost) = record.gateway_cost.parse::<f64>() {
             metrics.gateway_cost += cost;
         }
-        metrics.request_bytes += record.request_bytes;
-        metrics.response_bytes += record.response_bytes;
-        metrics.request_seconds += record.request_seconds;
 
         if record.first_token_seconds > 0.0 {
             first_token_seconds += record.first_token_seconds;
@@ -280,6 +292,10 @@ pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
 /// What a request the proxy did not record a completion for reads as.
 fn completed() -> String {
     COMPLETED.to_string()
+}
+
+fn model_call_method() -> String {
+    MODEL_CALL_METHOD.to_string()
 }
 
 /// Whether the upstream held `record` back until it had generated the whole
@@ -340,6 +356,8 @@ fn record_distinct(seen: &mut Vec<String>, value: &str) {
 mod tests {
     const ANSWERED: &str = r#"{"host":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":1.5,"header_seconds":"0.2","upstream_seconds":"1.4","first_token_seconds":0.3,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":5,"ratelimits":"","gateway_cost":"0.01"}"#;
     const CUT: &str = r#"{"host":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":2.0,"header_seconds":"0.2","upstream_seconds":"1.9","first_token_seconds":0.5,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":9,"ratelimits":"","gateway_cost":""}"#;
+    const PROBE: &str = r#"{"host":"llm.substrate.dev","method":"GET","uri":"/api/hello","status":404,"completed":"OK","request_bytes":160,"response_bytes":298,"request_seconds":0.1,"header_seconds":"0.1","upstream_seconds":"0.1","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
+    const REFUSED: &str = r#"{"host":"llm.substrate.dev","method":"POST","uri":"/v1/messages","status":502,"completed":"OK","request_bytes":5000,"response_bytes":300,"request_seconds":0.4,"header_seconds":"0.4","upstream_seconds":"0.4","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
 
     #[test]
     fn records_aggregate_without_a_file() {
@@ -351,6 +369,26 @@ mod tests {
         assert_eq!(metrics.served_models, ["claude-sonnet-5"]);
         assert!((metrics.gateway_cost - 0.01).abs() < f64::EPSILON);
         assert!((metrics.mean_first_token_seconds - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn probes_are_counted_apart_from_failed_model_calls() {
+        let metrics = super::aggregate(&format!("{ANSWERED}\n{PROBE}\n{REFUSED}\n")).unwrap();
+
+        assert_eq!(metrics.requests, 3);
+        assert_eq!(metrics.probe_requests, 1);
+        assert_eq!(metrics.failed_requests, 1);
+        assert_eq!(metrics.hosts, ["api.anthropic.com", "llm.substrate.dev"]);
+        assert_eq!(metrics.request_bytes, 5170);
+    }
+
+    #[test]
+    fn a_record_without_a_method_is_a_model_call() {
+        let metrics =
+            super::aggregate(&ANSWERED.replace(r#""status":200"#, r#""status":529"#)).unwrap();
+
+        assert_eq!(metrics.probe_requests, 0);
+        assert_eq!(metrics.failed_requests, 1);
     }
 
     #[test]

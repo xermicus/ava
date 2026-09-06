@@ -93,7 +93,9 @@ Benchmarks are implemented as games. A game verifies what an agent left and rank
 
 The sidecar dumps each request to a JSON access log, which `ava` collects into `runs/<run>/proxy.access.log`.
 
-Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics.
+Durations, byte counts and the requested host come from nginx variables. Token counts, the served model and the time to the first token are scanned out of the response body by njs while it streams past. The ratelimit and key budget headers of every answer are captured too, so the newest one is the account state, and the cost the gateway reports per answer is summed into the run metrics. The cost is read from `x-litellm-response-cost-original` or `x-litellm-response-cost`, provider headers forwarded under `llm_provider-` are read as the provider's own, and an answer reporting neither limits nor a cost logs its header names as `gateway_headers`.
+
+Requests that are not POSTs are the startup probes of the harness. They are counted as `probe_requests` and kept out of the failed, truncated, aborted and buffered counts.
 
 The verifier is `ava score`, running in the scoring container without network access: `--game` verifies the submission left in `submission/` with the named game and prints the verdict with the name of the entry file, which the receive hook keeps for a passing push. `--game` with `--fight <directory>` fights the entries under `first/` and `second/` of that directory over `--combats`, one unless given, and prints the tally, which is how a tournament plays a pairing: one container of the scorer image per fight, no network, the entries mounted read only. `--metrics` and `--attempts` aggregate the collected logs after the run into the run record.
 

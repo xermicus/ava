@@ -312,12 +312,20 @@ struct ServeCli;
 
 impl ServeCli {
     const NAME: &str = "serve";
-    const DESCRIPTION: &str = "serve the web interface on localhost";
+    const DESCRIPTION: &str = "serve the web interface";
 
+    const ADDRESS_SHORT: char = 'b';
     const PORT_SHORT: char = ImageCli::PROXY_SHORT;
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
+        arg_help_chr(
+            Self::ADDRESS_SHORT,
+            &format!(
+                "the address to bind, {} by default",
+                ava_web::serve::DEFAULT_ADDRESS
+            ),
+        );
         arg_help_chr(
             Self::PORT_SHORT,
             &format!(
@@ -596,6 +604,19 @@ impl Parser {
                     command.run = run;
                     break;
                 }
+                // Serve
+                ServeCli::ADDRESS_SHORT => {
+                    let address = Self::value(args, &mut chars, flag, "missing address");
+                    let Some(SubCommand::Serve(ref mut command)) = self.command else {
+                        bail(
+                            flag,
+                            &format!("only valid in the {} subcommand", ServeCli::NAME),
+                        );
+                    };
+                    command.address = address;
+                    break;
+                }
+
                 // Image and serve
                 ImageCli::PROXY_SHORT => match self.command {
                     Some(SubCommand::Image(ref mut command)) => command.proxy = true,
