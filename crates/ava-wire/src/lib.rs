@@ -283,6 +283,9 @@ pub struct Run {
     /// The entry the run attacked, on a record from before the inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub challenge: Option<Challenge>,
+    /// The analyst the run was started with, due once it is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analyst: Option<Setup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_seconds: Option<u64>,
     /// Every push the scorer graded.

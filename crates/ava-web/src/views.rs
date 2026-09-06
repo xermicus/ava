@@ -75,7 +75,8 @@ const TOOLTIP_SEPARATOR: char = '|';
 const RUN_HEADERS: [&str; 12] = [
     "run|the run directory under runs/ and how long ago it started",
     "state|live or the last call while the run goes, whether a push passed the verifier once it is over",
-    "analysis|whether an analyst was run over the finished run: analyzing, analyzed or failed",
+    "analysis|what became of the analysis the run is due: pending until the analyst starts, then \
+     analyzing, analyzed or failed, a dash for a run started without one",
     "game|the game that was played",
     "tournament|the tournament the run plays a seat in, or a dash for a run of its own",
     "model|the model under test",
@@ -94,6 +95,25 @@ const NO_TOURNAMENT: &str = "-";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
 const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
 const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
+
+/// The name the script keeps the sort of the standings under.
+const STANDINGS_TABLE: &str = "standings";
+
+/// The columns of the standings after the cross table of the seats.
+const STANDINGS_HEADERS: [&str; 5] = [
+    "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
+     than lost is won",
+    "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+    "#elo|updated in match order, anchored at 1000",
+    "#bradley-terry|fitted over the whole history, anchored at 1000",
+    "",
+];
+
+/// The column of [`STANDINGS_HEADERS`] the standings sort by.
+const STANDINGS_SCORE_COLUMN: usize = 1;
+
+/// The score a seat without one sorts at.
+const UNRATED_SCORE: f64 = f64::NEG_INFINITY;
 const NO_AGENTS_NOTE: &str = "no agents";
 const NO_AGENTS_ROW_NOTE: &str = "no agents";
 const NO_REPORT_NOTE: &str = "the record holds neither a report nor a reason";
@@ -115,6 +135,18 @@ const SLACK_COLUMN_CLASSES: &str = "px-2 first:pl-4 last:pr-4";
 /// The header row is a darker band, its titles lowercase in a heavier weight.
 const HEADER_ROW_CLASSES: &str = "bg-neutral-950/50";
 const HEADER_CLASSES: &str = "text-xs font-semibold text-neutral-300 py-2.5";
+
+/// The header of a sortable table sorts it, the sorted one carrying an arrow.
+const SORTABLE_HEADER_CLASSES: &str = "cursor-pointer select-none hover:text-neutral-100 \
+     transition-colors";
+const SORT_ARROW_CLASSES: &str = "ml-1 text-neutral-500";
+const DESCENDING_ARROW: &str = "\u{2193}";
+const ASCENDING_ARROW: &str = "\u{2191}";
+const DESCENDING_ORDER: &str = "desc";
+const ASCENDING_ORDER: &str = "asc";
+/// How the script reads a column: the first number in a cell, or its text.
+const NUMERIC_SORT: &str = "numeric";
+const TEXT_SORT: &str = "text";
 
 /// A title with a tooltip behind it.
 const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoration-neutral-700 \
@@ -470,6 +502,7 @@ impl RunEntry {
             analysis: analysis_of(
                 directory,
                 running.contains(&docker::analyst_container(&name)),
+                run.analyst.is_some() && (live || run.finished_seconds.is_some()),
             ),
             monitor: read_json(&directory.join(docker::MONITOR_FILE)),
             attempts,
@@ -508,9 +541,10 @@ impl RunEntry {
         matches!(self.analysis, Analysis::Analyzing)
     }
 
-    /// The state of the analysis as a pill, or nothing when none was started.
+    /// The state of the analysis as a pill, nothing when none is due.
     fn analysis_pill(&self) -> String {
         match self.analysis {
+            Analysis::Pending => pill(NEUTRAL_PILL, false, "pending"),
             Analysis::Analyzing => pill(STARTING_PILL, true, "analyzing"),
             Analysis::Done => pill(ANALYZED_PILL, false, "analyzed"),
             Analysis::Failed => pill(BROKEN_PILL, false, "failed"),
@@ -518,11 +552,10 @@ impl RunEntry {
         }
     }
 
-    /// The analysis cell of the runs table: the pill, or that there is none
-    /// once the run is over and could have been analyzed.
+    /// The analysis cell of the runs table: the pill, or a dash without an analyst.
     fn analysis_cell(&self) -> String {
         match self.analysis {
-            Analysis::None if !self.live => placeholder(NOT_ANALYZED),
+            Analysis::None => placeholder(NOT_ANALYZED),
             _ => self.analysis_pill(),
         }
     }
@@ -690,8 +723,10 @@ impl RunEntry {
 /// What became of the analysis of a run.
 #[derive(Clone, Copy)]
 enum Analysis {
-    /// No analyst was started on the run.
+    /// The run was started without an analyst.
     None,
+    /// The analyst the run records has not started.
+    Pending,
     /// An analyst is up on the run.
     Analyzing,
     /// The record holds the report.
@@ -701,13 +736,14 @@ enum Analysis {
 }
 
 /// What became of the analysis of the run in `directory`, given whether an
-/// analyst is up on it.
-fn analysis_of(directory: &std::path::Path, analyzing: bool) -> Analysis {
+/// analyst is up on it and whether one is `due`.
+fn analysis_of(directory: &std::path::Path, analyzing: bool, due: bool) -> Analysis {
     if analyzing {
         return Analysis::Analyzing;
     }
 
     match runs::analysis(directory) {
+        Ok(None) if due => Analysis::Pending,
         Ok(None) => Analysis::None,
         Ok(Some(record)) if record.error.is_none() && record.report().is_some() => Analysis::Done,
         _ => Analysis::Failed,
@@ -1182,7 +1218,6 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             TILE_LIST_CLASSES,
         ));
     }
-    body.push_str(&tiles(&facts));
 
     let entry_at = match &entry.record {
         Some(record) => format!("{}s", record.seconds),
@@ -1200,7 +1235,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         None if entry.live => placeholder(AFTER_THE_RUN),
         None => placeholder(NOT_RECORDED),
     };
-    let figures = [
+    // One grid, so the figures follow the facts without a ragged row between them.
+    facts.extend([
         tile("points", &entry.points_tile(), "", TILE_VALUE_CLASSES),
         tile(
             "pushes",
@@ -1235,8 +1271,8 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             "",
             TILE_VALUE_CLASSES,
         ),
-    ];
-    body.push_str(&tiles(&figures));
+    ]);
+    body.push_str(&tiles(&facts));
 
     if !entry.live {
         let title = "analysis";
@@ -1892,7 +1928,7 @@ pub(crate) fn tournament_page(
     }
     let standings = standings(&labeled);
     let cells = pairing_cells(&record)?;
-    let seat_rows: Vec<Vec<String>> = record
+    let mut seat_rows: Vec<(f64, Vec<String>)> = record
         .seats
         .iter()
         .enumerate()
@@ -1901,6 +1937,7 @@ pub(crate) fn tournament_page(
                 .iter()
                 .find(|standing| standing.agent == labels[seat])
                 .filter(|_| rated);
+            let score = standing.and_then(|standing| standing.rounds.score());
             let mut row = vec![(seat + 1).to_string()];
             row.extend(agent_cells(&registry, &setup.agent));
             row.extend([
@@ -1912,10 +1949,7 @@ pub(crate) fn tournament_page(
                 standing
                     .map(|standing| tally_label(&standing.fights))
                     .unwrap_or_default(),
-                standing
-                    .and_then(|standing| standing.rounds.score())
-                    .map(|score| format!("{score:.2}"))
-                    .unwrap_or_default(),
+                score.map(|score| format!("{score:.2}")).unwrap_or_default(),
                 standing
                     .map(|standing| rating_label(standing.elo))
                     .unwrap_or_default(),
@@ -1931,9 +1965,14 @@ pub(crate) fn tournament_page(
                     String::new()
                 },
             ]);
-            row
+            (score.unwrap_or(UNRATED_SCORE), row)
         })
         .collect();
+    // Seat order until a round is in, the best score on top from then on.
+    if rated {
+        seat_rows.sort_by(|left, right| right.0.total_cmp(&left.0));
+    }
+    let seat_rows: Vec<Vec<String>> = seat_rows.into_iter().map(|(_, row)| row).collect();
     let mut headers: Vec<String> = vec![
         "#seat".to_string(),
         String::new(),
@@ -1946,16 +1985,8 @@ pub(crate) fn tournament_page(
             "^{seat}|the row's rounds against seat {seat} over the finished rounds as won-drawn-lost, the rounds behind the hover"
         )
     }));
-    headers.extend(
-        [
-            "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
-            "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
-            "#elo|updated in match order, anchored at 1000",
-            "#bradley-terry|fitted over the whole history, anchored at 1000",
-            "",
-        ]
-        .map(str::to_string),
-    );
+    let score_column = headers.len() + STANDINGS_SCORE_COLUMN;
+    headers.extend(STANDINGS_HEADERS.map(str::to_string));
     let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
     body.push_str(&format!(
         "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
@@ -1963,7 +1994,13 @@ pub(crate) fn tournament_page(
             "standings",
             "the seats of the tournament, joining between rounds and fixed once a round was played, their rounds against each other over the finished rounds, and their ratings over the matches between different agents, a harness on a model"
         ),
-        table(&headers, seat_rows, Some(NO_SEATS_NOTE))
+        sorted_table(
+            STANDINGS_TABLE,
+            rated.then_some(score_column),
+            &headers,
+            seat_rows,
+            Some(NO_SEATS_NOTE)
+        )
     ));
     if removable {
         body.push_str(&format!(
@@ -3490,7 +3527,7 @@ fn tile(label: &str, value: &str, detail: &str, value_classes: &str) -> String {
     )
 }
 
-/// A row of tiles.
+/// A grid of tiles.
 fn tiles(tiles: &[String]) -> String {
     format!(
         "<div class=\"{TILE_GRID_CLASSES}\">{}</div>",
@@ -3573,6 +3610,46 @@ fn meter(value: u64, ceiling: u64, fill: &str, label: &str, label_width: &str) -
 /// they combine. Without a `*` the last column takes the slack. Without rows
 /// the table shows `empty`, or nothing when there is no note to show.
 fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> String {
+    render_table(None, None, headers, rows, empty)
+}
+
+/// A table its headers sort, arriving sorted by `sorted`, the script keeping
+/// the chosen column under `name` across a refresh.
+fn sorted_table(
+    name: &str,
+    sorted: Option<usize>,
+    headers: &[&str],
+    rows: Vec<Vec<String>>,
+    empty: Option<&str>,
+) -> String {
+    render_table(Some(name), sorted, headers, rows, empty)
+}
+
+/// The direction a column sorts in when it is picked.
+fn sort_order(alignment: &str) -> &'static str {
+    if alignment == NUMERIC_CLASSES {
+        DESCENDING_ORDER
+    } else {
+        ASCENDING_ORDER
+    }
+}
+
+/// The arrow on the header a table is sorted by.
+fn sort_arrow(alignment: &str) -> &'static str {
+    if sort_order(alignment) == DESCENDING_ORDER {
+        DESCENDING_ARROW
+    } else {
+        ASCENDING_ARROW
+    }
+}
+
+fn render_table(
+    sortable: Option<&str>,
+    sorted: Option<usize>,
+    headers: &[&str],
+    rows: Vec<Vec<String>>,
+    empty: Option<&str>,
+) -> String {
     if rows.is_empty() && empty.is_none() {
         return String::new();
     }
@@ -3616,8 +3693,22 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
     // The slack columns are the same width, so a block of packed columns
     // between two of them sits where their contents do not push it.
     let share = format!(" style=\"width:{}%\"", 100 / slack.len().max(1));
+    let sorting = match sortable {
+        Some(name) => format!(
+            " data-sortable=\"{}\"{}",
+            escape(name),
+            match sorted {
+                Some(column) => format!(
+                    " data-sorted=\"{column}\" data-order=\"{}\"",
+                    sort_order(alignment.get(column).copied().unwrap_or_default())
+                ),
+                None => String::new(),
+            }
+        ),
+        None => String::new(),
+    };
     let mut html = format!(
-        "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"><thead><tr class=\"{HEADER_ROW_CLASSES}\">"
+        "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"{sorting}><thead><tr class=\"{HEADER_ROW_CLASSES}\">"
     );
     for (index, (header, alignment)) in headers.iter().zip(&alignment).enumerate() {
         let align = match *alignment {
@@ -3632,9 +3723,31 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
             ""
         };
         let (title, tooltip) = header.split_once(TOOLTIP_SEPARATOR).unwrap_or((header, ""));
+        let title = title.trim_start_matches(MARKERS);
+        let (sortable_classes, sort, arrow) = match sortable.filter(|_| !title.is_empty()) {
+            Some(_) => (
+                SORTABLE_HEADER_CLASSES,
+                format!(
+                    " data-sort=\"{}\"",
+                    if *alignment == NUMERIC_CLASSES {
+                        NUMERIC_SORT
+                    } else {
+                        TEXT_SORT
+                    }
+                ),
+                format!(
+                    "<span data-arrow class=\"{SORT_ARROW_CLASSES}\">{}</span>",
+                    match sorted {
+                        Some(column) if column == index => sort_arrow(alignment),
+                        _ => "",
+                    }
+                ),
+            ),
+            None => ("", String::new(), String::new()),
+        };
         html.push_str(&format!(
-            "<th class=\"{classes} {HEADER_CLASSES} {align}\"{width}>{}</th>",
-            explained(title.trim_start_matches(MARKERS), tooltip)
+            "<th class=\"{classes} {HEADER_CLASSES} {align} {sortable_classes}\"{width}{sort}>{}{arrow}</th>",
+            explained(title, tooltip)
         ));
     }
     html.push_str("</tr></thead><tbody>");

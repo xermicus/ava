@@ -905,6 +905,7 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
             .map(|input| input.record.clone())
             .collect(),
         challenge: None,
+        analyst: launch.analyst.clone(),
         finished_seconds: None,
         attempts: Vec::new(),
         metrics: None,
@@ -1250,6 +1251,8 @@ pub struct Launch {
     /// The immutable id of the harness image, with the layer of the game when it has one.
     pub identity: String,
     invocation: crate::registry::Invocation,
+    /// The analyst the run records.
+    pub analyst: Option<ava_wire::Setup>,
     pub game_version: String,
     /// The architecture of the docker host, as it reports it.
     pub architecture: String,
@@ -1265,6 +1268,11 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
     let setup = command.setup(&registry)?;
     let agent = setup.agent.harness.as_str();
     let invocation = registry.invocation(&setup, TASK_PROMPT, crate::registry::Start::Task)?;
+    let analyst = command
+        .analyst
+        .as_ref()
+        .map(|analyst| analyst.setup(&registry))
+        .transpose()?;
 
     let force = command.force_build_images;
     build_image(BASE_IMAGE, BASE_CONTEXT, force)?;
@@ -1293,6 +1301,7 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
         setup,
         identity,
         invocation,
+        analyst,
         game_version: game_version(&command.game),
         architecture: process::run_and_assume_success(
             "docker",

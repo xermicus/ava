@@ -609,7 +609,7 @@ pub fn play_round(
         let mut launches = Vec::new();
         for (seat, setup) in record.seats.iter().enumerate() {
             let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
-            launches.push(docker::prepare(&docker::Agent {
+            let mut launch = docker::prepare(&docker::Agent {
                 name: setup.agent.harness.clone(),
                 model: setup.agent.model.clone(),
                 game: record.game.clone(),
@@ -620,7 +620,10 @@ pub fn play_round(
                 analyst: None,
                 turn,
                 inputs: resolve_inputs(name, game, played, &game.inputs(turn, &opponents)),
-            })?);
+            })?;
+            // The round runs the analyses itself, so the run only records one.
+            launch.analyst = record.analyst.clone();
+            launches.push(launch);
         }
         let runs: Vec<String> = record
             .seats
