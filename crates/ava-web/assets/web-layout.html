@@ -62,6 +62,9 @@ runs</a>
 <a href="/scoreboard" data-page="scoreboard" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V4M16 20v-7M3 20h18"/></svg>
 scoreboard</a>
+<a href="/agents" data-page="agents" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M3 19a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5A4.5 4.5 0 0 1 21 19"/></svg>
+agents</a>
 <a href="/games" data-page="games" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
 games</a>
@@ -129,11 +132,63 @@ async function refresh() {
 
 setInterval(() => refresh().catch(() => {}), REFRESH_MILLISECONDS);
 
+/* An agent picker shows the row of the chosen agent on its face and folds
+ * shut once one is picked, or when the page is clicked elsewhere. */
+for (const picker of document.querySelectorAll("details[data-picker]")) {
+    picker.addEventListener("change", (event) => {
+        const row = event.target.closest("label");
+        const face = picker.querySelector("[data-chosen]");
+        face.replaceChildren(
+            ...[...row.childNodes].filter((node) => node.tagName !== "INPUT").map((node) => node.cloneNode(true)),
+        );
+        picker.open = false;
+    });
+}
+
+document.addEventListener("click", (event) => {
+    for (const picker of document.querySelectorAll("details[data-picker][open]")) {
+        if (!picker.contains(event.target)) {
+            picker.open = false;
+        }
+    }
+});
+
+/* The backends the agent form offers follow its harness and model: only the
+ * ones the harness reaches the model at. The harness option carries the
+ * services it speaks, the model option its routes as backend:service. */
+function followPairing(form) {
+    const { harness, model, backend } = form.elements;
+    const services = (harness.selectedOptions[0]?.dataset.services ?? "").split(" ");
+    const routes = (model.selectedOptions[0]?.dataset.routes ?? "").split(" ");
+    const allowed = routes
+        .map((route) => route.split(":"))
+        .filter(([, service]) => services.includes(service))
+        .map(([served]) => served);
+    for (const option of backend.options) {
+        option.disabled = option.value !== "" && !allowed.includes(option.value);
+        if (option.disabled && option.selected) {
+            backend.value = "";
+        }
+    }
+}
+
+for (const form of document.querySelectorAll("form")) {
+    const { harness, model, backend } = form.elements;
+    if (!harness || !model || !backend) {
+        continue;
+    }
+    for (const field of [harness, model]) {
+        field.addEventListener("change", () => followPairing(form));
+    }
+    followPairing(form);
+}
+
 /* Mark the section the page belongs to in the navigation. */
 const SECTIONS = {
     "": "runs",
     run: "runs",
     scoreboard: "scoreboard",
+    agents: "agents",
     games: "games",
     tournaments: "tournaments",
     tournament: "tournaments",

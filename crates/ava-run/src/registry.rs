@@ -1,6 +1,23 @@
-//! The backends, models and harnesses a benchmark run can pair into an agent.
+//! The backends, models and harnesses a benchmark run can pair into an agent,
+//! and the agents named ahead.
 
 const REGISTRY_FILE: &str = "registry.json";
+
+/// The agents named ahead, a list beside the registry, which the agents page writes.
+const AGENTS_FILE: &str = "agents.json";
+
+/// Where a changed list is written before it replaces the file in one step.
+const AGENTS_STAGING_FILE: &str = "agents.json.tmp";
+
+/// Serializes every change to the agents file.
+static AGENTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The characters an agent name is made of, besides letters and digits.
+const NAME_PUNCTUATION: [char; 3] = ['-', '_', '.'];
+
+/// The kind marking a registry that does not hold together, as opposed to a
+/// file that cannot be read or written.
+const INVALID: std::io::ErrorKind = std::io::ErrorKind::InvalidInput;
 
 /// The port the bridge listens on inside the sandbox, forwarding every host
 /// pinned to loopback onto the proxy socket.
@@ -57,6 +74,10 @@ const OPENCODE_RUN: [&str; 4] = ["run", "--auto", "--format", "json"];
 /// These are the levels every harness expresses. Thinking is never turned off,
 /// a benchmark measures the model as it is meant to be used.
 pub const THINKING_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// What separates the harness from the model when a pairing the registry does
+/// not name is spelled out, `harness/model`.
+pub const PAIRING_SEPARATOR: char = '/';
 
 const CLAUDE_EFFORT: &str = "--effort";
 const PI_THINKING: &str = "--thinking";
@@ -159,8 +180,15 @@ const CLAUDE_TIER_SETTINGS: [&str; 3] = [
 
 const MODEL_HEADER: &str = "MODEL";
 const AGENT_HEADER: &str = "AGENT";
+const HARNESS_HEADER: &str = "HARNESS";
+const BACKEND_HEADER: &str = "BACKEND";
+const ANALYST_HEADER: &str = "ANALYST";
+const ANALYST_MARK: &str = "*";
 const BACKENDS_HEADER: &str = "BACKENDS";
 const SERVICES_HEADER: &str = "SERVICES";
+const SERVICE_HEADER: &str = "SERVICE";
+const HOST_HEADER: &str = "HOST";
+const KEY_HEADER: &str = "KEY";
 
 /// A service answering the Anthropic API for one or more models.
 #[derive(Clone, Copy, PartialEq, serde::Deserialize)]
@@ -248,7 +276,34 @@ pub struct Harness {
     pub services: Vec<Service>,
 }
 
-/// Every backend, model and harness a benchmark run may pair.
+/// An agent named ahead: a harness paired with a model under a name of its
+/// own, served by a backend.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Alias {
+    pub name: String,
+    pub harness: String,
+    pub model: String,
+    /// The backend serving the model, the first route of the model unless named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// Whether this is the agent analyzing runs unless another is chosen. One
+    /// agent at most.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub analyst: bool,
+}
+
+impl Alias {
+    /// The agent the alias names.
+    pub fn agent(&self) -> ava_wire::Agent {
+        ava_wire::Agent {
+            harness: self.harness.clone(),
+            model: self.model.clone(),
+        }
+    }
+}
+
+/// Every backend, model and harness a benchmark run may pair, and the agents
+/// named ahead.
 #[derive(serde::Deserialize)]
 pub struct Registry {
     /// The backends the routes of the models name.
@@ -257,14 +312,14 @@ pub struct Registry {
     pub models: Vec<Model>,
     /// The harnesses a run may use.
     pub harnesses: Vec<Harness>,
+    /// The agents named ahead, selectable by name, from the agents file.
+    #[serde(skip)]
+    pub agents: Vec<Alias>,
 }
 
 impl Registry {
-    /// Resolve `harness` and `model` into the invocation running that pairing.
+    /// Resolve `setup` into the invocation running it.
     ///
-    /// The route is chosen by walking the services the harness speaks in order
-    /// and taking the first route of the model on such a service, so a harness
-    /// that can reach a model directly is not sent through a gateway.
     /// Credentials are read from the environment of this process rather than
     /// stored, so nothing secret reaches an image layer or the repository.
     ///
@@ -272,56 +327,27 @@ impl Registry {
     /// `prompt` and every later one resumes the recorded session on it.
     pub fn invocation(
         &self,
-        harness: &str,
-        model: &str,
+        setup: &ava_wire::Setup,
         prompt: &str,
-        thinking: Option<&str>,
         start: Start,
     ) -> std::io::Result<Invocation> {
-        let model = self
-            .models
-            .iter()
-            .find(|candidate| candidate.name == model)
-            .ok_or_else(|| {
-                unknown(
-                    model,
-                    "model",
-                    self.models.iter().map(|entry| entry.name.as_str()),
-                )
-            })?;
-
-        let harness = self.harness(harness)?;
-
-        let mut served: Vec<(&Route, &Backend)> = Vec::new();
-        for route in &model.routes {
-            served.push((route, self.backend(&route.backend)?));
-        }
-
-        let (route, backend) = harness
-            .services
-            .iter()
-            .find_map(|service| {
-                served
-                    .iter()
-                    .find(|(_, backend)| backend.service == *service)
-            })
-            .copied()
-            .ok_or_else(|| {
-                std::io::Error::other(format!(
-                    "the {} harness cannot serve {}",
-                    harness.name, model.name
-                ))
-            })?;
+        let harness = self.harness(&setup.agent.harness)?;
+        let (route, backend) = self.route(
+            &setup.agent.harness,
+            &setup.agent.model,
+            setup.backend.as_deref(),
+        )?;
+        let thinking = setup.thinking.as_deref();
 
         log::info!(
             "{} reaches {} as {} on the {} backend",
             harness.name,
-            model.name,
+            setup.agent.model,
             route.id,
             backend.name
         );
 
-        let output = turn_output(model, route);
+        let output = turn_output(self.model(&setup.agent.model)?, route);
         let mut invocation = match harness.name.as_str() {
             CLAUDE_HARNESS => claude_invocation(route, backend, prompt, thinking, start),
             PI_HARNESS => pi_invocation(route, backend, prompt, thinking, output, start),
@@ -333,8 +359,157 @@ impl Registry {
         }?;
 
         invocation.hosts = self.hosts();
+        invocation.context_window = route.context_window;
+        invocation.backend = backend.name.clone();
+        invocation.route = route.id.clone();
 
         Ok(invocation)
+    }
+
+    /// The route `harness` reaches `model` by: the one on `backend` when
+    /// chosen, else the first route of the model on a service the harness
+    /// speaks, walking the services in order, so a harness that can reach a
+    /// model directly is not sent through a gateway.
+    pub fn route(
+        &self,
+        harness: &str,
+        model: &str,
+        backend: Option<&str>,
+    ) -> std::io::Result<(&Route, &Backend)> {
+        let harness = self.harness(harness)?;
+        let model = self.model(model)?;
+
+        let mut served: Vec<(&Route, &Backend)> = Vec::new();
+        for route in &model.routes {
+            served.push((route, self.backend(&route.backend)?));
+        }
+
+        let chosen = match backend {
+            Some(chosen) => {
+                let chosen = self.backend(chosen)?;
+                served
+                    .iter()
+                    .find(|(_, backend)| backend.name == chosen.name)
+                    .filter(|(_, backend)| harness.services.contains(&backend.service))
+                    .ok_or_else(|| {
+                        std::io::Error::other(format!(
+                            "the {} harness cannot serve {} from the {} backend",
+                            harness.name, model.name, chosen.name
+                        ))
+                    })?
+            }
+            None => harness
+                .services
+                .iter()
+                .find_map(|service| {
+                    served
+                        .iter()
+                        .find(|(_, backend)| backend.service == *service)
+                })
+                .ok_or_else(|| {
+                    std::io::Error::other(format!(
+                        "the {} harness cannot serve {}",
+                        harness.name, model.name
+                    ))
+                })?,
+        };
+
+        Ok(*chosen)
+    }
+
+    /// The setup `name` plays: an agent of the registry on its backend, or a
+    /// harness paired with `model`, given beside it or after a slash, on the
+    /// first route of the model, at `thinking`. Checked: the level is known
+    /// and the harness serves the model there.
+    pub fn setup(
+        &self,
+        name: &str,
+        model: Option<&str>,
+        thinking: Option<&str>,
+    ) -> std::io::Result<ava_wire::Setup> {
+        if let Some(level) = thinking
+            && !THINKING_LEVELS.contains(&level)
+        {
+            return Err(unknown(
+                level,
+                "thinking level",
+                THINKING_LEVELS.iter().copied(),
+            ));
+        }
+
+        let agent = match (name.split_once(PAIRING_SEPARATOR), model) {
+            (Some((harness, model)), None) => self.agent(harness, Some(model))?,
+            _ => self.agent(name, model)?,
+        };
+        let backend = self
+            .alias(name)
+            .filter(|_| model.is_none())
+            .and_then(|alias| alias.backend.as_deref());
+        let (_, backend) = self.route(&agent.harness, &agent.model, backend)?;
+
+        Ok(ava_wire::Setup {
+            backend: Some(backend.name.clone()),
+            agent,
+            thinking: thinking.map(str::to_string),
+        })
+    }
+
+    /// The agent `name` refers to: an alias, or a harness paired with `model`.
+    pub fn agent(&self, name: &str, model: Option<&str>) -> std::io::Result<ava_wire::Agent> {
+        match (self.alias(name), model) {
+            (Some(alias), None) => Ok(alias.agent()),
+            (Some(alias), Some(_)) => Err(std::io::Error::other(format!(
+                "{} is an agent of the registry, its model is {}",
+                alias.name, alias.model
+            ))),
+            (None, Some(model)) => {
+                self.model(model)?;
+                Ok(ava_wire::Agent {
+                    harness: self.harness(name)?.name.clone(),
+                    model: model.to_string(),
+                })
+            }
+            (None, None) => Err(unknown(
+                name,
+                "agent",
+                self.agents.iter().map(|alias| alias.name.as_str()),
+            )),
+        }
+    }
+
+    /// The alias named `name`.
+    pub fn alias(&self, name: &str) -> Option<&Alias> {
+        self.agents.iter().find(|alias| alias.name == name)
+    }
+
+    /// The agent analyzing runs unless another is chosen: the one marked as
+    /// the analyst, else the first named.
+    pub fn analyst(&self) -> Option<&Alias> {
+        self.agents
+            .iter()
+            .find(|alias| alias.analyst)
+            .or(self.agents.first())
+    }
+
+    /// The alias naming `agent`.
+    pub fn alias_of(&self, agent: &ava_wire::Agent) -> Option<&Alias> {
+        self.agents
+            .iter()
+            .find(|alias| alias.harness == agent.harness && alias.model == agent.model)
+    }
+
+    /// The model registered under `name`.
+    pub fn model(&self, name: &str) -> std::io::Result<&Model> {
+        self.models
+            .iter()
+            .find(|candidate| candidate.name == name)
+            .ok_or_else(|| {
+                unknown(
+                    name,
+                    "model",
+                    self.models.iter().map(|entry| entry.name.as_str()),
+                )
+            })
     }
 
     /// The harness registered under `name`.
@@ -352,7 +527,7 @@ impl Registry {
     }
 
     /// The backend registered under `name`.
-    fn backend(&self, name: &str) -> std::io::Result<&Backend> {
+    pub fn backend(&self, name: &str) -> std::io::Result<&Backend> {
         self.backends
             .iter()
             .find(|candidate| candidate.name == name)
@@ -383,28 +558,166 @@ impl Registry {
     }
 }
 
-/// Load the registry from `registry.json` in the working directory, checking
-/// that every route names a registered backend.
+/// Load the registry from `registry.json` in the working directory, with the
+/// agents of `agents.json` beside it, none when there is no such file.
 pub fn load() -> std::io::Result<Registry> {
-    let contents = std::fs::read_to_string(REGISTRY_FILE)
+    let registry = std::fs::read_to_string(REGISTRY_FILE)
         .map_err(|error| std::io::Error::other(format!("{REGISTRY_FILE}: {error}")))?;
-
-    let registry: Registry = serde_json::from_str(&contents)
-        .map_err(|error| std::io::Error::other(format!("{REGISTRY_FILE}: {error}")))?;
-
-    for model in &registry.models {
-        for route in &model.routes {
-            registry.backend(&route.backend).map_err(|error| {
-                std::io::Error::other(format!("{REGISTRY_FILE}: {}: {error}", model.name))
-            })?;
+    let agents = match std::fs::read_to_string(AGENTS_FILE) {
+        Ok(agents) => agents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => NO_AGENTS.to_string(),
+        Err(error) => {
+            return Err(std::io::Error::other(format!("{AGENTS_FILE}: {error}")));
         }
-    }
+    };
+
+    parse(&registry, &agents)
+        .map_err(|error| std::io::Error::other(format!("{REGISTRY_FILE}: {error}")))
+}
+
+/// What the agents file holds when there is none.
+const NO_AGENTS: &str = "[]";
+
+/// The registry `contents` hold with the `agents` listed beside it, checked.
+fn parse(contents: &str, agents: &str) -> std::io::Result<Registry> {
+    let mut registry: Registry = serde_json::from_str(contents).map_err(std::io::Error::other)?;
+    registry.agents = serde_json::from_str(agents)
+        .map_err(|error| std::io::Error::other(format!("{AGENTS_FILE}: {error}")))?;
+    check(&registry)?;
 
     Ok(registry)
 }
 
+/// Whether `registry` holds together: every route names a backend, every
+/// agent a harness that serves its model under a plain name no other agent or
+/// harness has.
+fn check(registry: &Registry) -> std::io::Result<()> {
+    let invalid = |subject: &str, error: std::io::Error| {
+        std::io::Error::new(INVALID, format!("{subject}: {error}"))
+    };
+
+    for model in &registry.models {
+        for route in &model.routes {
+            registry
+                .backend(&route.backend)
+                .map_err(|error| invalid(&model.name, error))?;
+        }
+    }
+
+    for (index, alias) in registry.agents.iter().enumerate() {
+        checked_name(&alias.name)?;
+        let taken = registry.agents[..index]
+            .iter()
+            .any(|other| other.name == alias.name)
+            || registry.harness(&alias.name).is_ok();
+        if taken {
+            return Err(std::io::Error::new(
+                INVALID,
+                format!("{}: the agent name is taken", alias.name),
+            ));
+        }
+        registry
+            .route(&alias.harness, &alias.model, alias.backend.as_deref())
+            .map_err(|error| invalid(&alias.name, error))?;
+    }
+
+    if registry.agents.iter().filter(|alias| alias.analyst).count() > 1 {
+        return Err(std::io::Error::new(
+            INVALID,
+            "one agent at most is the analyst",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Refuse an agent name that is not letters, digits, dashes, underscores and dots.
+pub fn checked_name(name: &str) -> std::io::Result<()> {
+    let plain = !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || NAME_PUNCTUATION.contains(&character)
+        });
+
+    if !plain {
+        return Err(std::io::Error::new(
+            INVALID,
+            format!("`{name}`: an agent name is letters, digits, dashes, underscores and dots"),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Whether `error` reports a registry that does not hold together, which the
+/// change that made it so is to correct.
+pub fn is_invalid(error: &std::io::Error) -> bool {
+    error.kind() == INVALID
+}
+
+/// Change the agents file under the agents lock: loaded with the registry,
+/// changed, checked against it, written whole.
+fn modify(change: impl FnOnce(&mut Registry) -> std::io::Result<()>) -> std::io::Result<()> {
+    let _agents = AGENTS.lock().expect("the agents lock is not poisoned");
+    let mut registry = load()?;
+    change(&mut registry)?;
+    check(&registry)?;
+
+    let contents = serde_json::to_string_pretty(&registry.agents).map_err(std::io::Error::other)?;
+    std::fs::write(AGENTS_STAGING_FILE, format!("{contents}\n"))?;
+    std::fs::rename(AGENTS_STAGING_FILE, AGENTS_FILE)
+}
+
+/// Name `alias` in the agents file.
+pub fn add_alias(alias: Alias) -> std::io::Result<()> {
+    modify(|registry| {
+        if alias.analyst {
+            demote_analyst(registry);
+        }
+        registry.agents.push(alias);
+        Ok(())
+    })
+}
+
+/// Unmark the analyst, for another agent to take the mark.
+fn demote_analyst(registry: &mut Registry) {
+    for alias in &mut registry.agents {
+        alias.analyst = false;
+    }
+}
+
+/// Replace the agent named `name` in the agents file with `alias`.
+pub fn replace_alias(name: &str, alias: Alias) -> std::io::Result<()> {
+    modify(|registry| {
+        if alias.analyst {
+            demote_analyst(registry);
+        }
+        let replaced = registry
+            .agents
+            .iter_mut()
+            .find(|known| known.name == name)
+            .ok_or_else(|| std::io::Error::new(INVALID, format!("no agent named {name}")))?;
+        *replaced = alias;
+        Ok(())
+    })
+}
+
+/// Remove the agent named `name` from the agents file.
+pub fn remove_alias(name: &str) -> std::io::Result<()> {
+    modify(|registry| {
+        let before = registry.agents.len();
+        registry.agents.retain(|alias| alias.name != name);
+        if registry.agents.len() == before {
+            return Err(std::io::Error::new(
+                INVALID,
+                format!("no agent named {name}"),
+            ));
+        }
+        Ok(())
+    })
+}
+
 /// How a harness is told which model to use and how to authenticate.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Invocation {
     /// The environment handed to the container.
     pub variables: Vec<(String, String)>,
@@ -417,6 +730,9 @@ pub struct Invocation {
     /// The hosts the sandbox resolves to loopback, where the bridge forwards
     /// them onto the proxy: every host a registered backend is reached at.
     pub hosts: Vec<String>,
+    /// The backend the model is served by and the id it is asked for there.
+    pub backend: String,
+    pub route: String,
 }
 
 /// `value` as a JSON string, quotes and escapes included.
@@ -546,8 +862,7 @@ fn pi_invocation(
         variables: vec![(GATEWAY_TOKEN.to_string(), backend.credential()?)],
         arguments,
         files: vec![(PI_MODELS_FILE.to_string(), models)],
-        context_window: route.context_window,
-        hosts: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -601,8 +916,7 @@ fn codex_invocation(
                 .collect(),
         },
         files: vec![(CODEX_CONFIG_FILE.to_string(), configuration)],
-        context_window: route.context_window,
-        hosts: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -637,9 +951,7 @@ fn gateway_invocation(
             MODEL_OPTION.to_string(),
             format!("{GATEWAY_PROVIDER}/{}", route.id),
         ],
-        files: Vec::new(),
-        context_window: route.context_window,
-        hosts: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -686,9 +998,7 @@ fn claude_invocation(
     Ok(Invocation {
         variables: environment,
         arguments,
-        files: Vec::new(),
-        context_window: route.context_window,
-        hosts: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -748,20 +1058,96 @@ pub fn list_models() -> ! {
     std::process::exit(0);
 }
 
-/// Print every known agent with the services it speaks, then exit.
+/// Print every agent named in the registry, then exit.
 pub fn list_agents() -> ! {
     let registry = load_or_exit();
-    let names = registry.harnesses.iter().map(|agent| agent.name.as_str());
+    let names = registry.agents.iter().map(|alias| alias.name.as_str());
     let width = column_width(AGENT_HEADER, names);
+    let harnesses = registry.agents.iter().map(|alias| alias.harness.as_str());
+    let harness_width = column_width(HARNESS_HEADER, harnesses);
+    let models = registry.agents.iter().map(|alias| alias.model.as_str());
+    let model_width = column_width(MODEL_HEADER, models);
 
-    println!("{AGENT_HEADER:<width$}  {SERVICES_HEADER}");
-    for agent in &registry.harnesses {
-        let services: Vec<&str> = agent
+    let backends = registry
+        .agents
+        .iter()
+        .map(|alias| alias.backend.as_deref().unwrap_or_default());
+    let backend_width = column_width(BACKEND_HEADER, backends);
+
+    println!(
+        "{AGENT_HEADER:<width$}  {HARNESS_HEADER:<harness_width$}  {MODEL_HEADER:<model_width$}  {BACKEND_HEADER:<backend_width$}  {ANALYST_HEADER}"
+    );
+    for alias in &registry.agents {
+        println!(
+            "{:<width$}  {:<harness_width$}  {:<model_width$}  {:<backend_width$}  {}",
+            alias.name,
+            alias.harness,
+            alias.model,
+            alias.backend.as_deref().unwrap_or_default(),
+            if alias.analyst { ANALYST_MARK } else { "" }
+        );
+    }
+    std::process::exit(0);
+}
+
+/// Print every known backend with its service, host and the variable holding
+/// its key, then exit.
+pub fn list_backends() -> ! {
+    let registry = load_or_exit();
+    let width = column_width(
+        BACKEND_HEADER,
+        registry
+            .backends
+            .iter()
+            .map(|backend| backend.name.as_str()),
+    );
+    let service_width = column_width(
+        SERVICE_HEADER,
+        registry
+            .backends
+            .iter()
+            .map(|backend| backend.service.name()),
+    );
+    let host_width = column_width(
+        HOST_HEADER,
+        registry
+            .backends
+            .iter()
+            .map(|backend| backend.host.as_str()),
+    );
+
+    println!(
+        "{BACKEND_HEADER:<width$}  {SERVICE_HEADER:<service_width$}  {HOST_HEADER:<host_width$}  {KEY_HEADER}"
+    );
+    for backend in &registry.backends {
+        println!(
+            "{:<width$}  {:<service_width$}  {:<host_width$}  {}",
+            backend.name,
+            backend.service.name(),
+            backend.host,
+            backend.key
+        );
+    }
+    std::process::exit(0);
+}
+
+/// Print every known harness with the services it speaks, then exit.
+pub fn list_harnesses() -> ! {
+    let registry = load_or_exit();
+    let names = registry
+        .harnesses
+        .iter()
+        .map(|harness| harness.name.as_str());
+    let width = column_width(HARNESS_HEADER, names);
+
+    println!("{HARNESS_HEADER:<width$}  {SERVICES_HEADER}");
+    for harness in &registry.harnesses {
+        let services: Vec<&str> = harness
             .services
             .iter()
             .map(|service| service.name())
             .collect();
-        println!("{:<width$}  {}", agent.name, services.join(", "));
+        println!("{:<width$}  {}", harness.name, services.join(", "));
     }
     std::process::exit(0);
 }
@@ -776,6 +1162,117 @@ fn column_width<'a>(header: &str, entries: impl Iterator<Item = &'a str>) -> usi
 
 #[cfg(test)]
 mod tests {
+    const REGISTRY: &str = r#"{
+        "backends": [
+            {"name": "direct", "service": "anthropic", "host": "a.example", "key": "A"},
+            {"name": "gateway", "service": "openapi", "host": "g.example", "key": "G"},
+            {"name": "other", "service": "openapi", "host": "o.example", "key": "O"}
+        ],
+        "models": [
+            {"name": "m", "routes": [
+                {"backend": "direct", "id": "m-direct", "context_window": 1, "max_output": 1},
+                {"backend": "gateway", "id": "m-gateway", "context_window": 1, "max_output": 1},
+                {"backend": "other", "id": "m-other", "context_window": 1, "max_output": 1}
+            ]}
+        ],
+        "harnesses": [
+            {"name": "claude", "services": ["anthropic", "openapi"]},
+            {"name": "pi", "services": ["openapi"]}
+        ]
+    }"#;
+    const AGENTS: &str = r#"[
+        {"name": "opus", "harness": "pi", "model": "m", "backend": "other"},
+        {"name": "judge", "harness": "claude", "model": "m", "analyst": true}
+    ]"#;
+
+    #[test]
+    fn the_route_is_the_first_the_harness_speaks_unless_a_backend_is_chosen() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+
+        assert_eq!(
+            registry.route("claude", "m", None).unwrap().1.name,
+            "direct"
+        );
+        assert_eq!(registry.route("pi", "m", None).unwrap().1.name, "gateway");
+        assert_eq!(
+            registry.route("pi", "m", Some("other")).unwrap().0.id,
+            "m-other"
+        );
+        assert!(registry.route("pi", "m", Some("direct")).is_err());
+    }
+
+    #[test]
+    fn an_alias_resolves_alone_and_a_harness_with_its_model() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+
+        assert_eq!(registry.agent("opus", None).unwrap().label(), "pi on m");
+        assert_eq!(registry.agent("pi", Some("m")).unwrap().label(), "pi on m");
+        assert!(registry.agent("opus", Some("m")).is_err());
+        assert!(registry.agent("pi", None).is_err());
+        assert!(registry.agent("nobody", Some("m")).is_err());
+    }
+
+    #[test]
+    fn a_setup_takes_a_name_or_a_pairing_and_refuses_what_cannot_play() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+
+        let named = registry.setup("opus", None, Some("low")).unwrap();
+        assert_eq!(named.label(), "pi on m at low via other");
+        let spelled = registry.setup("claude/m", None, None).unwrap();
+        assert_eq!(spelled.label(), "claude on m via direct");
+        assert!(registry.setup("opus", None, Some("lots")).is_err());
+        assert!(registry.setup("nobody", None, None).is_err());
+
+        let unreachable = AGENTS.replace(r#""backend": "other""#, r#""backend": "direct""#);
+        assert!(super::parse(REGISTRY, &unreachable).is_err());
+        let unknown = AGENTS.replace(r#""backend": "other""#, r#""backend": "nowhere""#);
+        assert!(super::parse(REGISTRY, &unknown).is_err());
+    }
+
+    #[test]
+    fn one_agent_at_most_is_the_analyst() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+        assert_eq!(registry.analyst().unwrap().name, "judge");
+
+        let two = AGENTS.replace(
+            r#""backend": "other""#,
+            r#""backend": "other", "analyst": true"#,
+        );
+        assert!(super::parse(REGISTRY, &two).is_err());
+
+        let none = AGENTS.replace(r#", "analyst": true"#, "");
+        let registry = super::parse(REGISTRY, &none).unwrap();
+        assert_eq!(registry.analyst().unwrap().name, "opus");
+    }
+
+    #[test]
+    fn an_agent_name_is_not_a_harness_name_and_names_a_pairing_that_plays() {
+        let taken = AGENTS.replace(r#""name": "opus""#, r#""name": "pi""#);
+        assert!(super::parse(REGISTRY, &taken).is_err());
+
+        let unserved = AGENTS.replace(r#""model": "m""#, r#""model": "x""#);
+        assert!(super::parse(REGISTRY, &unserved).is_err());
+
+        let spaced = AGENTS.replace(r#""name": "opus""#, r#""name": "op us""#);
+        let Err(error) = super::parse(REGISTRY, &spaced) else {
+            panic!("a spaced name parses");
+        };
+        assert!(super::is_invalid(&error));
+    }
+
+    #[test]
+    fn the_agents_write_back_the_way_they_read() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+        let written = serde_json::to_string_pretty(&registry.agents).unwrap();
+        let reread = super::parse(REGISTRY, &written).unwrap();
+
+        assert_eq!(reread.agents, registry.agents);
+        assert_eq!(
+            written,
+            serde_json::to_string_pretty(&reread.agents).unwrap()
+        );
+    }
+
     fn route(id: &str, max_output: u32) -> super::Route {
         super::Route {
             backend: "gateway".to_string(),

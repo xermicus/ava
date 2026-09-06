@@ -68,38 +68,41 @@ const FONT_CONTENT_TYPE: &str = "font/woff2";
 /// A form submission larger than this is not one of ours.
 const MAX_FORM_BYTES: u64 = 16 * 1024;
 
-/// The form fields choosing an agent: the harness, the model and the thinking
-/// level, under a prefix telling apart the agents one form chooses.
-pub(crate) const AGENT_FIELDS: [&str; 3] = ["agent", "model", "thinking"];
+/// The form fields choosing an agent and its settings: the agent by its name
+/// in the registry and the thinking level, under a prefix telling apart the
+/// agents one form chooses.
+pub(crate) const AGENT_FIELDS: [&str; 2] = ["agent", "thinking"];
+
+/// The form fields naming an agent in the registry, carried back to the
+/// agents page, and the query key naming the agent its form edits.
+pub(crate) const ALIAS_FIELDS: [&str; 5] = ["name", "harness", "model", "backend", "analyst"];
+pub(crate) const EDIT_KEY: &str = "edit";
 
 /// The prefix of the fields choosing the analyst on the start panel.
 pub(crate) const ANALYST_PREFIX: &str = "analyst_";
 
 /// The start fields carried back to the form, so a submission does not reset it.
-const START_FIELDS: [&str; 12] = [
+const START_FIELDS: [&str; 10] = [
     "agent",
-    "model",
-    "game",
     "thinking",
+    "game",
     "limit",
     "parallel",
     "analyze",
     "force",
     "analyst_agent",
-    "analyst_model",
     "analyst_thinking",
     "analyst_seconds",
 ];
 
 /// The tournament creation fields carried back to its form.
-const CREATE_FIELDS: [&str; 9] = [
+const CREATE_FIELDS: [&str; 8] = [
     "name",
     "game",
     "limit",
     "combats",
     "analyze",
     "analyst_agent",
-    "analyst_model",
     "analyst_thinking",
     "analyst_seconds",
 ];
@@ -173,6 +176,8 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
             .iter()
             .chain(CREATE_FIELDS.iter())
             .chain(AGENT_FIELDS.iter())
+            .chain(ALIAS_FIELDS.iter())
+            .chain(std::iter::once(&EDIT_KEY))
             .map(|key| (key.to_string(), query_value(query, key)))
             .chain(AGENT_FIELDS.iter().map(|key| {
                 let key = format!("{ANALYST_PREFIX}{key}");
@@ -193,6 +198,7 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
     let outcome = match segments {
         [""] => views::runs_page(&notice, &selection, &pending),
         ["scoreboard"] => views::scoreboard_page(),
+        ["agents"] => views::agents_page(&notice, &selection),
         ["games"] => views::games_page(),
         ["games", name, "cover"] => {
             return match views::game_cover(name) {
@@ -292,6 +298,21 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
             preserved(form, &START_FIELDS),
             start_run(form),
         ),
+        ["agents", "create"] => (
+            "/agents".to_string(),
+            preserved(form, &ALIAS_FIELDS),
+            create_alias(form),
+        ),
+        ["agents", name, "edit"] => (
+            "/agents".to_string(),
+            format!(
+                "&{EDIT_KEY}={}{}",
+                urlencode(name),
+                preserved(form, &ALIAS_FIELDS)
+            ),
+            edit_alias(name, form),
+        ),
+        ["agents", name, "delete"] => ("/agents".to_string(), String::new(), delete_alias(name)),
         ["run", name, "stop"] => (format!("/run/{name}"), String::new(), stop_run(name)),
         ["run", name, "analyze"] => (
             format!("/run/{name}"),
@@ -322,11 +343,14 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
     };
 
     match outcome {
-        Ok(Done { note, landing }) => redirect(&format!(
-            "{}?started={}{carried}",
-            landing.unwrap_or(origin),
-            urlencode(&note)
-        )),
+        Ok(Done {
+            note,
+            landing: None,
+        }) => redirect(&format!("{origin}?started={}{carried}", urlencode(&note))),
+        Ok(Done {
+            note,
+            landing: Some(landing),
+        }) => redirect(&format!("{landing}?started={}", urlencode(&note))),
         Err(refusal) => {
             refusal.report();
             redirect(&format!(
@@ -338,7 +362,7 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
 }
 
 /// An action that went ahead: what to tell the browser, and where, when not
-/// back where it acted.
+/// back where it acted with its fields carried.
 struct Done {
     note: String,
     landing: Option<String>,
@@ -371,16 +395,14 @@ fn preserved(form: &[(String, String)], fields: &[&str]) -> String {
 /// on what docker does at runtime.
 fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
     let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
-    let agent = agent_choice(&registry, form, "")?;
+    let setup = agent_choice(&registry, form, "")?;
 
     let analyst = if value(form, "analyze") == "on" {
         let analyst = agent_choice(&registry, form, ANALYST_PREFIX)?;
-        Some(docker::Analyst {
-            name: analyst.harness,
-            model: analyst.model,
-            thinking: analyst.thinking,
-            limit: analyst_seconds(form, ANALYST_PREFIX)?,
-        })
+        Some(docker::Analyst::of(
+            &analyst,
+            analyst_seconds(form, ANALYST_PREFIX)?,
+        ))
     } else {
         None
     };
@@ -402,12 +424,12 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
     }
 
     let command = docker::Agent {
-        name: agent.harness,
-        model: agent.model,
+        name: setup.agent.harness,
+        model: setup.agent.model,
         game: game.to_string(),
         limit,
         parallel,
-        thinking: agent.thinking,
+        thinking: setup.thinking,
         force_build_images: value(form, "force") == "on",
         analyst,
         turn: 0,
@@ -490,46 +512,24 @@ fn limit_choice(form: &[(String, String)]) -> Result<u64, Refusal> {
     docker::Agent::checked_limit(limit).map_err(|error| Refusal::Rejected(error.to_string()))
 }
 
-/// The agent chosen under the `prefix` fields of a form, checked against the
-/// registry.
+/// The agent chosen under the `prefix` fields of a form with its settings,
+/// checked against the registry.
 fn agent_choice(
     registry: &registry::Registry,
     form: &[(String, String)],
     prefix: &str,
-) -> Result<ava_wire::Agent, Refusal> {
-    let [harness_field, model_field, thinking_field] =
-        AGENT_FIELDS.map(|field| format!("{prefix}{field}"));
+) -> Result<ava_wire::Setup, Refusal> {
+    let [agent_field, thinking_field] = AGENT_FIELDS.map(|field| format!("{prefix}{field}"));
 
-    let harness = value(form, &harness_field);
-    if !registry.harnesses.iter().any(|known| known.name == harness) {
-        return Err(Refusal::Rejected(format!("unknown harness `{harness}`")));
-    }
-
-    let model = value(form, &model_field);
-    if !registry.models.iter().any(|known| known.name == model) {
-        return Err(Refusal::Rejected(format!("unknown model `{model}`")));
-    }
-
-    let thinking = match value(form, &thinking_field) {
-        "" => None,
-        level if registry::THINKING_LEVELS.contains(&level) => Some(level.to_string()),
-        level => {
-            return Err(Refusal::Rejected(format!(
-                "unknown thinking level `{level}`"
-            )));
-        }
-    };
+    let thinking = Some(value(form, &thinking_field)).filter(|level| !level.is_empty());
+    let setup = registry
+        .setup(value(form, &agent_field), None, thinking)
+        .map_err(|error| Refusal::Rejected(error.to_string()))?;
 
     // A credential the host never set is the operator's to fix, unlike a
     // pairing this harness cannot serve, which is the form's to correct.
     registry
-        .invocation(
-            harness,
-            model,
-            "",
-            thinking.as_deref(),
-            registry::Start::Task,
-        )
+        .invocation(&setup, "", registry::Start::Task)
         .map_err(|error| {
             let reason = error.to_string();
             if registry::is_missing_credential(&error) {
@@ -539,11 +539,7 @@ fn agent_choice(
             }
         })?;
 
-    Ok(ava_wire::Agent {
-        harness: harness.to_string(),
-        model: model.to_string(),
-        thinking,
-    })
+    Ok(setup)
 }
 
 /// Analyze the run in a thread of its own.
@@ -561,12 +557,7 @@ fn analyze_run(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
 
     let command = docker::Analyze {
         run: name.to_string(),
-        analyst: docker::Analyst {
-            name: analyst.harness,
-            model: analyst.model,
-            thinking: analyst.thinking,
-            limit: seconds,
-        },
+        analyst: docker::Analyst::of(&analyst, seconds),
     };
 
     let note = format!(
@@ -581,6 +572,69 @@ fn analyze_run(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     });
 
     Ok(Done::note(note))
+}
+
+/// The agent named in the form, checked no further than its shape: the
+/// registry checks the rest when it takes the change.
+fn alias_choice(form: &[(String, String)]) -> Result<registry::Alias, Refusal> {
+    let [
+        name_field,
+        harness_field,
+        model_field,
+        backend_field,
+        analyst_field,
+    ] = ALIAS_FIELDS;
+    let alias = registry::Alias {
+        name: value(form, name_field).trim().to_string(),
+        harness: value(form, harness_field).to_string(),
+        model: value(form, model_field).to_string(),
+        backend: Some(value(form, backend_field))
+            .filter(|backend| !backend.is_empty())
+            .map(str::to_string),
+        analyst: value(form, analyst_field) == "on",
+    };
+    registry::checked_name(&alias.name).map_err(|error| Refusal::Rejected(error.to_string()))?;
+
+    Ok(alias)
+}
+
+/// A refusal out of a registry change: what the form got wrong, or what
+/// stopped the file from being written.
+fn registry_refusal(error: std::io::Error) -> Refusal {
+    if registry::is_invalid(&error) {
+        Refusal::Rejected(error.to_string())
+    } else {
+        Refusal::Failed(error.to_string())
+    }
+}
+
+/// Name the agent of the form in the registry.
+fn create_alias(form: &[(String, String)]) -> Result<Done, Refusal> {
+    let alias = alias_choice(form)?;
+    registry::add_alias(alias.clone()).map_err(registry_refusal)?;
+
+    Ok(Done::note(format!(
+        "{} is {} on {}",
+        alias.name, alias.harness, alias.model
+    )))
+}
+
+/// Replace the agent named `name` in the registry with the one of the form.
+fn edit_alias(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
+    let alias = alias_choice(form)?;
+    registry::replace_alias(name, alias.clone()).map_err(registry_refusal)?;
+
+    Ok(Done {
+        note: format!("{} is {} on {}", alias.name, alias.harness, alias.model),
+        landing: Some("/agents".to_string()),
+    })
+}
+
+/// Remove the agent named `name` from the registry.
+fn delete_alias(name: &str) -> Result<Done, Refusal> {
+    registry::remove_alias(name).map_err(registry_refusal)?;
+
+    Ok(Done::note(format!("removed {name}")))
 }
 
 /// End a live run early by leaving its done marker, as a release tag would.
@@ -638,10 +692,10 @@ fn create_tournament(form: &[(String, String)]) -> Result<Done, Refusal> {
 /// Seat the agent chosen in the form in the named tournament.
 fn seat(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
-    let agent = agent_choice(&registry, form, "")?;
-    let label = agent.label();
+    let setup = agent_choice(&registry, form, "")?;
+    let label = setup.label();
 
-    tournament::add_seat(name, &agent).map_err(|error| Refusal::Rejected(error.to_string()))?;
+    tournament::add_seat(name, &setup).map_err(|error| Refusal::Rejected(error.to_string()))?;
 
     Ok(Done::note(format!("seated {label}")))
 }

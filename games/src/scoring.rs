@@ -41,20 +41,18 @@ pub fn round_robin(seats: usize) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// The matches `pairings` make between the agents `seats` hold, in the order
-/// given: one per pairing that saw a round.
+/// The matches `pairings` make between the agents the seat `labels` name,
+/// in the order given: one per pairing that saw a round.
 pub fn matches<'a>(
-    seats: &[ava_wire::Agent],
+    labels: &[String],
     pairings: impl IntoIterator<Item = &'a ava_wire::Pairing>,
 ) -> Vec<Match> {
     pairings
         .into_iter()
         .filter_map(|pairing| {
-            let first = seats.get(pairing.first)?;
-            let second = seats.get(pairing.second)?;
             Some(Match {
-                first: first.label(),
-                second: second.label(),
+                first: labels.get(pairing.first)?.clone(),
+                second: labels.get(pairing.second)?.clone(),
                 score: pairing.tally.score()?,
             })
         })

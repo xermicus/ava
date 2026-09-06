@@ -5,9 +5,10 @@ use crate::process;
 /// The agent sandbox command.
 #[derive(Debug, Clone)]
 pub struct Agent {
-    /// The agent to run, naming a directory under `agents`.
+    /// The agent to run: an agent named in the registry, or a harness paired
+    /// with `model`.
     pub name: String,
-    /// The model the agent runs on.
+    /// The model, when `name` is a harness.
     pub model: String,
     /// The game to play and score, naming a directory under `games`.
     pub game: String,
@@ -47,13 +48,13 @@ impl Agent {
         Ok(limit)
     }
 
-    /// The agent of the command.
-    pub fn agent(&self) -> ava_wire::Agent {
-        ava_wire::Agent {
-            harness: self.name.clone(),
-            model: self.model.clone(),
-            thinking: self.thinking.clone(),
-        }
+    /// The agent of the command with its settings, resolved against `registry`.
+    pub fn setup(&self, registry: &crate::registry::Registry) -> std::io::Result<ava_wire::Setup> {
+        registry.setup(
+            &self.name,
+            (!self.model.is_empty()).then_some(self.model.as_str()),
+            self.thinking.as_deref(),
+        )
     }
 }
 
@@ -95,9 +96,9 @@ pub struct Image {
 /// The agent analyzing a run.
 #[derive(Debug, Clone)]
 pub struct Analyst {
-    /// The harness, naming a directory under `agents`.
+    /// An agent named in the registry, or a harness paired with `model`.
     pub name: String,
-    /// The model the harness runs on.
+    /// The model, when `name` is a harness.
     pub model: String,
     /// How much thinking the analyst is asked for.
     pub thinking: Option<String>,
@@ -120,12 +121,22 @@ impl Analyst {
         Ok(limit)
     }
 
-    /// The agent of the analyst.
-    pub fn agent(&self) -> ava_wire::Agent {
-        ava_wire::Agent {
-            harness: self.name.clone(),
-            model: self.model.clone(),
-            thinking: self.thinking.clone(),
+    /// The analyst with its settings, resolved against `registry`.
+    pub fn setup(&self, registry: &crate::registry::Registry) -> std::io::Result<ava_wire::Setup> {
+        registry.setup(
+            &self.name,
+            (!self.model.is_empty()).then_some(self.model.as_str()),
+            self.thinking.as_deref(),
+        )
+    }
+
+    /// The command running `setup` for `limit` seconds.
+    pub fn of(setup: &ava_wire::Setup, limit: u64) -> Self {
+        Self {
+            name: setup.agent.harness.clone(),
+            model: setup.agent.model.clone(),
+            thinking: setup.thinking.clone(),
+            limit,
         }
     }
 }
@@ -866,10 +877,12 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
     let record = ava_wire::Run {
         version: ava_wire::VERSION,
         run: run.to_string(),
-        harness: command.name.clone(),
+        harness: launch.setup.agent.harness.clone(),
         harness_version: harness_version.to_string(),
-        model: command.model.clone(),
-        thinking: command.thinking.clone(),
+        model: launch.setup.agent.model.clone(),
+        thinking: launch.setup.thinking.clone(),
+        backend: launch.invocation.backend.clone(),
+        route: launch.invocation.route.clone(),
         game: command.game.clone(),
         game_version: launch.game_version.clone(),
         architecture: launch.architecture.clone(),
@@ -1232,6 +1245,8 @@ fn build_game_image(tag: &str, base: &str, layer: &str, force: bool) -> std::io:
 /// resolved here, whatever gets rebuilt in the meantime.
 pub struct Launch {
     pub command: Agent,
+    /// The agent the command resolved to, with its settings.
+    pub setup: ava_wire::Setup,
     /// The immutable id of the harness image, with the layer of the game when it has one.
     pub identity: String,
     invocation: crate::registry::Invocation,
@@ -1243,18 +1258,13 @@ pub struct Launch {
 /// Resolve `command` into a launch, building the images, the proxy hosts file
 /// and the egress network it needs.
 pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
-    let agent = command.name.as_str();
     Agent::checked_limit(command.limit)?;
     require_game(&command.game, command.turn)?;
 
     let registry = crate::registry::load()?;
-    let invocation = registry.invocation(
-        agent,
-        &command.model,
-        TASK_PROMPT,
-        command.thinking.as_deref(),
-        crate::registry::Start::Task,
-    )?;
+    let setup = command.setup(&registry)?;
+    let agent = setup.agent.harness.as_str();
+    let invocation = registry.invocation(&setup, TASK_PROMPT, crate::registry::Start::Task)?;
 
     let force = command.force_build_images;
     build_image(BASE_IMAGE, BASE_CONTEXT, force)?;
@@ -1280,6 +1290,7 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
 
     Ok(Launch {
         command: command.clone(),
+        setup,
         identity,
         invocation,
         game_version: game_version(&command.game),
@@ -1294,7 +1305,7 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
 /// first failing status.
 pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
     let launch = prepare(command)?;
-    let base = run_name(&command.name);
+    let base = run_name(&launch.setup.agent.harness);
 
     if command.parallel == 1 {
         return play(&launch, &base);
@@ -1335,12 +1346,11 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
 pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
     let command = &launch.command;
     let staging = std::env::temp_dir().join(STAGING_DIRECTORY).join(run);
-    let image = pin_image(&launch.identity, &command.name, run)?;
+    let image = pin_image(&launch.identity, &launch.setup.agent.harness, run)?;
 
     log::info!(
-        "run {run}: {} on {} playing {}",
-        command.name,
-        command.model,
+        "run {run}: {} playing {}",
+        launch.setup.label(),
         command.game
     );
 
@@ -1359,7 +1369,16 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
             )
         })
         .and_then(|()| prepare_agent_home(run, &image))
-        .and_then(|()| run_sandbox(command, &image, run, &staging, launch.invocation.clone()));
+        .and_then(|()| {
+            run_sandbox(
+                &launch.setup,
+                command.limit,
+                &image,
+                run,
+                &staging,
+                launch.invocation.clone(),
+            )
+        });
 
     let collected = collect_logs(run, &proxy_container(run), ACCESS_LOG, ERROR_LOG);
     drain_scorer(run);
@@ -1594,19 +1613,20 @@ pub fn fight(
 /// The clock bounds the whole loop, not a turn: each start is given whatever
 /// is left of the run. Running out of it is the last call.
 fn run_sandbox(
-    command: &Agent,
+    setup: &ava_wire::Setup,
+    limit: u64,
     image: &str,
     run: &str,
     staging: &std::path::Path,
     invocation: crate::registry::Invocation,
 ) -> std::io::Result<i32> {
-    let sandbox = Sandbox::run(command, image, run, staging);
-    let loop_limit = loop_seconds(command.limit);
+    let sandbox = Sandbox::run(setup, image, run, staging);
+    let loop_limit = loop_seconds(limit);
     let mut phase = Phase {
         limit: loop_limit,
         started: std::time::Instant::now(),
         loop_limit,
-        run_limit: command.limit,
+        run_limit: limit,
         last_call: false,
         turn: 1,
         monitor: std::sync::Arc::new(crate::monitor::Monitor::new()),
@@ -1633,10 +1653,8 @@ fn run_sandbox(
 fn last_call(sandbox: &Sandbox, task: &Phase) -> std::io::Result<i32> {
     let prompt = last_call_prompt();
     let invocation = crate::registry::load()?.invocation(
-        &sandbox.agent.harness,
-        &sandbox.agent.model,
+        &sandbox.setup,
         &prompt,
-        sandbox.agent.thinking.as_deref(),
         crate::registry::Start::Resume,
     )?;
 
@@ -1677,7 +1695,7 @@ enum Ending {
 
 /// A sandbox: a run's or an analyst's.
 struct Sandbox {
-    agent: ava_wire::Agent,
+    setup: ava_wire::Setup,
     task: &'static str,
     /// What the sidecars and volumes are named after.
     name: String,
@@ -1694,9 +1712,9 @@ struct Sandbox {
 
 impl Sandbox {
     /// The sandbox of a run.
-    fn run(command: &Agent, image: &str, run: &str, staging: &std::path::Path) -> Self {
+    fn run(setup: &ava_wire::Setup, image: &str, run: &str, staging: &std::path::Path) -> Self {
         Self {
-            agent: command.agent(),
+            setup: setup.clone(),
             task: TASK_PROMPT,
             name: run.to_string(),
             directory: run.to_string(),
@@ -1754,10 +1772,8 @@ fn turn_loop(
         phase.turn += 1;
         phase.limit = left;
         turn = registry.invocation(
-            &sandbox.agent.harness,
-            &sandbox.agent.model,
+            &sandbox.setup,
             &loop_prompt(phase.turn, sandbox.task),
-            sandbox.agent.thinking.as_deref(),
             crate::registry::Start::Resume,
         )?;
     }
@@ -1769,7 +1785,7 @@ fn start_sandbox(
     invocation: &crate::registry::Invocation,
     phase: &Phase,
 ) -> std::io::Result<Ending> {
-    let harness = sandbox.agent.harness.as_str();
+    let harness = sandbox.setup.agent.harness.as_str();
     let container = sandbox.container();
 
     let mut docker = std::process::Command::new("docker");
@@ -2278,21 +2294,15 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
 
     let analyst = &command.analyst;
     Analyst::checked_limit(analyst.limit)?;
-    let agent = analyst.agent();
     let registry = crate::registry::load()?;
-    let invocation = registry.invocation(
-        &agent.harness,
-        &agent.model,
-        ANALYSIS_PROMPT,
-        agent.thinking.as_deref(),
-        crate::registry::Start::Task,
-    )?;
+    let setup = analyst.setup(&registry)?;
+    let invocation = registry.invocation(&setup, ANALYSIS_PROMPT, crate::registry::Start::Task)?;
 
     build_image(BASE_IMAGE, BASE_CONTEXT, false)?;
-    let harness = format!("{AGENT_IMAGE_PREFIX}{}", agent.harness);
+    let harness = format!("{AGENT_IMAGE_PREFIX}{}", setup.agent.harness);
     build_image(
         &harness,
-        &format!("{AGENT_CONTEXT}/{}", agent.harness),
+        &format!("{AGENT_CONTEXT}/{}", setup.agent.harness),
         false,
     )?;
     std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
@@ -2301,13 +2311,13 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
 
     let name = analysis_name(run);
     let identity = image_id(&harness)?;
-    let image = pin_image(&identity, &agent.harness, &name)?;
+    let image = pin_image(&identity, &setup.agent.harness, &name)?;
     let _ = std::fs::remove_file(directory.join(ANALYSIS_LOG));
 
-    log::info!("analyzing {run} with {}", agent.label());
+    log::info!("analyzing {run} with {}", setup.label());
 
     let sandbox = Sandbox {
-        agent: agent.clone(),
+        setup: setup.clone(),
         task: ANALYSIS_PROMPT,
         name: name.clone(),
         directory: run.to_string(),
@@ -2320,7 +2330,7 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
     };
     let mut record = ava_wire::Analysis {
         version: ava_wire::VERSION,
-        analyst: Some(agent),
+        analyst: Some(setup),
         image: identity,
         limit_seconds: analyst.limit,
         started_seconds: crate::usage::epoch_now(),

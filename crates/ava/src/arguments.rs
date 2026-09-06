@@ -10,6 +10,8 @@ pub(crate) struct Arguments;
 impl Arguments {
     const LIST_MODELS: &str = "list-models";
     const LIST_AGENTS: &str = "list-agents";
+    const LIST_HARNESSES: &str = "list-harnesses";
+    const LIST_BACKENDS: &str = "list-backends";
     const USAGE: &str = "usage";
 
     /// Prints the help message to stdout.
@@ -20,7 +22,15 @@ impl Arguments {
         );
         arg_help_str(
             &format!("--{}", Self::LIST_AGENTS),
-            "print the known agents and exit",
+            "print the agents named in the registry and exit",
+        );
+        arg_help_str(
+            &format!("--{}", Self::LIST_HARNESSES),
+            "print the known harnesses and exit",
+        );
+        arg_help_str(
+            &format!("--{}", Self::LIST_BACKENDS),
+            "print the known backends and exit",
         );
         arg_help_str(
             &format!("--{}", Self::USAGE),
@@ -57,10 +67,13 @@ impl AgentCli {
     const THINKING_SHORT: char = 'e';
     const FORCE_BUILD_LONG: &str = "force-build-images";
 
+    const AGENT_HELP: &str = "the agent to run: a name of the registry, or harness/model";
+    const MODEL_HELP: &str = "the model, when -a names a harness alone";
+
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
-        arg_help_chr(Self::AGENT_SHORT, "the agent to run");
-        arg_help_chr(Self::MODEL_SHORT, "the model name to use");
+        arg_help_chr(Self::AGENT_SHORT, Self::AGENT_HELP);
+        arg_help_chr(Self::MODEL_SHORT, Self::MODEL_HELP);
         arg_help_chr(Self::GAME_SHORT, "the game to play and score");
         arg_help_chr(
             Self::TIME_LIMIT_SHORT,
@@ -94,7 +107,6 @@ impl AgentCli {
     fn require_arguments(command: &ava_run::docker::Agent) {
         for (value, flag, subject) in [
             (&command.name, Self::AGENT_SHORT, "agent"),
-            (&command.model, Self::MODEL_SHORT, "model"),
             (&command.game, Self::GAME_SHORT, "game"),
         ] {
             if value.is_empty() {
@@ -116,8 +128,8 @@ impl AnalyzeCli {
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
         arg_help_chr(Self::RUN_SHORT, "the run to analyze");
-        arg_help_chr(AgentCli::AGENT_SHORT, "the agent analyzing it");
-        arg_help_chr(AgentCli::MODEL_SHORT, "the model name to use");
+        arg_help_chr(AgentCli::AGENT_SHORT, AgentCli::AGENT_HELP);
+        arg_help_chr(AgentCli::MODEL_SHORT, AgentCli::MODEL_HELP);
         arg_help_chr(
             AgentCli::THINKING_SHORT,
             &format!(
@@ -139,7 +151,6 @@ impl AnalyzeCli {
         for (value, flag, subject) in [
             (&command.run, Self::RUN_SHORT, "run"),
             (&command.analyst.name, AgentCli::AGENT_SHORT, "agent"),
-            (&command.analyst.model, AgentCli::MODEL_SHORT, "model"),
         ] {
             if value.is_empty() {
                 fail(&format!("no {subject} given, pass one with -{flag}"));
@@ -171,7 +182,7 @@ impl TournamentCli {
         );
         arg_help_chr(
             Self::SEAT_SHORT,
-            "seat an agent, harness/model or harness/model/thinking, repeatable",
+            "seat an agent, agent[/thinking] with the agent a name of the registry or harness/model, repeatable",
         );
         arg_help_chr(
             AgentCli::TIME_LIMIT_SHORT,
@@ -193,7 +204,7 @@ impl TournamentCli {
         );
         arg_help_str(
             &format!("--{}", Self::ANALYST_LONG),
-            "analyze every run of a round with this agent, harness/model or harness/model/thinking, fixed when the tournament is created",
+            "analyze every run of a round with this agent, agent[/thinking], fixed when the tournament is created",
         );
         arg_help_str(
             &format!("--{}", Self::ANALYST_SECONDS_LONG),
@@ -568,15 +579,6 @@ impl Parser {
                 }
                 AgentCli::THINKING_SHORT => {
                     let level = Self::value(args, &mut chars, flag, "missing thinking level");
-                    if !ava_run::registry::THINKING_LEVELS.contains(&level.as_str()) {
-                        bail(
-                            flag,
-                            &format!(
-                                "unknown thinking level `{level}`, known are: {}",
-                                ava_run::registry::THINKING_LEVELS.join(", ")
-                            ),
-                        );
-                    }
                     match self.command {
                         Some(SubCommand::Agent(ref mut command)) => command.thinking = Some(level),
                         Some(SubCommand::Analyze(ref mut command)) => {
@@ -697,6 +699,8 @@ impl Parser {
         match next {
             Arguments::LIST_MODELS => ava_run::registry::list_models(),
             Arguments::LIST_AGENTS => ava_run::registry::list_agents(),
+            Arguments::LIST_HARNESSES => ava_run::registry::list_harnesses(),
+            Arguments::LIST_BACKENDS => ava_run::registry::list_backends(),
             Arguments::USAGE => ava_run::usage::print(),
             AgentCli::FORCE_BUILD_LONG => match self.command {
                 Some(SubCommand::Agent(ref mut command)) => command.force_build_images = true,

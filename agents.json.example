@@ -1,0 +1,29 @@
+[
+  {
+    "name": "claude-opus",
+    "harness": "claude",
+    "model": "claude-opus-5"
+  },
+  {
+    "name": "claude-sonnet",
+    "harness": "claude",
+    "model": "claude-sonnet-5",
+    "analyst": true
+  },
+  {
+    "name": "pi-deepseek-flash",
+    "harness": "pi",
+    "model": "deepseek-v4-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "opencode-kimi",
+    "harness": "opencode",
+    "model": "kimi-k3"
+  },
+  {
+    "name": "codex-glm",
+    "harness": "codex",
+    "model": "glm-5.3"
+  }
+]

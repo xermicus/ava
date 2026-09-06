@@ -30,10 +30,8 @@ unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
 
-/// What separates the harness, the model and the thinking level of a seat on
-/// the command line.
-const SEAT_SEPARATOR: char = '/';
-const SEAT_PARTS: usize = 3;
+/// A seat on the command line.
+const SEAT_SHAPE: &str = "agent[/thinking], the agent a name of the registry or harness/model";
 
 /// The characters a tournament name is made of, besides letters and digits.
 const NAME_PUNCTUATION: [char; 3] = ['-', '_', '.'];
@@ -60,14 +58,14 @@ pub struct Tournament {
     pub name: String,
     /// The game, needed to create the tournament.
     pub game: String,
-    /// The seats to add, each `harness/model` or `harness/model/thinking`.
+    /// The seats to add, each `agent[/thinking]`.
     pub seats: Vec<String>,
     /// The seconds every run is given, taken when the tournament is created.
     pub limit: Option<u64>,
     /// The combats every fight plays, taken when the tournament is created.
     pub combats: Option<u64>,
-    /// The agent analyzing every run, `harness/model` or
-    /// `harness/model/thinking`, taken when the tournament is created.
+    /// The agent analyzing every run, `agent[/thinking]`, taken when the
+    /// tournament is created.
     pub analyst: Option<String>,
     /// The seconds that analyst is given, taken when the tournament is created.
     pub analyst_seconds: Option<u64>,
@@ -164,6 +162,12 @@ pub fn playing(name: &str) -> bool {
 pub fn run(command: &Tournament) -> std::io::Result<i32> {
     let name = command.name.as_str();
     checked_name(name)?;
+    let registry = crate::registry::load()?;
+    let seats = command
+        .seats
+        .iter()
+        .map(|seat| parse_seat(&registry, seat))
+        .collect::<std::io::Result<Vec<ava_wire::Setup>>>()?;
 
     if directory(name).join(RECORD_FILE).is_file() {
         if !command.game.is_empty() {
@@ -193,7 +197,7 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
             )));
         }
         let analyst = match &command.analyst {
-            Some(analyst) => Some(parse_seat(analyst)?),
+            Some(analyst) => Some(parse_seat(&registry, analyst)?),
             None => None,
         };
         create(
@@ -210,40 +214,37 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
         )?;
     }
 
-    for seat in &command.seats {
-        add_seat(name, &parse_seat(seat)?)?;
+    for seat in &seats {
+        add_seat(name, seat)?;
     }
 
     play_round(name, command.force_build_images, command.parallel)
 }
 
-/// The agent a `harness/model` or `harness/model/thinking` seat names.
-fn parse_seat(seat: &str) -> std::io::Result<ava_wire::Agent> {
-    let parts: Vec<&str> = seat.splitn(SEAT_PARTS, SEAT_SEPARATOR).collect();
-    let (harness, model, thinking) = match parts.as_slice() {
-        [harness, model] => (harness, model, None),
-        [harness, model, thinking] => (harness, model, Some(thinking.to_string())),
+/// The setup an `agent[/thinking]` seat names in `registry`.
+fn parse_seat(
+    registry: &crate::registry::Registry,
+    seat: &str,
+) -> std::io::Result<ava_wire::Setup> {
+    let level = |part: &str| crate::registry::THINKING_LEVELS.contains(&part);
+    let parts: Vec<&str> = seat.split(crate::registry::PAIRING_SEPARATOR).collect();
+    let (name, model, thinking) = match parts.as_slice() {
+        [name] => (name, None, None),
+        [name, thinking] if level(thinking) || registry.alias(name).is_some() => {
+            (name, None, Some(thinking))
+        }
+        [harness, model] => (harness, Some(model), None),
+        [harness, model, thinking] => (harness, Some(model), Some(thinking)),
         _ => {
             return Err(std::io::Error::other(format!(
-                "`{seat}`: a seat is harness{SEAT_SEPARATOR}model or harness{SEAT_SEPARATOR}model{SEAT_SEPARATOR}thinking"
+                "`{seat}`: a seat is {SEAT_SHAPE}"
             )));
         }
     };
 
-    if let Some(level) = &thinking
-        && !crate::registry::THINKING_LEVELS.contains(&level.as_str())
-    {
-        return Err(std::io::Error::other(format!(
-            "`{seat}`: unknown thinking level `{level}`, known are: {}",
-            crate::registry::THINKING_LEVELS.join(", ")
-        )));
-    }
-
-    Ok(ava_wire::Agent {
-        harness: harness.to_string(),
-        model: model.to_string(),
-        thinking,
-    })
+    registry
+        .setup(name, model.copied(), thinking.copied())
+        .map_err(|error| std::io::Error::other(format!("`{seat}`: {error}")))
 }
 
 /// The folder of the named tournament.
@@ -275,7 +276,7 @@ pub fn create(
     game: &str,
     limit: u64,
     combats: u64,
-    analyst: Option<ava_wire::Agent>,
+    analyst: Option<ava_wire::Setup>,
     analyst_seconds: u64,
 ) -> std::io::Result<ava_wire::Tournament> {
     checked_name(name)?;
@@ -314,16 +315,10 @@ pub fn create(
     Ok(record)
 }
 
-/// Seat `agent` in the named tournament, which no round has fixed yet,
-/// checking that the pairing can play.
-pub fn add_seat(name: &str, agent: &ava_wire::Agent) -> std::io::Result<()> {
-    crate::registry::load()?.invocation(
-        &agent.harness,
-        &agent.model,
-        "",
-        agent.thinking.as_deref(),
-        crate::registry::Start::Task,
-    )?;
+/// Seat `setup` in the named tournament, which no round has fixed yet,
+/// checking that it can play.
+pub fn add_seat(name: &str, setup: &ava_wire::Setup) -> std::io::Result<()> {
+    crate::registry::load()?.invocation(setup, "", crate::registry::Start::Task)?;
 
     modify(name, |record| {
         if playing(name) {
@@ -334,8 +329,8 @@ pub fn add_seat(name: &str, agent: &ava_wire::Agent) -> std::io::Result<()> {
                 "{name} played a round, its seats are fixed"
             )));
         }
-        record.seats.push(agent.clone());
-        log::info!("{name}: seat {} is {}", record.seats.len(), agent.label());
+        record.seats.push(setup.clone());
+        log::info!("{name}: seat {} is {}", record.seats.len(), setup.label());
         Ok(())
     })
 }
@@ -528,16 +523,6 @@ fn played_turns(
     Ok(played)
 }
 
-/// The matches of the finished rounds of `record`, in play order.
-pub fn matches(record: &ava_wire::Tournament) -> std::io::Result<Vec<ava_game::scoring::Match>> {
-    let mut played = Vec::new();
-    for round in record.finished_rounds() {
-        played.extend(pairings(record, round)?);
-    }
-
-    Ok(ava_game::scoring::matches(&record.seats, &played))
-}
-
 /// The game of a tournament, or the error naming the known ones.
 fn find(game: &str) -> std::io::Result<&'static dyn ava_game::Game> {
     ava_game::find(game).ok_or_else(|| {
@@ -622,15 +607,15 @@ pub fn play_round(
         let played = load(name)?;
         let played = played.rounds.last().expect("the round was written");
         let mut launches = Vec::new();
-        for (seat, agent) in record.seats.iter().enumerate() {
+        for (seat, setup) in record.seats.iter().enumerate() {
             let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
             launches.push(docker::prepare(&docker::Agent {
-                name: agent.harness.clone(),
-                model: agent.model.clone(),
+                name: setup.agent.harness.clone(),
+                model: setup.agent.model.clone(),
                 game: record.game.clone(),
                 limit: record.limit_seconds,
                 parallel: 1,
-                thinking: agent.thinking.clone(),
+                thinking: setup.thinking.clone(),
                 force_build_images,
                 analyst: None,
                 turn,
@@ -640,7 +625,7 @@ pub fn play_round(
         let runs: Vec<String> = record
             .seats
             .iter()
-            .map(|seat| docker::run_name(&seat.harness))
+            .map(|seat| docker::run_name(&seat.agent.harness))
             .collect();
 
         modify(name, |record| {
@@ -859,7 +844,7 @@ fn settle(
 /// it again.
 struct Analyses {
     name: String,
-    analyst: Option<ava_wire::Agent>,
+    analyst: Option<ava_wire::Setup>,
     /// The seconds every analysis is given.
     seconds: u64,
     /// The queue the capped workers take runs from.
@@ -872,7 +857,7 @@ impl Analyses {
     /// most `parallel` at a time, or as many as end without a cap.
     fn new(
         name: &str,
-        analyst: Option<ava_wire::Agent>,
+        analyst: Option<ava_wire::Setup>,
         seconds: u64,
         parallel: Option<usize>,
     ) -> Self {
@@ -950,16 +935,11 @@ impl Analyses {
 }
 
 /// Analyze `run` of the named tournament with `analyst`, logging a failure.
-fn analyze(name: &str, analyst: &ava_wire::Agent, seconds: u64, run: &str) {
+fn analyze(name: &str, analyst: &ava_wire::Setup, seconds: u64, run: &str) {
     log::info!("{name}: analyzing {run} with {}", analyst.label());
     let outcome = docker::analyze(&docker::Analyze {
         run: run.to_string(),
-        analyst: docker::Analyst {
-            name: analyst.harness.clone(),
-            model: analyst.model.clone(),
-            thinking: analyst.thinking.clone(),
-            limit: seconds,
-        },
+        analyst: docker::Analyst::of(analyst, seconds),
     });
     if let Err(error) = outcome {
         log::error!("{name}: the analysis of {run} failed: {error}");

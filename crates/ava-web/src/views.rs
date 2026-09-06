@@ -12,10 +12,18 @@ const INSTRUCTIONS_FILE: &str = "README.md";
 const DEFAULT_GAME: &str = "sanity-check";
 const DEFAULT_THINKING: &str = "medium";
 
-/// What the analysis settings offer preselected.
-const DEFAULT_ANALYST: &str = "claude";
-const DEFAULT_ANALYST_MODEL: &str = "claude-sonnet-5";
+/// What the analysis settings offer preselected beside the analyst of the registry.
 const DEFAULT_ANALYST_THINKING: &str = "medium";
+
+/// The avatar of an agent: a mirrored grid of cells lit by the bits of a hash
+/// of harness and model, in a hue the hash picks.
+const AVATAR_SIDE: u64 = 5;
+const AVATAR_COLUMNS: u64 = 3;
+const AVATAR_HUES: u64 = 360;
+const AVATAR_CLASSES: &str = "h-6 w-6 rounded";
+const AVATAR_GROUND_CLASSES: &str = "fill-neutral-800";
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// The files of a run the raw file routes hand out, and nothing else.
 const RUN_FILES: [&str; 11] = [
@@ -86,6 +94,8 @@ const NO_TOURNAMENT: &str = "-";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
 const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
 const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
+const NO_AGENTS_NOTE: &str = "no agents";
+const NO_AGENTS_ROW_NOTE: &str = "no agents";
 const NO_REPORT_NOTE: &str = "the record holds neither a report nor a reason";
 const IMAGE_FORMAT: &str = "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
 const IMAGE_PREFIX: &str = "ava/";
@@ -136,8 +146,9 @@ const FULL_WIDTH_PROSE: &str = "[&_*]:max-w-none";
 const SUMMARY_CLASSES: &str = "cursor-pointer list-none [&::-webkit-details-marker]:hidden \
      text-neutral-400 hover:text-neutral-200 transition-colors";
 
-/// One height for every form control, so a row of them shares a baseline.
-const CONTROL_HEIGHT: &str = "h-9";
+/// One height for every form control, so a row of them shares a baseline. It
+/// fits the two lines of the agent picker.
+const CONTROL_HEIGHT: &str = "h-11";
 const BUTTON_CLASSES: &str =
     "rounded-md bg-indigo-500 hover:bg-indigo-400 px-4 font-medium text-white transition-colors";
 const STOP_CLASSES: &str = "rounded-md border border-red-500/40 text-red-400 hover:bg-red-500/10 \
@@ -145,6 +156,19 @@ const STOP_CLASSES: &str = "rounded-md border border-red-500/40 text-red-400 hov
 const FIELD_CLASSES: &str = "w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 \
      text-neutral-100 focus:outline-none focus:border-indigo-500 focus:ring-2 \
      focus:ring-indigo-500/30 transition";
+
+/// The agent picker: a field showing the choice, folding out a list with one
+/// row per agent. A row is the avatar beside two lines, the name over the
+/// harness, model and backend in small gray, so the choice reads whole.
+const PICKER_CLASSES: &str = "relative grow basis-64";
+const PICKER_FACE_CLASSES: &str = "flex items-center gap-2 cursor-pointer list-none \
+     [&::-webkit-details-marker]:hidden";
+const PICKER_LIST_CLASSES: &str = "absolute z-10 mt-1 min-w-full w-max max-w-2xl max-h-80 \
+     overflow-y-auto rounded-md border border-neutral-700 bg-neutral-950 py-1 shadow-lg";
+const PICKER_ROW_CLASSES: &str = "flex items-center gap-2 px-3 py-2 cursor-pointer \
+     hover:bg-neutral-800 has-[:checked]:bg-neutral-800/60";
+const PICKER_LINES_CLASSES: &str = "flex flex-col min-w-0 leading-tight";
+const PICKER_CONFIGURATION_CLASSES: &str = "text-xs text-neutral-500 whitespace-nowrap";
 const LABEL_CLASSES: &str = "block text-xs font-medium text-neutral-400 mb-1.5";
 
 /// The pills marking a state, one tint per outcome.
@@ -303,6 +327,7 @@ const NO_ANALYST: &str = "none";
 /// tournament opened.
 const RUNS_HEADING: &str = "runs";
 const TOURNAMENTS_HEADING: &str = "tournaments";
+const AGENTS_HEADING: &str = "agents";
 const SETTINGS_TITLE: &str = "settings";
 
 /// A tile with nothing to show says why, quietly.
@@ -368,7 +393,7 @@ impl Selection {
     }
 
     /// The carried agent under `prefix`, or the `defaults`.
-    fn agent<'a>(&'a self, prefix: &str, defaults: [&'a str; 3]) -> [&'a str; 3] {
+    fn agent<'a>(&'a self, prefix: &str, defaults: [&'a str; 2]) -> [&'a str; 2] {
         let mut chosen = defaults;
         for (field, chosen) in crate::serve::AGENT_FIELDS.iter().zip(chosen.iter_mut()) {
             *chosen = self.get(&format!("{prefix}{field}"), chosen);
@@ -905,22 +930,14 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
          <div class=\"hidden peer-checked:contents\">{}{}</div>\
          </div>\
          </form>",
-        agent_fields(
-            &registry,
-            "",
-            selection.agent("", ["", "", DEFAULT_THINKING])
-        ),
+        agent_fields(&registry, "", selection.agent("", ["", DEFAULT_THINKING])),
         select("game", "game", &games, selection.get("game", DEFAULT_GAME)),
         agent_fields(
             &registry,
             crate::serve::ANALYST_PREFIX,
             selection.agent(
                 crate::serve::ANALYST_PREFIX,
-                [
-                    DEFAULT_ANALYST,
-                    DEFAULT_ANALYST_MODEL,
-                    DEFAULT_ANALYST_THINKING
-                ]
+                [default_analyst(&registry), DEFAULT_ANALYST_THINKING]
             )
         ),
         analyst_seconds_field(selection, crate::serve::ANALYST_PREFIX),
@@ -945,11 +962,7 @@ fn analysis_panel(name: &str) -> std::io::Result<String> {
         agent_fields(
             &registry,
             "",
-            [
-                DEFAULT_ANALYST,
-                DEFAULT_ANALYST_MODEL,
-                DEFAULT_ANALYST_THINKING
-            ]
+            [default_analyst(&registry), DEFAULT_ANALYST_THINKING]
         ),
         analyst_seconds_field(&Selection::default(), ""),
     ))
@@ -974,40 +987,66 @@ fn analyst_seconds_field(selection: &Selection, prefix: &str) -> String {
     )
 }
 
+/// The agent the analysis settings offer preselected.
+fn default_analyst(registry: &registry::Registry) -> &str {
+    registry
+        .analyst()
+        .map(|alias| alias.name.as_str())
+        .unwrap_or_default()
+}
+
 /// The dropdowns choosing an agent, the way one is chosen everywhere: the
-/// harness, the model and the thinking level, named under `prefix` in the
-/// form, with `selected` marked.
-fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 3]) -> String {
-    let harnesses: Vec<&str> = registry
-        .harnesses
-        .iter()
-        .map(|harness| harness.name.as_str())
-        .collect();
-    let models: Vec<&str> = registry
-        .models
-        .iter()
-        .map(|model| model.name.as_str())
-        .collect();
+/// agent by its name in the registry and the thinking level, named under
+/// `prefix` in the form, with `selected` marked.
+fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 2]) -> String {
+    let [agent_field, thinking_field] = crate::serve::AGENT_FIELDS;
+    let [agent, thinking] = selected;
+
+    let configuration = |alias: &registry::Alias| match &alias.backend {
+        Some(backend) => format!("{} via {backend}", alias.agent().label()),
+        None => alias.agent().label(),
+    };
+    let row = |alias: &registry::Alias| {
+        format!(
+            "{}<span class=\"{PICKER_LINES_CLASSES}\"><span class=\"{MONO_CLASSES}\">{}</span>\
+             <span class=\"{PICKER_CONFIGURATION_CLASSES}\">{}</span></span>",
+            avatar(&alias.agent(), AVATAR_CLASSES),
+            escape(&alias.name),
+            escape(&configuration(alias))
+        )
+    };
     let mut levels = vec![""];
     levels.extend(registry::THINKING_LEVELS);
 
-    let [harness_field, model_field, thinking_field] = crate::serve::AGENT_FIELDS;
-    let [harness, model, thinking] = selected;
+    let agent = match registry.alias(agent).or(registry.agents.first()) {
+        None => format!(
+            "<span class=\"grow basis-44 {CONTROL_HEIGHT} flex items-center {NOTE_CLASSES}\">{NO_AGENTS_NOTE}</span>"
+        ),
+        Some(chosen) => {
+            let rows: String = registry
+                .agents
+                .iter()
+                .map(|alias| {
+                    format!(
+                        "<label class=\"{PICKER_ROW_CLASSES}\"><input type=\"radio\" name=\"{prefix}{agent_field}\" value=\"{}\" class=\"sr-only\"{}>{}</label>",
+                        escape(&alias.name),
+                        checked(alias.name == chosen.name),
+                        row(alias)
+                    )
+                })
+                .collect();
+            format!(
+                "<span class=\"{PICKER_CLASSES}\"><span class=\"{LABEL_CLASSES}\">{agent_field}</span>\
+                 <details data-picker><summary class=\"{FIELD_CLASSES} {CONTROL_HEIGHT} {PICKER_FACE_CLASSES}\"><span data-chosen class=\"flex items-center gap-2 min-w-0 grow\">{}</span>{}</summary>\
+                 <div class=\"{PICKER_LIST_CLASSES}\">{rows}</div></details></span>",
+                row(chosen),
+                chevron("h-4 w-4 shrink-0 text-neutral-500")
+            )
+        }
+    };
 
     format!(
-        "{}{}{}",
-        select(
-            &format!("{prefix}{harness_field}"),
-            harness_field,
-            &harnesses,
-            harness
-        ),
-        select(
-            &format!("{prefix}{model_field}"),
-            model_field,
-            &models,
-            model
-        ),
+        "{agent}{}",
         select(
             &format!("{prefix}{thinking_field}"),
             thinking_field,
@@ -1023,16 +1062,26 @@ fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 3]
 /// The dropdowns grow to fill the form row, which puts the right edge of the
 /// form on the edge the tables end on.
 fn select(name: &str, label: &str, options: &[&str], selected: &str) -> String {
-    let mut rendered = format!(
+    let options: String = options
+        .iter()
+        .map(|text| option(text, "", *text == selected))
+        .collect();
+
+    select_of(name, label, &options)
+}
+
+/// A dropdown named `name` under `label`, holding the rendered `options`.
+fn select_of(name: &str, label: &str, options: &str) -> String {
+    format!(
         "<label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{label}</span>\
-         <select class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" name=\"{name}\">"
-    );
-    for option in options {
-        let marked = if *option == selected { " selected" } else { "" };
-        rendered.push_str(&format!("<option{marked}>{}</option>", escape(option)));
-    }
-    rendered.push_str("</select></label>");
-    rendered
+         <select class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" name=\"{name}\">{options}</select></label>"
+    )
+}
+
+/// One option of a dropdown, with `attributes` of its own.
+fn option(text: &str, attributes: &str, selected: bool) -> String {
+    let marked = if selected { " selected" } else { "" };
+    format!("<option{marked}{attributes}>{}</option>", escape(text))
 }
 
 /// One run: its state and figures first, the entries, the pushes, the console,
@@ -1056,7 +1105,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         .metrics
         .as_ref()
         .filter(|metrics| !metrics.served_models.is_empty())
-        .map(|metrics| format!("served {}", escape(&metrics.served_models.join(" "))))
+        .map(|metrics| format!("served {}", metrics.served_models.join(" ")))
         .unwrap_or_default();
     let context = entry
         .run
@@ -1072,7 +1121,11 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         tile(
             "model",
             &escape(&entry.run.model),
-            &joined(&[context.as_deref().unwrap_or_default(), &served]),
+            &joined(&[
+                &entry.run.backend,
+                context.as_deref().unwrap_or_default(),
+                &served,
+            ]),
             TILE_TEXT_CLASSES,
         ),
         tile(
@@ -1651,6 +1704,7 @@ fn turn_badges(game: &str) -> String {
 
 /// The tournaments: the form opening one, and every tournament on disk.
 pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
+    let registry = registry::load()?;
     let games: Vec<&str> = ava_game::GAMES.iter().map(|game| game.name()).collect();
     let limit = selection
         .get("limit", "")
@@ -1695,15 +1749,11 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
             "the combats every fight between two entries plays, each best of three rounds",
         ),
         agent_fields(
-            &registry::load()?,
+            &registry,
             crate::serve::ANALYST_PREFIX,
             selection.agent(
                 crate::serve::ANALYST_PREFIX,
-                [
-                    DEFAULT_ANALYST,
-                    DEFAULT_ANALYST_MODEL,
-                    DEFAULT_ANALYST_THINKING
-                ]
+                [default_analyst(&registry), DEFAULT_ANALYST_THINKING]
             )
         ),
         analyst_seconds_field(selection, crate::serve::ANALYST_PREFIX),
@@ -1828,35 +1878,36 @@ pub(crate) fn tournament_page(
         tournament_card(&record)
     ));
 
-    // The seats with their standings: one table, the ratings blank until a
-    // round finished, ranked by Bradley-Terry once one did.
+    // The seats with their standings: one table in seat order, the columns of
+    // the cross table being seats, the ratings blank until a round finished.
     let removable = !record.played() && !playing;
     let rated = record.finished_rounds().next().is_some();
-    let standings = standings(&record)?;
-    let mut seats: Vec<(usize, &ava_wire::Agent)> = record.seats.iter().enumerate().collect();
-    if rated {
-        seats.sort_by_key(|(seat, agent)| {
-            let rank = standings
-                .iter()
-                .position(|standing| standing.agent == agent.label())
-                .unwrap_or(usize::MAX);
-            (rank, *seat)
-        });
+    let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
+    let mut labeled = Vec::new();
+    for round in record.finished_rounds() {
+        labeled.extend(label_pairings(
+            &labels,
+            &tournament::pairings(&record, round)?,
+        ));
     }
+    let standings = standings(&labeled);
     let cells = pairing_cells(&record)?;
-    let seat_rows: Vec<Vec<String>> = seats
+    let seat_rows: Vec<Vec<String>> = record
+        .seats
         .iter()
-        .map(|(seat, agent)| {
+        .enumerate()
+        .map(|(seat, setup)| {
             let standing = standings
                 .iter()
-                .find(|standing| standing.agent == agent.label())
+                .find(|standing| standing.agent == labels[seat])
                 .filter(|_| rated);
-            let mut row = vec![
-                (seat + 1).to_string(),
-                agent_label(&agent.harness, agent.thinking.as_deref().unwrap_or("")),
-                escape(&agent.model),
-            ];
-            row.extend(cells[*seat].iter().cloned());
+            let mut row = vec![(seat + 1).to_string()];
+            row.extend(agent_cells(&registry, &setup.agent));
+            row.extend([
+                agent_label(&setup.agent.harness, setup.thinking.as_deref().unwrap_or("")),
+                agent_label(&setup.agent.model, setup.backend.as_deref().unwrap_or("")),
+            ]);
+            row.extend(cells[seat].iter().cloned());
             row.extend([
                 standing
                     .map(|standing| tally_label(&standing.fights))
@@ -1885,8 +1936,10 @@ pub(crate) fn tournament_page(
         .collect();
     let mut headers: Vec<String> = vec![
         "#seat".to_string(),
-        "harness".to_string(),
-        "*model".to_string(),
+        String::new(),
+        "agent".to_string(),
+        "harness|the harness with the thinking level it was asked for".to_string(),
+        "*model|the model with the backend serving it".to_string(),
     ];
     headers.extend((1..=record.seats.len()).map(|seat| {
         format!(
@@ -1908,7 +1961,7 @@ pub(crate) fn tournament_page(
         "<div data-refresh=\"lobby\"><p class=\"{TITLE_CLASSES}\">{}</p>{}</div>",
         explained(
             "standings",
-            "the seats of the tournament, joining between rounds and fixed once a round was played, their rounds against each other over the finished rounds, and their ratings over the matches between different agents, ordered by Bradley-Terry"
+            "the seats of the tournament, joining between rounds and fixed once a round was played, their rounds against each other over the finished rounds, and their ratings over the matches between different agents, a harness on a model"
         ),
         table(&headers, seat_rows, Some(NO_SEATS_NOTE))
     ));
@@ -1917,7 +1970,7 @@ pub(crate) fn tournament_page(
             "<form method=\"post\" action=\"/tournament/{}/seat\" class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
              {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
             escape(name),
-            agent_fields(&registry, "", selection.agent("", ["", "", DEFAULT_THINKING])),
+            agent_fields(&registry, "", selection.agent("", ["", DEFAULT_THINKING])),
         ));
     }
 
@@ -2262,7 +2315,7 @@ fn round_graph(
         let agent = record
             .seats
             .get(node.seat)
-            .map(|agent| format!("{} on {}", agent.harness, agent.model))
+            .map(|seat| seat.agent.label())
             .unwrap_or_default();
         let label = format!("{} \u{00b7} {agent}", node.seat + 1);
         let shown = if label.chars().count() > GRAPH_LABEL_CHARS {
@@ -2322,7 +2375,7 @@ fn round_graph(
     format!("<div class=\"{CARD_CLASSES} p-4 overflow-x-auto\">{svg}</div>")
 }
 
-/// The place of one agent on the leaderboard of a tournament.
+/// The place of one agent on a leaderboard.
 struct Standing {
     agent: String,
     /// The fights against another agent by outcome, from the agent's view: a
@@ -2335,14 +2388,47 @@ struct Standing {
     bradley_terry: Option<f64>,
 }
 
-/// The standings of a tournament, every agent its seats hold, rated over the
-/// matches of the finished rounds, Bradley-Terry first.
-fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
-    let matches = tournament::matches(record)?;
-    let mut pairings = Vec::new();
-    for round in record.finished_rounds() {
-        pairings.extend(tournament::pairings(record, round)?);
-    }
+/// One pairing between the agents its seats hold, by their labels.
+struct Labeled {
+    first: String,
+    second: String,
+    /// The second it was fought at, the order Elo walks.
+    seconds: u64,
+    tally: ava_wire::Tally,
+}
+
+/// `pairings` between the seats `labels` name, in the order given.
+fn label_pairings(labels: &[String], pairings: &[ava_wire::Pairing]) -> Vec<Labeled> {
+    pairings
+        .iter()
+        .filter_map(|pairing| {
+            Some(Labeled {
+                first: labels.get(pairing.first)?.clone(),
+                second: labels.get(pairing.second)?.clone(),
+                seconds: pairing.seconds,
+                tally: pairing.tally,
+            })
+        })
+        .collect()
+}
+
+/// The standings over `labeled`, every agent that met another, rated over
+/// the matches between different agents by the second they were fought,
+/// Bradley-Terry first.
+fn standings(labeled: &[Labeled]) -> Vec<Standing> {
+    let mut labeled: Vec<&Labeled> = labeled.iter().collect();
+    labeled.sort_by_key(|pairing| pairing.seconds);
+    let matches: Vec<ava_game::scoring::Match> = labeled
+        .iter()
+        .filter(|pairing| pairing.first != pairing.second)
+        .filter_map(|pairing| {
+            Some(ava_game::scoring::Match {
+                first: pairing.first.clone(),
+                second: pairing.second.clone(),
+                score: pairing.tally.score()?,
+            })
+        })
+        .collect();
     let elo = ava_game::scoring::Elo.leaderboard(&matches);
     let bradley_terry = ava_game::scoring::BradleyTerry.leaderboard(&matches);
     let rating = |leaderboard: &[ava_game::scoring::Rating], agent: &str| {
@@ -2353,10 +2439,11 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
     };
 
     let mut agents: Vec<String> = Vec::new();
-    for seat in &record.seats {
-        let label = seat.label();
-        if !agents.contains(&label) {
-            agents.push(label);
+    for pairing in &labeled {
+        for agent in [&pairing.first, &pairing.second] {
+            if !agents.contains(agent) {
+                agents.push(agent.clone());
+            }
         }
     }
 
@@ -2365,20 +2452,14 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
         .map(|agent| {
             let mut fights = ava_wire::Tally::default();
             let mut rounds = ava_wire::Tally::default();
-            for pairing in &pairings {
-                let first = record.seats.get(pairing.first).map(ava_wire::Agent::label);
-                let second = record.seats.get(pairing.second).map(ava_wire::Agent::label);
-                if first == second || pairing.tally.rounds() == 0 {
+            for pairing in &labeled {
+                if pairing.first == pairing.second || pairing.tally.rounds() == 0 {
                     continue;
                 }
-                let view = if first.as_deref() == Some(&agent) {
+                let view = if pairing.first == agent {
                     pairing.tally
-                } else if second.as_deref() == Some(&agent) {
-                    ava_wire::Tally {
-                        won: pairing.tally.lost,
-                        drawn: pairing.tally.drawn,
-                        lost: pairing.tally.won,
-                    }
+                } else if pairing.second == agent {
+                    mirrored(&pairing.tally)
                 } else {
                     continue;
                 };
@@ -2410,7 +2491,16 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
             .then_with(|| left.agent.cmp(&right.agent))
     });
 
-    Ok(standings)
+    standings
+}
+
+/// The `tally` from the view of its second side.
+fn mirrored(tally: &ava_wire::Tally) -> ava_wire::Tally {
+    ava_wire::Tally {
+        won: tally.lost,
+        drawn: tally.drawn,
+        lost: tally.won,
+    }
 }
 
 /// A tally as won-drawn-lost.
@@ -2445,14 +2535,9 @@ fn pairing_cells(record: &ava_wire::Tournament) -> std::io::Result<Vec<Vec<Strin
             continue;
         }
         for pairing in tournament::pairings(record, round)? {
-            let mirrored = ava_wire::Tally {
-                won: pairing.tally.lost,
-                drawn: pairing.tally.drawn,
-                lost: pairing.tally.won,
-            };
             for (row, column, view) in [
                 (pairing.first, pairing.second, pairing.tally),
-                (pairing.second, pairing.first, mirrored),
+                (pairing.second, pairing.first, mirrored(&pairing.tally)),
             ] {
                 if row == column || row >= seats || column >= seats {
                     continue;
@@ -2508,6 +2593,241 @@ fn tint(tally: &ava_wire::Tally) -> &'static str {
         std::cmp::Ordering::Less => BEHIND_CLASSES,
         std::cmp::Ordering::Equal => LEVEL_CLASSES,
     }
+}
+
+/// The agents named in the registry, and the form naming one.
+pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
+    let registry = registry::load()?;
+    let mut body = alias_panel(&registry, selection);
+    body.push_str(&notice.render());
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">{}</p>",
+        explained(
+            "agents",
+            "an agent is a harness on a model, named in agents.json"
+        )
+    ));
+    let rows = registry
+        .agents
+        .iter()
+        .map(|alias| {
+            let mut row = agent_cells(&registry, &alias.agent()).to_vec();
+            row.extend([
+                escape(&alias.harness),
+                escape(&alias.model),
+                escape(alias.backend.as_deref().unwrap_or_default()),
+                if alias.analyst {
+                    pill(ANALYZED_PILL, false, "analyst")
+                } else {
+                    String::new()
+                },
+                alias_actions(&registry, &alias.agent()),
+            ]);
+            row
+        })
+        .collect();
+    body.push_str(&table(
+        &[
+            "",
+            "agent",
+            "harness",
+            "*model",
+            "backend|the backend serving the model, the first route of the model when empty",
+            "|the agent analyzing runs unless another is chosen",
+            "",
+        ],
+        rows,
+        Some(NO_AGENTS_ROW_NOTE),
+    ));
+
+    Ok(page(AGENTS_HEADING, &body))
+}
+
+/// The form naming an agent in the registry, or changing the one the
+/// selection asks to edit, with what was submitted or that agent preselected.
+fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
+    let editing = registry.alias(selection.get(crate::serve::EDIT_KEY, ""));
+    let fields = crate::serve::ALIAS_FIELDS;
+    let [
+        name_field,
+        harness_field,
+        model_field,
+        backend_field,
+        analyst_field,
+    ] = fields;
+    let (title, action, button, defaults) = match editing {
+        Some(alias) => (
+            "edit agent",
+            format!("/agents/{}/edit", escape(&alias.name)),
+            "save",
+            [
+                alias.name.as_str(),
+                alias.harness.as_str(),
+                alias.model.as_str(),
+                alias.backend.as_deref().unwrap_or_default(),
+                if alias.analyst { "on" } else { "" },
+            ],
+        ),
+        None => (
+            "new agent",
+            "/agents/create".to_string(),
+            "add",
+            ["", "", "", "", ""],
+        ),
+    };
+    let mut chosen = defaults;
+    for (field, chosen) in fields.iter().zip(chosen.iter_mut()) {
+        *chosen = selection.get(field, chosen);
+    }
+    let [name, harness, model, backend, analyst] = chosen;
+
+    // The harness option carries the services it speaks and the model option
+    // its routes, so the page script offers only the backends the harness
+    // reaches the model at.
+    let harnesses: String = registry
+        .harnesses
+        .iter()
+        .map(|known| {
+            let services: Vec<&str> = known
+                .services
+                .iter()
+                .map(|service| service.name())
+                .collect();
+            option(
+                &known.name,
+                &format!(" data-services=\"{}\"", escape(&services.join(" "))),
+                known.name == harness,
+            )
+        })
+        .collect();
+    let models: String = registry
+        .models
+        .iter()
+        .map(|known| {
+            let routes: Vec<String> = known
+                .routes
+                .iter()
+                .filter_map(|route| registry.backend(&route.backend).ok())
+                .map(|served| format!("{}:{}", served.name, served.service.name()))
+                .collect();
+            option(
+                &known.name,
+                &format!(" data-routes=\"{}\"", escape(&routes.join(" "))),
+                known.name == model,
+            )
+        })
+        .collect();
+    let mut backends = vec![""];
+    backends.extend(registry.backends.iter().map(|known| known.name.as_str()));
+    let cancel = match editing {
+        Some(_) => format!(
+            "<a class=\"{LINK_CLASSES} {CONTROL_HEIGHT} flex items-center\" href=\"/agents\">cancel</a>"
+        ),
+        None => String::new(),
+    };
+
+    format!(
+        "<p class=\"{FIRST_TITLE_CLASSES}\">{title}</p>\
+         <form method=\"post\" action=\"{action}\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
+         <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" placeholder=\"letters, digits, dashes\" required></label>\
+         {}{}{}\
+         <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
+         <input type=\"checkbox\" name=\"{analyst_field}\" class=\"h-4 w-4 rounded accent-indigo-500\"{}>\
+         <span class=\"{NOTE_CLASSES}\">{}</span></label>\
+         <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">{button}</button>{cancel}</form>",
+        explained(
+            name_field,
+            "what selects the agent on the command line and in the forms; the records hold the harness and the model, so renaming changes nothing there"
+        ),
+        escape(name),
+        select_of(harness_field, harness_field, &harnesses),
+        select_of(model_field, model_field, &models),
+        select(
+            backend_field,
+            &explained(
+                backend_field,
+                "the backend serving the model, the first route of the model when left empty"
+            ),
+            &backends,
+            backend
+        ),
+        checked(analyst == "on"),
+        explained(
+            "analyst",
+            "the agent analyzing runs unless another is chosen, one at most; marking this one unmarks the other"
+        ),
+    )
+}
+
+/// What the agents page offers for `agent`: editing and removing it, or
+/// adding it when the registry does not name it.
+fn alias_actions(registry: &registry::Registry, agent: &ava_wire::Agent) -> String {
+    let [_, harness_field, model_field, _, _] = crate::serve::ALIAS_FIELDS;
+    match registry.alias_of(agent) {
+        Some(alias) => format!(
+            "<span class=\"flex items-center gap-3\">\
+             <a class=\"{LINK_CLASSES}\" href=\"/agents?{}={name}\">edit</a>\
+             <form method=\"post\" action=\"/agents/{name}/delete\"><button class=\"{STOP_CLASSES}\">remove</button></form></span>",
+            crate::serve::EDIT_KEY,
+            name = escape(&alias.name)
+        ),
+        None => format!(
+            "<a class=\"{LINK_CLASSES}\" href=\"/agents?{harness_field}={}&amp;{model_field}={}\">add</a>",
+            escape(&agent.harness),
+            escape(&agent.model)
+        ),
+    }
+}
+
+/// Two cells: the avatar of `agent`, and its name in the registry, or the
+/// harness on the model when the registry has none for it. The name is plain
+/// text in its cell, so it sits on the line of the cells beside it.
+fn agent_cells(registry: &registry::Registry, agent: &ava_wire::Agent) -> [String; 2] {
+    let name = registry
+        .alias_of(agent)
+        .map(|alias| alias.name.clone())
+        .unwrap_or_else(|| agent.label());
+
+    [
+        avatar(agent, AVATAR_CLASSES),
+        format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(&name)),
+    ]
+}
+
+/// The avatar of `agent`: a grid of cells lit by the bits of the hash of its
+/// harness and model, mirrored left to right, in a hue the hash picks. The
+/// same agent has the same avatar everywhere, whatever it is named.
+fn avatar(agent: &ava_wire::Agent, classes: &str) -> String {
+    let hash = fnv1a(&[agent.harness.as_bytes(), &[0], agent.model.as_bytes()].concat());
+    let hue = (hash >> (AVATAR_SIDE * AVATAR_COLUMNS)) % AVATAR_HUES;
+    let mut cells = String::new();
+    for row in 0..AVATAR_SIDE {
+        for column in 0..AVATAR_COLUMNS {
+            if hash >> (row * AVATAR_COLUMNS + column) & 1 == 0 {
+                continue;
+            }
+            for x in [column, AVATAR_SIDE - 1 - column] {
+                cells.push_str(&format!(
+                    "<rect x=\"{x}\" y=\"{row}\" width=\"1\" height=\"1\"/>"
+                ));
+            }
+        }
+    }
+
+    format!(
+        "<svg class=\"{classes}\" viewBox=\"0 0 {AVATAR_SIDE} {AVATAR_SIDE}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"{}\">\
+         <rect width=\"{AVATAR_SIDE}\" height=\"{AVATAR_SIDE}\" class=\"{AVATAR_GROUND_CLASSES}\"/>\
+         <g fill=\"hsl({hue} 60% 55%)\">{cells}</g></svg>",
+        escape(&agent.label())
+    )
+}
+
+/// The 64 bit FNV-1a hash of `bytes`, the same on every toolchain.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    })
 }
 
 /// The registry, the credentials and the docker images runs are built from.
@@ -3397,6 +3717,26 @@ mod tests {
         assert!(super::is_text(b"; a warrior\nmov eax, 1\n"));
         assert!(!super::is_text(b"\x7fELF\x02\x01"));
         assert!(!super::is_text(b""));
+    }
+
+    #[test]
+    fn an_avatar_is_mirrored_and_the_same_for_the_same_agent() {
+        let agent = ava_wire::Agent {
+            harness: "pi".to_string(),
+            model: "m".to_string(),
+        };
+        let drawn = super::avatar(&agent, "");
+        assert_eq!(drawn, super::avatar(&agent.clone(), ""));
+
+        let cells = drawn.matches("<rect x=").count();
+        assert_eq!(cells % 2, 0);
+        for x in 0..super::AVATAR_COLUMNS {
+            let mirror = super::AVATAR_SIDE - 1 - x;
+            assert_eq!(
+                drawn.matches(&format!("<rect x=\"{x}\"")).count(),
+                drawn.matches(&format!("<rect x=\"{mirror}\"")).count()
+            );
+        }
     }
 
     #[test]

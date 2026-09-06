@@ -21,6 +21,7 @@ KEYS
 # use the example registry config providing anthropic and llm.substrate.dev backends
 
 cp registry.json.example registry.json
+cp agents.json.example agents.json
 
 # start the web ui
 

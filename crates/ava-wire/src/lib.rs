@@ -6,7 +6,7 @@
 //! can change without touching a record.
 
 /// The version of the wire format every record carries.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The version a record written before the wire format reads as.
 const UNVERSIONED: u32 = 0;
@@ -35,27 +35,45 @@ fn one_combat() -> u64 {
     ONE_COMBAT
 }
 
-/// An agent: a harness paired with a model, asked for a thinking level.
-///
-/// This is the identity seats hold and ratings key on. The version of the
-/// harness is a fact of every run the agent plays, since it is only knowable
-/// once the image exists.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// An agent: a harness paired with a model. The identity ratings key on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Agent {
     pub harness: String,
     pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<String>,
 }
 
 impl Agent {
-    /// The agent the way it is referred to: the harness on the model, with the
-    /// thinking level when one was asked for.
+    /// The harness on the model.
     pub fn label(&self) -> String {
-        match &self.thinking {
-            Some(thinking) => format!("{} on {} at {thinking}", self.harness, self.model),
-            None => format!("{} on {}", self.harness, self.model),
+        format!("{} on {}", self.harness, self.model)
+    }
+}
+
+/// An agent with the settings it plays under. A seat holds one, an analyst is one.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Setup {
+    #[serde(flatten)]
+    pub agent: Agent,
+    /// The thinking level asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// The backend serving the model, the first route of the model on a
+    /// record from before backends were chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+}
+
+impl Setup {
+    /// The agent with its settings: the level after `at`, the backend after `via`.
+    pub fn label(&self) -> String {
+        let mut label = self.agent.label();
+        if let Some(thinking) = &self.thinking {
+            label.push_str(&format!(" at {thinking}"));
         }
+        if let Some(backend) = &self.backend {
+            label.push_str(&format!(" via {backend}"));
+        }
+        label
     }
 }
 
@@ -231,6 +249,11 @@ pub struct Run {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// The backend the model was served by and the id it was asked for there.
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub route: String,
     pub game: String,
     /// The commit the game folder was last changed in.
     #[serde(default)]
@@ -278,7 +301,15 @@ impl Run {
         Agent {
             harness: self.harness.clone(),
             model: self.model.clone(),
+        }
+    }
+
+    /// The agent with the settings it played under.
+    pub fn setup(&self) -> Setup {
+        Setup {
+            agent: self.agent(),
             thinking: self.thinking.clone(),
+            backend: (!self.backend.is_empty()).then(|| self.backend.clone()),
         }
     }
 
@@ -299,9 +330,9 @@ impl Run {
 #[serde(default)]
 pub struct Analysis {
     pub version: u32,
-    /// The agent that analyzed the run.
+    /// The agent that analyzed the run, with its settings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub analyst: Option<Agent>,
+    pub analyst: Option<Setup>,
     /// The version of the harness.
     pub harness_version: String,
     /// The id of the image.
@@ -442,14 +473,14 @@ pub struct Tournament {
     pub combats: u64,
     /// The agent analyzing every run of a round once the round is over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub analyst: Option<Agent>,
+    pub analyst: Option<Setup>,
     /// The seconds that analyst is given per run.
     #[serde(default = "default_analyst_seconds")]
     pub analyst_seconds: u64,
     pub created_seconds: u64,
-    /// The lobby: the agent in every seat, by seat number. Two seats may hold
-    /// the same agent.
-    pub seats: Vec<Agent>,
+    /// The lobby: the agent in every seat with its settings, by seat number.
+    /// Two seats may hold the same agent.
+    pub seats: Vec<Setup>,
     pub rounds: Vec<Round>,
 }
 
@@ -568,6 +599,17 @@ mod tests {
 
         let failed: super::Analysis = serde_json::from_str(r#"{"error": "no"}"#).unwrap();
         assert_eq!(failed.report(), None);
+    }
+
+    #[test]
+    fn a_legacy_seat_reads_as_a_setup_without_a_backend() {
+        let seat = r#"{"harness": "pi", "model": "m", "thinking": "low"}"#;
+        let setup: super::Setup = serde_json::from_str(seat).unwrap();
+
+        assert_eq!(setup.agent.label(), "pi on m");
+        assert_eq!(setup.thinking.as_deref(), Some("low"));
+        assert_eq!(setup.backend, None);
+        assert_eq!(setup.label(), "pi on m at low");
     }
 
     #[test]
