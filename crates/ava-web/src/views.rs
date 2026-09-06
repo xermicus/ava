@@ -1058,6 +1058,10 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         .filter(|metrics| !metrics.served_models.is_empty())
         .map(|metrics| format!("served {}", escape(&metrics.served_models.join(" "))))
         .unwrap_or_default();
+    let context = entry
+        .run
+        .context_window
+        .map(|window| format!("{window} context tokens"));
     let mut facts = vec![
         tile(
             "game",
@@ -1068,7 +1072,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         tile(
             "model",
             &escape(&entry.run.model),
-            &served,
+            &joined(&[context.as_deref().unwrap_or_default(), &served]),
             TILE_TEXT_CLASSES,
         ),
         tile(
@@ -1163,6 +1167,19 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             "output tokens",
             &metric(|metrics| metrics.output_tokens),
             so_far,
+            TILE_VALUE_CLASSES,
+        ),
+        tile(
+            "compactions",
+            &match entry.run.compactions {
+                Some(compactions) => compactions.to_string(),
+                None => placeholder(if entry.live {
+                    AFTER_THE_RUN
+                } else {
+                    NOT_RECORDED
+                }),
+            },
+            "",
             TILE_VALUE_CLASSES,
         ),
     ];

@@ -126,6 +126,31 @@ const CLAUDE_SETTINGS: [(&str, &str); 8] = [
 
 const CLAUDE_MODEL: &str = "ANTHROPIC_MODEL";
 
+/// The variables pinning the window claude compacts within to the route; both only lower it.
+const CLAUDE_CONTEXT_SETTINGS: [&str; 2] = [
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+];
+
+/// Keeps claude from suffixing `[1m]` to a gateway model id, which would win over the route.
+const CLAUDE_GATEWAY_CONTEXT: (&str, &str) = ("CLAUDE_CODE_DISABLE_1M_CONTEXT", "1");
+
+/// What each harness prints once per compaction of its session.
+const COMPACTION_MARKERS: [(&str, &str); 4] = [
+    (CLAUDE_HARNESS, "\"subtype\":\"compact_boundary\""),
+    (PI_HARNESS, "\"type\":\"compaction_end\""),
+    (OPENCODE_HARNESS, "\"compaction_continue\":true"),
+    (CODEX_HARNESS, "Long threads and multiple compactions"),
+];
+
+/// The text `harness` prints once per compaction of its session.
+pub fn compaction_marker(harness: &str) -> Option<&'static str> {
+    COMPACTION_MARKERS
+        .iter()
+        .find(|(name, _)| *name == harness)
+        .map(|(_, marker)| *marker)
+}
+
 const CLAUDE_TIER_SETTINGS: [&str; 3] = [
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -387,6 +412,8 @@ pub struct Invocation {
     pub arguments: Vec<String>,
     /// Configuration written into the container, by path and contents.
     pub files: Vec<(String, String)>,
+    /// The context window of the route.
+    pub context_window: u32,
     /// The hosts the sandbox resolves to loopback, where the bridge forwards
     /// them onto the proxy: every host a registered backend is reached at.
     pub hosts: Vec<String>,
@@ -519,6 +546,7 @@ fn pi_invocation(
         variables: vec![(GATEWAY_TOKEN.to_string(), backend.credential()?)],
         arguments,
         files: vec![(PI_MODELS_FILE.to_string(), models)],
+        context_window: route.context_window,
         hosts: Vec::new(),
     })
 }
@@ -573,6 +601,7 @@ fn codex_invocation(
                 .collect(),
         },
         files: vec![(CODEX_CONFIG_FILE.to_string(), configuration)],
+        context_window: route.context_window,
         hosts: Vec::new(),
     })
 }
@@ -609,6 +638,7 @@ fn gateway_invocation(
             format!("{GATEWAY_PROVIDER}/{}", route.id),
         ],
         files: Vec::new(),
+        context_window: route.context_window,
         hosts: Vec::new(),
     })
 }
@@ -626,6 +656,9 @@ fn claude_invocation(
         .collect();
 
     environment.push((BASE_URL.to_string(), backend.url()));
+    for name in CLAUDE_CONTEXT_SETTINGS {
+        environment.push((name.to_string(), route.context_window.to_string()));
+    }
 
     match backend.service {
         Service::Anthropic => {
@@ -636,6 +669,8 @@ fn claude_invocation(
             for name in CLAUDE_TIER_SETTINGS {
                 environment.push((name.to_string(), route.id.clone()));
             }
+            let (name, value) = CLAUDE_GATEWAY_CONTEXT;
+            environment.push((name.to_string(), value.to_string()));
             environment.push((GATEWAY_TOKEN.to_string(), backend.credential()?));
         }
     }
@@ -652,6 +687,7 @@ fn claude_invocation(
         variables: environment,
         arguments,
         files: Vec::new(),
+        context_window: route.context_window,
         hosts: Vec::new(),
     })
 }

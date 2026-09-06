@@ -248,6 +248,9 @@ pub struct Run {
     pub arguments: Vec<String>,
     /// The names of the variables the sandbox was given, never their values.
     pub variables: Vec<String>,
+    /// The context window of the route, which the harness compacts within.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     /// The turn of the game the run plays, counted from zero.
     #[serde(default)]
     pub turn: usize,
@@ -264,6 +267,9 @@ pub struct Run {
     pub attempts: Vec<Attempt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<Metrics>,
+    /// The compactions the harness reported on its console.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compactions: Option<u64>,
 }
 
 impl Run {

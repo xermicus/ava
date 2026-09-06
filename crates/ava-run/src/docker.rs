@@ -884,6 +884,7 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
             .iter()
             .map(|(name, _)| name.clone())
             .collect(),
+        context_window: Some(launch.invocation.context_window),
         turn: command.turn,
         inputs: command
             .inputs
@@ -894,6 +895,7 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
         finished_seconds: None,
         attempts: Vec::new(),
         metrics: None,
+        compactions: None,
     };
 
     write_run(run, &record)
@@ -1450,6 +1452,9 @@ fn complete_run(run: &str) -> std::io::Result<()> {
     record.metrics = Some(ava_scorer::score::aggregate_metrics(
         &directory.join(ACCESS_LOG).display().to_string(),
     )?);
+    record.compactions = crate::registry::compaction_marker(&record.harness)
+        .map(|marker| count_marked_lines(&directory.join(AGENT_LOG), marker))
+        .transpose()?;
     record.finished_seconds = Some(crate::usage::epoch_now());
 
     write_run(run, &record)?;
@@ -1459,6 +1464,17 @@ fn complete_run(run: &str) -> std::io::Result<()> {
     );
 
     Ok(())
+}
+
+/// The lines of the file at `path` holding `marker`.
+fn count_marked_lines(path: &std::path::Path, marker: &str) -> std::io::Result<u64> {
+    let console = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut count = 0;
+    for line in std::io::BufRead::split(console, b'\n') {
+        count += u64::from(String::from_utf8_lossy(&line?).contains(marker));
+    }
+
+    Ok(count)
 }
 
 /// Fight the entry at `first` against the entry at `second` in the scorer
