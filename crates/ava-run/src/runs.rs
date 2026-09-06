@@ -121,7 +121,8 @@ fn turn_of(game: &dyn ava_game::Game, turn: usize) -> &ava_game::Turn {
     game.turns().get(turn).unwrap_or(&game.turns()[0])
 }
 
-/// Every entry the run in `directory` kept as `file`, oldest first.
+/// Every entry the run in `directory` kept as `file`, oldest first, ranked
+/// with the verdict of the push that left it.
 pub fn entries(
     game: &dyn ava_game::Game,
     directory: &std::path::Path,
@@ -133,6 +134,7 @@ pub fn entries(
     let Ok(attempts) = std::fs::read_dir(&kept) else {
         return Ok(entries);
     };
+    let verdicts = read(directory).map(|run| run.attempts).unwrap_or_default();
 
     for attempt in attempts {
         let attempt = attempt?;
@@ -148,9 +150,15 @@ pub fn entries(
             continue;
         };
 
+        let verdict = verdicts
+            .iter()
+            .find(|attempt| attempt.seconds == seconds)
+            .map(|attempt| attempt.verdict.clone())
+            .unwrap_or_else(ava_wire::Verdict::passed);
+
         entries.push(Entry {
             seconds,
-            points: game.points(&path)?,
+            points: game.points(&path, &verdict)?,
             path,
             bytes: metadata.len(),
         });

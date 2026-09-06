@@ -78,7 +78,7 @@ impl Setup {
 }
 
 /// What the verifier of a game says about one submission.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Verdict {
     /// Whether the submission does what the task asks.
     #[serde(alias = "solved")]
@@ -90,6 +90,9 @@ pub struct Verdict {
     /// played against the entries of other seats.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defeated: Vec<String>,
+    /// The rating the verifier measured, for a game grading against a field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f64>,
 }
 
 impl Verdict {
@@ -99,6 +102,7 @@ impl Verdict {
             passed: true,
             reason: None,
             defeated: Vec::new(),
+            rating: None,
         }
     }
 
@@ -108,6 +112,7 @@ impl Verdict {
             passed: true,
             reason: None,
             defeated,
+            rating: None,
         }
     }
 
@@ -117,6 +122,7 @@ impl Verdict {
             passed: false,
             reason: Some(reason.into()),
             defeated: Vec::new(),
+            rating: None,
         }
     }
 }
@@ -125,7 +131,7 @@ impl Verdict {
 ///
 /// The seconds count from the start of the scoring container, which is the
 /// clock every attempt of a run shares.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Attempt {
     pub seconds: u64,
     #[serde(flatten)]
@@ -557,6 +563,7 @@ mod tests {
         assert_eq!(attempt.seconds, 126);
         assert!(attempt.verdict.passed);
         assert_eq!(attempt.verdict.reason, None);
+        assert_eq!(attempt.verdict.rating, None);
     }
 
     #[test]

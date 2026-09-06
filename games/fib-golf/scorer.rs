@@ -131,7 +131,11 @@ impl crate::Game for FibGolf {
     /// The points of an entry by its size: they fall off as
     /// `e^(-(bytes - 128) / 1500)`, scaled so that 128 bytes earn everything
     /// and the size limit earns nothing.
-    fn points(&self, entry: &std::path::Path) -> std::io::Result<Option<u64>> {
+    fn points(
+        &self,
+        entry: &std::path::Path,
+        _verdict: &ava_wire::Verdict,
+    ) -> std::io::Result<Option<u64>> {
         Ok(Some(earned_points(std::fs::metadata(entry)?.len())))
     }
 }

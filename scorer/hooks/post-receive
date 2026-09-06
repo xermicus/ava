@@ -54,6 +54,8 @@ if verdict.get("reason"):
     attempt["reason"] = verdict["reason"]
 if verdict.get("defeated"):
     attempt["defeated"] = verdict["defeated"]
+if verdict.get("rating") is not None:
+    attempt["rating"] = verdict["rating"]
 if verdict["passed"]:
     kept = os.path.join(home, "entries", str(seconds))
     os.makedirs(kept, exist_ok=True)

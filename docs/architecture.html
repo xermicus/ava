@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-bef68631.js";
+            window.path_to_searchindex_js = "searchindex-c53cd8f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-83b56119.js"></script>
@@ -198,7 +198,7 @@ A unix socket that connects to the <code>ava-proxy</code> sidecar is mounted in.
 The proxy routes the <code>git</code> host to a bare repository in a container without network, which is how an agent submits: every push to the <code>task</code> branch is verified on the spot and the entry of every passing push is kept. <code>ava remote</code> serves that repository over the score socket, a CGI shim around <code>git http-backend</code> answering one request at a time. The <code>score</code> host on the same socket verifies a posted tar without recording it.
 The isolation rests on the containers sharing nothing but a volume of unix sockets: only the proxy has a network, so every byte leaving the sandbox or reaching the scorer passes through a socket the proxy serves.</p>
 <p>Each game implements a verifier, for security reasons it’s evaluated in a container too.
-The verifier checks the submission however it wishes and records a verdict, never points.
+The verifier checks the submission however it wishes and records a verdict, never points. A verdict may carry what was measured, the rating of <code>chess-vm</code>, which the points are derived from where standings are shown.
 A verifier that needs the same data for every push computes it once when the container starts, so no push has to compute it. For <code>chess-vm</code> this data is the ratings of the built-in opponents.
 <code>ava</code> collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.</p>

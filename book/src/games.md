@@ -8,7 +8,7 @@ The trait separates what is recorded from what is derived:
 - `inputs()` says what a seat gets before a turn from the seats it meets: entries of earlier turns, under the names the task text uses. The tournament seeds them into the workspace and mounts them for the verifier. A game with one turn says nothing.
 - `verify()` runs in the scoring container on every push and reaches the verdict of the turn, passed or failed with the reason, naming the inputs the submission defeated when the turn is played against the entries of other seats. It records a fact and pays no points.
 - `prepare()` computes the data every verification needs, once when the scoring container starts, so no push has to compute it. The default does nothing.
-- `points()` ranks an entry within 0 and 10000 from the file alone, without executing it, wherever standings are shown. A game with nothing to rank beyond passing ranks nothing, and its entries show no points.
+- `points()` ranks an entry within 0 and 10000 from the file and the verdict of the push that left it, without executing anything, wherever standings are shown. A game with nothing to rank beyond passing ranks nothing, and its entries show no points.
 - `outcome()` reads how two seats came out of a round from what the round recorded, their entries and their verdicts, as a tally from the view of the first. Unless the game says otherwise the entries of the last turn are compared by their points: more points win, equal points draw, a missing entry forfeits. A game answering nothing needs a fight.
 - `fight()` plays one pairing for such a game and tallies the rounds from the view of the first entry.
 
@@ -63,7 +63,7 @@ The verifier plays a submission 20 games against each opponent, alternating colo
 
 The round robin takes minutes of processor time; playing one submission against the field takes seconds. `prepare` therefore runs the round robin when the scoring container starts and writes the ratings to a file in the temporary directory, which every later push reads. The file name contains a hash of the opponents, the round robin settings and the executable, so another build does not read it. If the file is missing, the next push runs the round robin again.
 
-The records do not distinguish two policies, so `outcome()` returns nothing and the scorer fights the entries instead. One combat is two games, one with each colour, and each game counts as one round for the first entry. [Tournaments](tournaments.md) run the fights.
+The verdict records the rating and the entry ranks at it in points, capped at 10000, so the best rated push is the entry of record. The records do not settle a pairing, so `outcome()` returns nothing and the scorer fights the entries instead. One combat is two games, one with each colour, and each game counts as one round for the first entry. [Tournaments](tournaments.md) run the fights.
 
 The seeds are fixed, so the same program always plays the same games. The agent can see every seed: the verifier runs in CI, and every push reports the rating of the program it verified. A first policy is a few instructions; improving it means measuring one change at a time against the field, which takes hours. The default budget of 300 seconds is too short, so run this game with `-t`.
 

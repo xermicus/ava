@@ -74,6 +74,18 @@ impl crate::Game for ChessVm {
         Ok(passing_verdict(&report, &field))
     }
 
+    /// The rating the push measured, as points: the best rated push is the
+    /// entry of record.
+    fn points(
+        &self,
+        _entry: &std::path::Path,
+        verdict: &ava_wire::Verdict,
+    ) -> std::io::Result<Option<u64>> {
+        Ok(verdict
+            .rating
+            .map(|rating| rating.round().clamp(0.0, crate::MAXIMUM_POINTS as f64) as u64))
+    }
+
     fn outcome(
         &self,
         _first: (usize, &[crate::Played]),
@@ -191,6 +203,7 @@ fn passing_verdict(report: &field::Report, field: &field::Field) -> ava_wire::Ve
             report.rating, field.lowest, field.highest
         )),
         defeated: Vec::new(),
+        rating: Some(report.rating),
     }
 }
 
@@ -248,6 +261,24 @@ mod tests {
         assert!(!verdict.passed);
 
         verdict.reason.expect("a failed verdict has a reason")
+    }
+
+    #[test]
+    fn the_rating_of_the_push_ranks_the_entry() {
+        let rated = |rating: Option<f64>| {
+            let verdict = ava_wire::Verdict {
+                rating,
+                ..ava_wire::Verdict::passed()
+            };
+            ChessVm
+                .points(std::path::Path::new(SUBMISSION_FILE), &verdict)
+                .expect("points read the verdict")
+        };
+
+        assert_eq!(rated(Some(912.4)), Some(912));
+        assert_eq!(rated(Some(-3.0)), Some(0));
+        assert_eq!(rated(Some(20_000.0)), Some(crate::MAXIMUM_POINTS));
+        assert_eq!(rated(None), None);
     }
 
     #[test]

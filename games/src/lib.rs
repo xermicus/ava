@@ -114,8 +114,9 @@ pub struct Outcome {
 /// the entry it kept.
 ///
 /// The verifier runs in the scoring container on every push and records a
-/// fact. Ranking runs wherever standings are shown and reads the entry alone,
-/// so it never executes anything and its knobs can change without a re-run.
+/// fact. Ranking runs wherever standings are shown and reads the entry and
+/// the recorded verdict alone, so it never executes anything and its knobs
+/// can change without a re-run.
 pub trait Game {
     /// The name identifying the game on the command line and under the games directory.
     fn name(&self) -> &'static str;
@@ -152,9 +153,14 @@ pub trait Game {
     ) -> std::io::Result<ava_wire::Verdict>;
 
     /// The points a passing `entry` ranks at, within 0 and [`MAXIMUM_POINTS`],
-    /// or nothing for a game with nothing to rank beyond passing.
-    fn points(&self, entry: &std::path::Path) -> std::io::Result<Option<u64>> {
-        let _ = entry;
+    /// read from the file or from the `verdict` of the push that left it, or
+    /// nothing for a game with nothing to rank beyond passing.
+    fn points(
+        &self,
+        entry: &std::path::Path,
+        verdict: &ava_wire::Verdict,
+    ) -> std::io::Result<Option<u64>> {
+        let _ = (entry, verdict);
         Ok(None)
     }
 
