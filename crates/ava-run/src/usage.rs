@@ -590,7 +590,6 @@ pub fn epoch_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// The epoch second `epoch` as a UTC date and time, to the minute.
 /// The epoch of an ISO 8601 UTC date such as `2026-10-01T00:00:00+00:00`.
 fn epoch_of(date: &str) -> Option<u64> {
     let mut fields = date
@@ -617,6 +616,7 @@ fn epoch_of(date: &str) -> Option<u64> {
     u64::try_from(days * SECONDS_PER_DAY as i64 + hour * SECONDS_PER_HOUR as i64 + minute * 60).ok()
 }
 
+/// The epoch second `epoch` as a UTC date and time, to the minute.
 pub fn utc_date(epoch: u64) -> String {
     let days = (epoch / SECONDS_PER_DAY) as i64;
     let seconds = epoch % SECONDS_PER_DAY;

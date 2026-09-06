@@ -913,8 +913,6 @@ pub fn write_run(run: &str, record: &ava_wire::Run) -> std::io::Result<()> {
     )
 }
 
-/// The commit the folder of `game`, and the folder of its image, was last
-/// changed in, marked when the working tree differs from it. Empty outside a
 /// The folder holding the task of `turn` of `game`, the first turn's for a
 /// turn the game does not have or a game it does not know.
 pub fn task_directory(game: &str, turn: usize) -> std::path::PathBuf {
@@ -925,6 +923,8 @@ pub fn task_directory(game: &str, turn: usize) -> std::path::PathBuf {
     std::path::Path::new(GAMES_DIRECTORY).join(game).join(task)
 }
 
+/// The commit the folder of `game`, and the folder of its image, was last
+/// changed in, marked when the working tree differs from it. Empty outside a
 /// repository.
 pub fn game_version(game: &str) -> String {
     let mut folders = vec![format!("{GAMES_DIRECTORY}/{game}")];

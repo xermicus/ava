@@ -24,7 +24,7 @@ const LINK_CLASSES: &str =
     "text-indigo-300 hover:text-indigo-200 underline decoration-indigo-300/40";
 const TABLE_CLASSES: &str = "my-3 text-left border-collapse";
 const TABLE_HEADER_CLASSES: &str =
-    "text-xs font-medium uppercase tracking-wider text-neutral-500 py-1.5 pr-4";
+    "text-xs font-semibold text-neutral-300 py-1.5 pr-4 border-b border-neutral-700";
 const TABLE_CELL_CLASSES: &str =
     "py-1.5 pr-4 border-t border-neutral-800 align-top text-neutral-300";
 

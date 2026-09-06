@@ -65,18 +65,18 @@ const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
 const RUN_HEADERS: [&str; 12] = [
-    "RUN|the run directory under runs/ and how long ago it started",
-    "STATE|live or the last call while the run goes, whether a push passed the verifier once it is over",
-    "ANALYSIS|whether an analyst was run over the finished run: analyzing, analyzed or failed",
-    "GAME|the game that was played",
-    "TOURNAMENT|the tournament the run plays a seat in, or a dash for a run of its own",
-    "MODEL|the model under test",
-    "HARNESS|the harness driving the model, with the thinking level it was asked for",
-    "*TIME|seconds spent of the time budget, red once the whole budget is gone",
-    "#PUSHES|the pushes to the task branch the verifier graded",
-    "#CUT|requests a model answered without ever reporting usage, so the stream was cut short \
+    "run|the run directory under runs/ and how long ago it started",
+    "state|live or the last call while the run goes, whether a push passed the verifier once it is over",
+    "analysis|whether an analyst was run over the finished run: analyzing, analyzed or failed",
+    "game|the game that was played",
+    "tournament|the tournament the run plays a seat in, or a dash for a run of its own",
+    "model|the model under test",
+    "harness|the harness driving the model, with the thinking level it was asked for",
+    "*time|seconds spent of the time budget, red once the whole budget is gone",
+    "#pushes|the pushes to the task branch the verifier graded",
+    "#cut|requests a model answered without ever reporting usage, so the stream was cut short \
      upstream",
-    "*POINTS|the entry of record ranked on the 0 to 10000 scale every game ranks in, once the run \
+    "*points|the entry of record ranked on the 0 to 10000 scale every game ranks in, once the run \
      is over",
     "",
 ];
@@ -102,7 +102,9 @@ const CARD_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900"
 const TABLE_CLASSES: &str = "w-full border-collapse";
 const PACKED_COLUMN_CLASSES: &str = "w-px whitespace-nowrap px-2 first:pl-4 last:pr-4";
 const SLACK_COLUMN_CLASSES: &str = "px-2 first:pl-4 last:pr-4";
-const HEADER_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500 py-2.5";
+/// The header row is a darker band, its titles lowercase in a heavier weight.
+const HEADER_ROW_CLASSES: &str = "bg-neutral-950/50";
+const HEADER_CLASSES: &str = "text-xs font-semibold text-neutral-300 py-2.5";
 
 /// A title with a tooltip behind it.
 const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoration-neutral-700 \
@@ -186,7 +188,7 @@ const TIME_LEFT_FILL: &str = "bg-emerald-500";
 
 /// The tiles summarizing a run, one figure each.
 const TILE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3";
-const TILE_LABEL_CLASSES: &str = "text-xs font-medium uppercase tracking-wider text-neutral-500";
+const TILE_LABEL_CLASSES: &str = "text-xs font-medium text-neutral-500";
 const TILE_VALUE_CLASSES: &str =
     "mt-1 text-lg font-semibold text-neutral-100 font-mono tabular-nums";
 const TILE_TEXT_CLASSES: &str = "mt-1 text-sm font-semibold text-neutral-100 font-mono break-all";
@@ -205,8 +207,8 @@ const GAME_FACE_CLASSES: &str = "block cursor-pointer list-none [&::-webkit-deta
      p-4 hover:bg-neutral-800/40 transition-colors focus-visible:outline-none \
      focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/50";
 const GAME_NAME_CLASSES: &str = "font-mono text-sm font-semibold text-neutral-100";
-const GAME_TAGLINE_CLASSES: &str = "flex items-baseline justify-between gap-3 mt-1";
 const FACT_VALUE_CLASSES: &str = "font-mono tabular-nums text-neutral-100";
+const FACT_WORDS_CLASSES: &str = "text-neutral-100";
 const CHEVRON_CLASSES: &str = "h-4 w-4 shrink-0 text-neutral-500 transition-transform \
      motion-reduce:transition-none group-open:rotate-180";
 const GAME_BODY_CLASSES: &str = "border-t border-neutral-800 px-4 pb-4";
@@ -279,6 +281,23 @@ const FACT_ROW_CLASSES: &str = "flex items-center gap-3 h-5";
 const HOLDER_CLASSES: &str = "block h-4 mt-1 pl-[4.25rem] text-xs text-neutral-500 truncate";
 const FACT_LABEL_CLASSES: &str = "w-14 shrink-0 text-xs text-neutral-500";
 
+/// The tournament card beside the game card: the pairing scheme drawn as the
+/// seats on a ring with a line for every pairing, and the run budget as a bar
+/// ending in its last call.
+const ABOUT_GRID_CLASSES: &str = "mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch";
+const RING_SIDE: f64 = 80.0;
+const RING_RADIUS: f64 = 30.0;
+const RING_SEAT_RADIUS: f64 = 3.5;
+const RING_STROKE_WIDTH: f64 = 1.0;
+const RING_EDGE_CLASSES: &str = "stroke-neutral-600";
+const RING_SEAT_CLASSES: &str = "fill-neutral-300";
+const BUDGET_TRACK_CLASSES: &str = "flex h-1.5 w-32 shrink-0 gap-0.5";
+const BUDGET_SEGMENT_CLASSES: &str = "block h-full rounded-full";
+const BUDGET_LOOP_FILL: &str = "bg-indigo-500";
+const BUDGET_LAST_CALL_FILL: &str = "bg-amber-500";
+const FACT_TEXT_CLASSES: &str = "flex items-center gap-2 whitespace-nowrap";
+const NO_ANALYST: &str = "none";
+
 /// A tile with nothing to show says why, quietly.
 const PLACEHOLDER_CLASSES: &str = "text-sm font-normal text-neutral-500";
 const AFTER_THE_RUN: &str = "after the run";
@@ -287,6 +306,8 @@ const NO_ENTRY: &str = "no entry";
 
 /// A passing run from before entries were kept left no entry file.
 const NOT_KEPT: &str = "not kept";
+/// What the image fact of a game without a layer of its own says.
+const BASE_IMAGE: &str = "base";
 const UNRANKED: &str = "unranked";
 const UNFINISHED: &str = "unfinished";
 const NOT_ANALYZED: &str = "-";
@@ -1203,7 +1224,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                 )
             ));
             body.push_str(&table(
-                &["#SECONDS", "#BYTES", "*POINTS", "", "FILE"],
+                &["#seconds", "#bytes", "*points", "", "file"],
                 rows,
                 None,
             ));
@@ -1213,7 +1234,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     let pushes = attempt_rows(&entry.attempts);
     if !pushes.is_empty() {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">pushes</p>"));
-        body.push_str(&table(&["#SECONDS", "STATE", "*REASON"], pushes, None));
+        body.push_str(&table(&["#seconds", "state", "*reason"], pushes, None));
     }
 
     if let Some(metrics) = &entry.metrics {
@@ -1347,7 +1368,7 @@ pub(crate) fn scoreboard_page() -> std::io::Result<String> {
         ),
         table(
             &[
-                "GAME", "MODEL", "HARNESS", "#RUNS", "#PASSED", "*BEST", "#SECONDS",
+                "game", "model", "harness", "#runs", "#passed", "*best", "#seconds",
             ],
             rows,
             Some("nothing played yet"),
@@ -1397,7 +1418,6 @@ fn game_card(game: &str, played: &[&RunEntry]) -> String {
                 .unwrap_or_default()
         })
         .collect();
-    let task = tasks.first().cloned().unwrap_or_default();
     let passed = played.iter().filter(|run| run.passed()).count() as u64;
     let best = played
         .iter()
@@ -1405,9 +1425,10 @@ fn game_card(game: &str, played: &[&RunEntry]) -> String {
         .max_by_key(|(_, record)| (record.points, record.seconds));
 
     format!(
-        "<details class=\"{GAME_CARD_CLASSES}\">{}\
+        "<details class=\"{GAME_CARD_CLASSES}\" data-fold=\"task-{}\">{}\
          <div class=\"{GAME_BODY_CLASSES}\">{}</div></details>",
-        game_face(game, &task, played.len() as u64, passed, best),
+        escape(game),
+        game_face(game, played.len() as u64, passed, best),
         tasks
             .iter()
             .filter(|text| !text.is_empty())
@@ -1417,24 +1438,21 @@ fn game_card(game: &str, played: &[&RunEntry]) -> String {
     )
 }
 
-/// The face of a card: the name and its turns, the title of the task and
-/// the image it plays on, then the cover beside the runs and the record.
+/// The face of a card: the name and its turns, then the cover beside the
+/// runs, the image the game plays on and the record with its holder.
 fn game_face(
     game: &str,
-    task: &str,
     runs: u64,
     passed: u64,
     best: Option<(&RunEntry, &runs::Entry)>,
 ) -> String {
-    let image = ava_game::find(game)
-        .and_then(|found| found.image())
-        .map(|image| {
-            format!(
-                "<span class=\"{MUTED_CLASSES} {MONO_CLASSES} text-xs whitespace-nowrap\">image {}</span>",
-                escape(image)
-            )
-        })
-        .unwrap_or_default();
+    let image = match ava_game::find(game).and_then(|found| found.image()) {
+        Some(image) => format!(
+            "<span class=\"{FACT_VALUE_CLASSES}\">{}</span>",
+            escape(image)
+        ),
+        None => format!("<span class=\"{FACT_VALUE_CLASSES}\">{BASE_IMAGE}</span>"),
+    };
 
     let (record, holder) = match best {
         Some((run, entry)) => match entry.points {
@@ -1442,10 +1460,10 @@ fn game_face(
                 points_meter(points),
                 format!("{} \u{00b7} {}", escape(&run.run.model), run.agent()),
             ),
-            None => (placeholder(UNRANKED), String::new()),
+            None => (words(UNRANKED), String::new()),
         },
-        None if passed > 0 => (placeholder(NOT_KEPT), String::new()),
-        None => (placeholder(NO_ENTRY), String::new()),
+        None if passed > 0 => (words(NOT_KEPT), String::new()),
+        None => (words(NO_ENTRY), String::new()),
     };
 
     format!(
@@ -1454,20 +1472,19 @@ fn game_face(
          <span class=\"{GAME_NAME_CLASSES}\">{}</span>{}<span class=\"flex-1\"></span>\
          {}\
          </span>\
-         <span class=\"{GAME_TAGLINE_CLASSES}\"><span class=\"{NOTE_CLASSES} truncate\">{}</span>{image}</span>\
          <span class=\"flex items-start gap-4 mt-4\">{}\
-         <span class=\"{FACTS_CLASSES}\">{}{}<span class=\"{HOLDER_CLASSES}\">{holder}</span></span>\
+         <span class=\"{FACTS_CLASSES}\">{}{}{}<span class=\"{HOLDER_CLASSES}\">{holder}</span></span>\
          </span>\
          </summary>",
         escape(game),
         turn_badges(game),
         chevron(CHEVRON_CLASSES),
-        escape(task_title(task)),
         cover(game, best),
         fact(
             "runs",
             &format!("<span class=\"{FACT_VALUE_CLASSES}\">{runs}</span>")
         ),
+        fact("image", &image),
         fact("record", &record),
     )
 }
@@ -1579,12 +1596,9 @@ fn chevron(classes: &str) -> String {
     )
 }
 
-/// The first heading of a task, or nothing when it has none.
-fn task_title(task: &str) -> &str {
-    task.lines()
-        .find_map(|line| line.strip_prefix("# "))
-        .unwrap_or_default()
-        .trim()
+/// A value of a card face that is words rather than a number or a name.
+fn words(value: &str) -> String {
+    format!("<span class=\"{FACT_WORDS_CLASSES}\">{value}</span>")
 }
 
 /// One figure on the face of a card, its label beside it.
@@ -1698,7 +1712,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         "<p class=\"{TITLE_CLASSES}\">tournaments <span class=\"{NOTE_CLASSES} font-normal\">{} on disk</span></p>{}",
         tournaments.len(),
         table(
-            &["NAME", "STATE", "GAME", "#SEATS", "#ROUNDS", "*SECONDS", "#COMBATS"],
+            &["name", "state", "game", "#seats", "#rounds", "*seconds", "#combats"],
             rows,
             Some(NO_TOURNAMENTS_NOTE),
         )
@@ -1771,23 +1785,23 @@ pub(crate) fn tournament_page(
         tournament_state(&record),
     );
     body.push_str(&notice.render());
+
+    // The tournament, and beside it its game as the games page shows it, over
+    // the runs of this tournament.
+    let runs = collect_runs()?;
+    let played: Vec<&RunEntry> =
+        runs.iter()
+            .filter(|run| {
+                run.run.finished_seconds.is_some()
+                    && run.placement.as_ref().is_some_and(|placement| {
+                        placement.tournament == name && placement.turn == 0
+                    })
+            })
+            .collect();
     body.push_str(&format!(
-        "<p class=\"{NOTE_CLASSES} mt-1.5\">{} {} \u{00b7} {} \u{00b7} {}s a run \u{00b7} {} combats a fight{} \u{00b7} opened {} ago</p>",
-        escape(&record.game),
-        version_label(&record.game_version),
-        escape(&record.pairing),
-        record.limit_seconds,
-        record.combats,
-        record
-            .analyst
-            .as_ref()
-            .map(|analyst| format!(
-                " \u{00b7} analyzed by {} in {}s",
-                escape(&analyst.label()),
-                record.analyst_seconds
-            ))
-            .unwrap_or_default(),
-        usage::age(record.created_seconds),
+        "<div data-refresh=\"about\" class=\"{ABOUT_GRID_CLASSES}\">{}{}</div>",
+        tournament_card(&record),
+        game_card(&record.game, &played)
     ));
 
     // The seats with their standings: one table, the ratings blank until a
@@ -1846,9 +1860,9 @@ pub(crate) fn tournament_page(
         })
         .collect();
     let mut headers: Vec<String> = vec![
-        "#SEAT".to_string(),
-        "HARNESS".to_string(),
-        "*MODEL".to_string(),
+        "#seat".to_string(),
+        "harness".to_string(),
+        "*model".to_string(),
     ];
     headers.extend((1..=record.seats.len()).map(|seat| {
         format!(
@@ -1857,10 +1871,10 @@ pub(crate) fn tournament_page(
     }));
     headers.extend(
         [
-            "*#FIGHTS|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
-            "#SCORE|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
-            "#ELO|updated in match order, anchored at 1000",
-            "#BRADLEY-TERRY|fitted over the whole history, anchored at 1000",
+            "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won than lost is won",
+            "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+            "#elo|updated in match order, anchored at 1000",
+            "#bradley-terry|fitted over the whole history, anchored at 1000",
             "",
         ]
         .map(str::to_string),
@@ -1922,6 +1936,90 @@ pub(crate) fn tournament_page(
     body.push_str("</div>");
 
     Ok(page(name, &body))
+}
+
+/// The tournament in the shape of a game card: the pairing scheme as its
+/// name, the seats drawn on a ring with a line for every pairing as its cover,
+/// and when it opened, the run budget and the analyst as its facts.
+fn tournament_card(record: &ava_wire::Tournament) -> String {
+    let seats = record.seats.len();
+    let ring = if seats == 0 {
+        format!("<span class=\"{COVER_EMPTY_CLASSES}\"></span>")
+    } else {
+        format!(
+            "<span class=\"{COVER_CLASSES}\">{}</span>",
+            pairing_ring(seats)
+        )
+    };
+
+    let analyst = match &record.analyst {
+        Some(analyst) => format!(
+            "<span class=\"{FACT_TEXT_CLASSES}\"><span class=\"{FACT_WORDS_CLASSES} truncate\">{}</span><span class=\"{FACT_VALUE_CLASSES}\">{}s</span></span>",
+            escape(&analyst.label()),
+            record.analyst_seconds
+        ),
+        None => words(NO_ANALYST),
+    };
+    let opened = format!(
+        "<span class=\"{FACT_TEXT_CLASSES}\"><span class=\"{FACT_WORDS_CLASSES}\">{} ago</span><span class=\"{FACT_VALUE_CLASSES}\">{}</span></span>",
+        usage::age(record.created_seconds),
+        usage::utc_date(record.created_seconds)
+    );
+
+    format!(
+        "<div class=\"{CARD_CLASSES} p-4 h-full\">\
+         <span class=\"flex items-center gap-3\"><span class=\"{GAME_NAME_CLASSES}\">{}</span></span>\
+         <span class=\"flex items-start gap-4 mt-4\">{ring}<span class=\"{FACTS_CLASSES}\">{}{}{}</span></span>\
+         </div>",
+        escape(&record.pairing),
+        fact("opened", &opened),
+        fact("run", &budget_bar(record.limit_seconds)),
+        fact("analyst", &analyst),
+    )
+}
+
+/// The `seats` on a ring with a line for every pairing of the round robin.
+fn pairing_ring(seats: usize) -> String {
+    let center = RING_SIDE / 2.0;
+    let point = |seat: usize| {
+        let angle =
+            std::f64::consts::TAU * seat as f64 / seats as f64 - std::f64::consts::FRAC_PI_2;
+        (
+            center + RING_RADIUS * angle.cos(),
+            center + RING_RADIUS * angle.sin(),
+        )
+    };
+
+    let mut svg = format!(
+        "<svg class=\"{COVER_ART_CLASSES}\" viewBox=\"0 0 {RING_SIDE} {RING_SIDE}\" stroke-width=\"{RING_STROKE_WIDTH}\">"
+    );
+    for (first, second) in ava_game::scoring::round_robin(seats) {
+        let (from_x, from_y) = point(first);
+        let (to_x, to_y) = point(second);
+        svg.push_str(&format!(
+            "<line x1=\"{from_x:.1}\" y1=\"{from_y:.1}\" x2=\"{to_x:.1}\" y2=\"{to_y:.1}\" class=\"{RING_EDGE_CLASSES}\"/>"
+        ));
+    }
+    for seat in 0..seats {
+        let (x, y) = point(seat);
+        svg.push_str(&format!(
+            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{RING_SEAT_RADIUS}\" class=\"{RING_SEAT_CLASSES}\"/>"
+        ));
+    }
+    svg.push_str("</svg>");
+    svg
+}
+
+/// The budget of a run as a bar: the turn loop, then the last call.
+fn budget_bar(limit: u64) -> String {
+    let last_call = docker::LAST_CALL_SECONDS.min(limit);
+    let loop_percent = (limit - last_call) * 100 / limit.max(1);
+
+    format!(
+        "<span class=\"{FACT_TEXT_CLASSES}\">\
+         <span class=\"{BUDGET_TRACK_CLASSES}\"><span class=\"{BUDGET_SEGMENT_CLASSES} {BUDGET_LOOP_FILL}\" style=\"width:{loop_percent}%\"></span><span class=\"{BUDGET_SEGMENT_CLASSES} flex-1 {BUDGET_LAST_CALL_FILL}\"></span></span>\
+         <span class=\"{FACT_VALUE_CLASSES}\">{limit}s</span></span>"
+    )
 }
 
 /// The runs of a round as the graph the tournament walks: a column per turn,
@@ -2295,12 +2393,12 @@ fn standings(record: &ava_wire::Tournament) -> std::io::Result<Vec<Standing>> {
     Ok(standings)
 }
 
-/// A rating rounded to the point, or nothing for an agent without matches.
 /// A tally as won-drawn-lost.
 fn tally_label(tally: &ava_wire::Tally) -> String {
     format!("{}-{}-{}", tally.won, tally.drawn, tally.lost)
 }
 
+/// A rating rounded to the point, or nothing for an agent without matches.
 fn rating_label(rating: Option<f64>) -> String {
     rating
         .map(|rating| format!("{}", rating.round() as i64))
@@ -2498,19 +2596,19 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     );
     body.push_str(&table(
         &[
-            "BACKEND",
-            "SERVICE",
-            "HOST",
-            "KEY",
-            "*STATE",
-            "#RUNS",
-            "#ANALYSES",
-            "#REQUESTS",
-            "#INPUT",
-            "#OUTPUT",
-            "#CACHE READ",
-            "#CACHE WRITE",
-            "#COST",
+            "backend",
+            "service",
+            "host",
+            "key",
+            "*state",
+            "#runs",
+            "#analyses",
+            "#requests",
+            "#input",
+            "#output",
+            "#cache read",
+            "#cache write",
+            "#cost",
         ],
         backend_rows,
         None,
@@ -2522,12 +2620,12 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     ));
     body.push_str(&table(
         &[
-            "BACKEND",
-            "WINDOW",
-            "*USED",
-            "LEFT",
-            "STATUS",
-            "*RESETS|how far the window has run towards its reset, and when it resets",
+            "backend",
+            "window",
+            "*used",
+            "left",
+            "status",
+            "*resets|how far the window has run towards its reset, and when it resets",
         ],
         limit_rows,
         Some(NO_LIMITS_NOTE),
@@ -2542,16 +2640,16 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     }
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">models</p>"));
     body.push_str(&table(
-        &["MODEL", "BACKEND", "*ID", "#CONTEXT", "#MAX OUTPUT"],
+        &["model", "backend", "*id", "#context", "#max output"],
         model_rows,
         None,
     ));
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">harnesses</p>"));
-    body.push_str(&table(&["HARNESS", "SERVICES"], harness_rows, None));
+    body.push_str(&table(&["harness", "services"], harness_rows, None));
 
     if let Some(rows) = images {
         body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">images</p>"));
-        body.push_str(&table(&["IMAGE", "TAG", "SIZE", "CREATED"], rows, None));
+        body.push_str(&table(&["image", "tag", "size", "created"], rows, None));
     }
 
     Ok(page("setup", &body))
@@ -2989,18 +3087,6 @@ fn agent_label(harness: &str, thinking: &str) -> String {
     )
 }
 
-/// A version muted beside the thing it versions, or nothing when none was recorded.
-fn version_label(version: &str) -> String {
-    if version.is_empty() {
-        return String::new();
-    }
-
-    format!(
-        "<span class=\"{MUTED_CLASSES} {MONO_CLASSES} text-xs\">{}</span>",
-        escape(version)
-    )
-}
-
 /// The seat a run plays in its round, and its turn for a game with several.
 fn placement_role(placement: &tournament::Placement, turns: usize) -> String {
     let turn = if turns > 1 {
@@ -3190,7 +3276,7 @@ fn table(headers: &[&str], rows: Vec<Vec<String>>, empty: Option<&str>) -> Strin
     // between two of them sits where their contents do not push it.
     let share = format!(" style=\"width:{}%\"", 100 / slack.len().max(1));
     let mut html = format!(
-        "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"><thead><tr>"
+        "<div class=\"{CARD_CLASSES} overflow-x-auto\"><table class=\"{TABLE_CLASSES}\"><thead><tr class=\"{HEADER_ROW_CLASSES}\">"
     );
     for (index, (header, alignment)) in headers.iter().zip(&alignment).enumerate() {
         let align = match *alignment {
@@ -3291,11 +3377,6 @@ mod tests {
         assert!(super::is_text(b"; a warrior\nmov eax, 1\n"));
         assert!(!super::is_text(b"\x7fELF\x02\x01"));
         assert!(!super::is_text(b""));
-        assert_eq!(
-            super::task_title("# Sanity check\n\nSubmit"),
-            "Sanity check"
-        );
-        assert_eq!(super::task_title("no heading"), "");
     }
 
     #[test]
