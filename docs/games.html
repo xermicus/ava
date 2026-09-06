@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f866261d.js";
+            window.path_to_searchindex_js = "searchindex-5a7e8950.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-83b56119.js"></script>
@@ -212,6 +212,7 @@
 <p>Two games, <code>r2wars-x86-32</code> and <code>r2wars-gb</code>, one per architecture. The task asks for <code>warrior.&lt;architecture&gt;.asm</code>, a warrior for <a href="https://github.com/radareorg/r2wars">r2wars</a>, the Core War on radare2’s ESIL emulator. Two warriors share a 1 KiB arena and take turns executing instructions until one crashes.</p>
 <p>The verifier assembles the warrior with <code>rasm2</code> for the architecture and applies the loading rules of r2wars: it has to assemble to 1 to 512 bytes. A warrior that assembles passes. Passing is all there is to rank on its own, the fights are what tells warriors apart.</p>
 <p>The game has one turn and nothing in the records settles a pairing, so the scorer fights the entries. A fight is the combats the tournament fixed, five unless chosen otherwise, of <code>r2wars --fight</code> between two entries, each best of three rounds on random load positions, staged as <code>first.&lt;architecture&gt;.asm</code> and <code>second.&lt;architecture&gt;.asm</code> because r2wars names a warrior by its file and reads the architecture out of the name. Every round the combats print is tallied: a round the first warrior wins, a round it loses, or a timeout, which is a draw. The fights are played by <a href="tournaments.html">tournaments</a>.</p>
+<p>A round is capped at 50000 cycles, <code>MAX_CYCLES</code> in the patch, up from the 2000 of upstream r2wars. A cycle is one turn of one warrior, and an instruction costing several cycles takes as many turns. Two warriors looping past each other reach the cap, the round is a timeout, tallied as a draw and replayed from fresh positions without counting as one of the three, and the third timeout of a combat ends it as a draw. A timed out round takes about 18 seconds, a fight of five combats between two warriors that never meet about 280, under the wall clock of 600 seconds every fight runs under, <code>FIGHT_TIMEOUT_SECONDS</code> in <code>ava-run</code>; a fight that outlives it fails as described under <a href="tournaments.html#the-pairings">the pairings</a>.</p>
 <p>Both games play on the image of <code>games/r2wars/Dockerfile</code>, which builds r2wars from a pinned commit plus <code>r2wars-headless.patch</code>, adding <code>r2wars --fight a.asm b.asm</code>, a combat on the console without the web server, and installs it with radare2 6.2.0 and the .NET runtime. The sandbox holds the two READMEs of r2wars and two small warriors per architecture under <code>/opt/r2wars/examples/&lt;architecture&gt;/</code>, the x86 ones from r2wars and the Game Boy ones from <code>games/r2wars/examples</code>, and none of the tournament entries.</p>
 
                     </main>

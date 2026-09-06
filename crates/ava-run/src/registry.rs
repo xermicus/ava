@@ -65,21 +65,36 @@ const PI_THINKING: &str = "--thinking";
 /// line, without which a run leaves no live log.
 const CLAUDE_PRINT: [&str; 4] = ["--print", "--verbose", "--output-format", "stream-json"];
 
-/// Output tokens one turn may spend, the same ceiling claude code puts on
-/// its own requests. The highest thinking levels need more room above their
-/// thinking budget.
-const TURN_OUTPUT_CAP: u32 = 32_000;
-const HIGHEST_THINKING_TURN_OUTPUT_CAP: u32 = 64_000;
+/// The output tokens claude code 2.1.247 asks for per request: the default of
+/// its model catalog, or the fallback for a model the catalog does not know.
+const CATALOG_TURN_OUTPUT: u32 = 64_000;
+const FALLBACK_TURN_OUTPUT: u32 = 32_000;
 
-/// The `max_output` of a route capped to one turn's spend.
-fn turn_output(route: &Route, thinking: Option<&str>) -> u32 {
-    let cap = match thinking {
-        Some("xhigh" | "max") => HIGHEST_THINKING_TURN_OUTPUT_CAP,
-        _ => TURN_OUTPUT_CAP,
-    };
+/// The models with the larger catalog default.
+const CATALOG_MODELS: [&str; 7] = [
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+];
+
+/// The `max_output` of a route capped to what claude code sends for the model,
+/// matched by its registry name or the last segment of its route id.
+fn turn_output(model: &Model, route: &Route) -> u32 {
+    let gateway_id = route.id.rsplit('/').next().unwrap_or(&route.id);
+    let cap =
+        if CATALOG_MODELS.contains(&model.name.as_str()) || CATALOG_MODELS.contains(&gateway_id) {
+            CATALOG_TURN_OUTPUT
+        } else {
+            FALLBACK_TURN_OUTPUT
+        };
 
     route.max_output.min(cap)
 }
+
 const GATEWAY_PROVIDER: &str = "anthropic";
 const PI_PROVIDER: &str = "ava";
 const PI_MODELS_FILE: &str = "/home/agent/.pi/agent/models.json";
@@ -281,10 +296,11 @@ impl Registry {
             backend.name
         );
 
+        let output = turn_output(model, route);
         let mut invocation = match harness.name.as_str() {
             CLAUDE_HARNESS => claude_invocation(route, backend, prompt, thinking, start),
-            PI_HARNESS => pi_invocation(route, backend, prompt, thinking, start),
-            OPENCODE_HARNESS => opencode_invocation(route, backend, prompt, thinking, start),
+            PI_HARNESS => pi_invocation(route, backend, prompt, thinking, output, start),
+            OPENCODE_HARNESS => opencode_invocation(route, backend, prompt, output, start),
             CODEX_HARNESS => codex_invocation(route, backend, prompt, thinking, start),
             name => Err(std::io::Error::other(format!(
                 "no adapter is defined for the {name} harness"
@@ -403,7 +419,7 @@ fn opencode_invocation(
     route: &Route,
     backend: &Backend,
     prompt: &str,
-    thinking: Option<&str>,
+    output: u32,
     start: Start,
 ) -> std::io::Result<Invocation> {
     let mut invocation = gateway_invocation(OPENCODE_HARNESS, route, backend)?;
@@ -425,10 +441,7 @@ fn opencode_invocation(
                 "\"__AVA_CONTEXT__\"",
                 route.context_window.to_string().as_str(),
             ),
-            (
-                "\"__AVA_OUTPUT__\"",
-                turn_output(route, thinking).to_string().as_str(),
-            ),
+            ("\"__AVA_OUTPUT__\"", output.to_string().as_str()),
         ],
     );
 
@@ -471,6 +484,7 @@ fn pi_invocation(
     backend: &Backend,
     prompt: &str,
     thinking: Option<&str>,
+    output: u32,
     start: Start,
 ) -> std::io::Result<Invocation> {
     let url = gateway_url(PI_HARNESS, backend)?;
@@ -486,10 +500,7 @@ fn pi_invocation(
                 "\"__AVA_CONTEXT__\"",
                 route.context_window.to_string().as_str(),
             ),
-            (
-                "\"__AVA_OUTPUT__\"",
-                turn_output(route, thinking).to_string().as_str(),
-            ),
+            ("\"__AVA_OUTPUT__\"", output.to_string().as_str()),
         ],
     );
 
@@ -725,4 +736,45 @@ fn column_width<'a>(header: &str, entries: impl Iterator<Item = &'a str>) -> usi
         .chain(std::iter::once(header.len()))
         .max()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    fn route(id: &str, max_output: u32) -> super::Route {
+        super::Route {
+            backend: "gateway".to_string(),
+            id: id.to_string(),
+            context_window: 1_000_000,
+            max_output,
+        }
+    }
+
+    fn model(name: &str) -> super::Model {
+        super::Model {
+            name: name.to_string(),
+            routes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_turn_spends_what_claude_code_sends_for_the_model() {
+        let direct = route("claude-opus-5", 128_000);
+        let gateway = route("openrouter/anthropic/claude-opus-5", 128_000);
+        let unknown = route("openrouter/z-ai/glm-5.3", 131_072);
+
+        assert_eq!(super::turn_output(&model("claude-opus-5"), &direct), 64_000);
+        assert_eq!(super::turn_output(&model("opus"), &gateway), 64_000);
+        assert_eq!(super::turn_output(&model("glm-5.3"), &unknown), 32_000);
+        assert_eq!(
+            super::turn_output(
+                &model("claude-haiku-4-5"),
+                &route("claude-haiku-4-5", 64_000)
+            ),
+            32_000
+        );
+        assert_eq!(
+            super::turn_output(&model("claude-sonnet-5"), &route("claude-sonnet-5", 16_000)),
+            16_000
+        );
+    }
 }
