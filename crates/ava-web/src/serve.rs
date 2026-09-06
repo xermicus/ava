@@ -75,7 +75,7 @@ pub(crate) const AGENT_FIELDS: [&str; 2] = ["agent", "thinking"];
 
 /// The form fields naming an agent in the registry, carried back to the
 /// agents page, and the query key naming the agent its form edits.
-pub(crate) const ALIAS_FIELDS: [&str; 5] = ["name", "harness", "model", "backend", "analyst"];
+pub(crate) const ALIAS_FIELDS: [&str; 4] = ["name", "harness", "model", "analyst"];
 pub(crate) const EDIT_KEY: &str = "edit";
 
 /// The prefix of the fields choosing the analyst on the start panel.
@@ -577,20 +577,16 @@ fn analyze_run(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
 /// The agent named in the form, checked no further than its shape: the
 /// registry checks the rest when it takes the change.
 fn alias_choice(form: &[(String, String)]) -> Result<registry::Alias, Refusal> {
-    let [
-        name_field,
-        harness_field,
-        model_field,
-        backend_field,
-        analyst_field,
-    ] = ALIAS_FIELDS;
+    let [name_field, harness_field, model_field, analyst_field] = ALIAS_FIELDS;
+    let (model, backend) = match value(form, model_field).split_once(registry::ROUTE_SEPARATOR) {
+        Some((model, backend)) => (model, Some(backend.to_string())),
+        None => (value(form, model_field), None),
+    };
     let alias = registry::Alias {
         name: value(form, name_field).trim().to_string(),
         harness: value(form, harness_field).to_string(),
-        model: value(form, model_field).to_string(),
-        backend: Some(value(form, backend_field))
-            .filter(|backend| !backend.is_empty())
-            .map(str::to_string),
+        model: model.to_string(),
+        backend,
         analyst: value(form, analyst_field) == "on",
     };
     registry::checked_name(&alias.name).map_err(|error| Refusal::Rejected(error.to_string()))?;

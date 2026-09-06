@@ -153,34 +153,27 @@ document.addEventListener("click", (event) => {
     }
 });
 
-/* The backends the agent form offers follow its harness and model: only the
- * ones the harness reaches the model at. The harness option carries the
- * services it speaks, the model option its routes as backend:service. */
-function followPairing(form) {
-    const { harness, model, backend } = form.elements;
+/* The routes the agent form offers follow its harness: only the ones on a
+ * service the harness speaks. The harness option carries its services, every
+ * route option the service of its backend. */
+function followHarness(form) {
+    const { harness, model } = form.elements;
     const services = (harness.selectedOptions[0]?.dataset.services ?? "").split(" ");
-    const routes = (model.selectedOptions[0]?.dataset.routes ?? "").split(" ");
-    const allowed = routes
-        .map((route) => route.split(":"))
-        .filter(([, service]) => services.includes(service))
-        .map(([served]) => served);
-    for (const option of backend.options) {
-        option.disabled = option.value !== "" && !allowed.includes(option.value);
-        if (option.disabled && option.selected) {
-            backend.value = "";
-        }
+    for (const option of model.options) {
+        option.disabled = !services.includes(option.dataset.service);
+    }
+    if (model.selectedOptions[0]?.disabled) {
+        model.value = [...model.options].find((option) => !option.disabled)?.value ?? "";
     }
 }
 
 for (const form of document.querySelectorAll("form")) {
-    const { harness, model, backend } = form.elements;
-    if (!harness || !model || !backend) {
+    const { harness, model } = form.elements;
+    if (!harness || !model?.options[0]?.dataset.service) {
         continue;
     }
-    for (const field of [harness, model]) {
-        field.addEventListener("change", () => followPairing(form));
-    }
-    followPairing(form);
+    harness.addEventListener("change", () => followHarness(form));
+    followHarness(form);
 }
 
 /* Mark the section the page belongs to in the navigation. */

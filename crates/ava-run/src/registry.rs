@@ -79,6 +79,10 @@ pub const THINKING_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"]
 /// not name is spelled out, `harness/model`.
 pub const PAIRING_SEPARATOR: char = '/';
 
+/// What separates the model from the backend when a route is spelled out,
+/// `model@backend`.
+pub const ROUTE_SEPARATOR: char = '@';
+
 const CLAUDE_EFFORT: &str = "--effort";
 const PI_THINKING: &str = "--thinking";
 

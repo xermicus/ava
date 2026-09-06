@@ -2621,7 +2621,7 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
                 } else {
                     String::new()
                 },
-                alias_actions(&registry, &alias.agent()),
+                alias_actions(alias),
             ]);
             row
         })
@@ -2648,42 +2648,45 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
 fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
     let editing = registry.alias(selection.get(crate::serve::EDIT_KEY, ""));
     let fields = crate::serve::ALIAS_FIELDS;
-    let [
-        name_field,
-        harness_field,
-        model_field,
-        backend_field,
-        analyst_field,
-    ] = fields;
+    let [name_field, harness_field, model_field, analyst_field] = fields;
+    let route = |alias: &registry::Alias| {
+        let backend = registry
+            .route(&alias.harness, &alias.model, alias.backend.as_deref())
+            .map(|(_, backend)| backend.name.clone())
+            .unwrap_or_default();
+        format!("{}{}{backend}", alias.model, registry::ROUTE_SEPARATOR)
+    };
     let (title, action, button, defaults) = match editing {
         Some(alias) => (
             "edit agent",
             format!("/agents/{}/edit", escape(&alias.name)),
             "save",
             [
-                alias.name.as_str(),
-                alias.harness.as_str(),
-                alias.model.as_str(),
-                alias.backend.as_deref().unwrap_or_default(),
-                if alias.analyst { "on" } else { "" },
+                alias.name.clone(),
+                alias.harness.clone(),
+                route(alias),
+                if alias.analyst { "on" } else { "" }.to_string(),
             ],
         ),
         None => (
             "new agent",
             "/agents/create".to_string(),
             "add",
-            ["", "", "", "", ""],
+            [String::new(), String::new(), String::new(), String::new()],
         ),
     };
-    let mut chosen = defaults;
-    for (field, chosen) in fields.iter().zip(chosen.iter_mut()) {
-        *chosen = selection.get(field, chosen);
-    }
-    let [name, harness, model, backend, analyst] = chosen;
+    let chosen: Vec<&str> = fields
+        .iter()
+        .zip(&defaults)
+        .map(|(field, default)| selection.get(field, default))
+        .collect();
+    let [name, harness, model, analyst] = chosen[..] else {
+        unreachable!("one choice per field")
+    };
 
-    // The harness option carries the services it speaks and the model option
-    // its routes, so the page script offers only the backends the harness
-    // reaches the model at.
+    // The harness option carries the services it speaks and every route
+    // option the service of its backend, so the page script offers only the
+    // routes the harness speaks.
     let harnesses: String = registry
         .harnesses
         .iter()
@@ -2700,25 +2703,34 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
             )
         })
         .collect();
-    let models: String = registry
+    let routes: String = registry
         .models
         .iter()
-        .map(|known| {
-            let routes: Vec<String> = known
-                .routes
-                .iter()
-                .filter_map(|route| registry.backend(&route.backend).ok())
-                .map(|served| format!("{}:{}", served.name, served.service.name()))
-                .collect();
-            option(
-                &known.name,
-                &format!(" data-routes=\"{}\"", escape(&routes.join(" "))),
-                known.name == model,
-            )
+        .flat_map(|known| {
+            known.routes.iter().map(move |served| {
+                let text = if known.routes.len() > 1 {
+                    format!("{} via {}", known.name, served.backend)
+                } else {
+                    known.name.clone()
+                };
+                let value = format!(
+                    "{}{}{}",
+                    known.name,
+                    registry::ROUTE_SEPARATOR,
+                    served.backend
+                );
+                let service = registry
+                    .backend(&served.backend)
+                    .map(|backend| backend.service.name())
+                    .unwrap_or_default();
+                option(
+                    &text,
+                    &format!(" value=\"{}\" data-service=\"{service}\"", escape(&value)),
+                    value == model,
+                )
+            })
         })
         .collect();
-    let mut backends = vec![""];
-    backends.extend(registry.backends.iter().map(|known| known.name.as_str()));
     let cancel = match editing {
         Some(_) => format!(
             "<a class=\"{LINK_CLASSES} {CONTROL_HEIGHT} flex items-center\" href=\"/agents\">cancel</a>"
@@ -2731,7 +2743,7 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
          <form method=\"post\" action=\"{action}\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" placeholder=\"letters, digits, dashes\" required></label>\
-         {}{}{}\
+         {}{}\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
          <input type=\"checkbox\" name=\"{analyst_field}\" class=\"h-4 w-4 rounded accent-indigo-500\"{}>\
          <span class=\"{NOTE_CLASSES}\">{}</span></label>\
@@ -2742,15 +2754,13 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
         ),
         escape(name),
         select_of(harness_field, harness_field, &harnesses),
-        select_of(model_field, model_field, &models),
-        select(
-            backend_field,
+        select_of(
+            model_field,
             &explained(
-                backend_field,
-                "the backend serving the model, the first route of the model when left empty"
+                model_field,
+                "the model at the backend serving it, one entry per route of the registry"
             ),
-            &backends,
-            backend
+            &routes
         ),
         checked(analyst == "on"),
         explained(
@@ -2760,24 +2770,15 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
     )
 }
 
-/// What the agents page offers for `agent`: editing and removing it, or
-/// adding it when the registry does not name it.
-fn alias_actions(registry: &registry::Registry, agent: &ava_wire::Agent) -> String {
-    let [_, harness_field, model_field, _, _] = crate::serve::ALIAS_FIELDS;
-    match registry.alias_of(agent) {
-        Some(alias) => format!(
-            "<span class=\"flex items-center gap-3\">\
-             <a class=\"{LINK_CLASSES}\" href=\"/agents?{}={name}\">edit</a>\
-             <form method=\"post\" action=\"/agents/{name}/delete\"><button class=\"{STOP_CLASSES}\">remove</button></form></span>",
-            crate::serve::EDIT_KEY,
-            name = escape(&alias.name)
-        ),
-        None => format!(
-            "<a class=\"{LINK_CLASSES}\" href=\"/agents?{harness_field}={}&amp;{model_field}={}\">add</a>",
-            escape(&agent.harness),
-            escape(&agent.model)
-        ),
-    }
+/// The edit link and the remove button of `alias` on the agents page.
+fn alias_actions(alias: &registry::Alias) -> String {
+    format!(
+        "<span class=\"flex items-center gap-3\">\
+         <a class=\"{LINK_CLASSES}\" href=\"/agents?{}={name}\">edit</a>\
+         <form method=\"post\" action=\"/agents/{name}/delete\"><button class=\"{STOP_CLASSES}\">remove</button></form></span>",
+        crate::serve::EDIT_KEY,
+        name = escape(&alias.name)
+    )
 }
 
 /// Two cells: the avatar of `agent`, and its name in the registry, or the
