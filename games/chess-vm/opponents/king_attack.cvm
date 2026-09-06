@@ -1,0 +1,58 @@
+    ldi r5, 0
+    ldi r15, 1
+    ldi r4, 7
+    matein1 r0
+    jz r0, live
+    ldi r0, 1000000
+    score r0
+    halt
+live:
+    material r0
+    givescheck r1
+    muli r1, r1, 220
+    add r0, r0, r1
+    enemykingdist r1
+    muli r1, r1, 2
+    sub r0, r0, r1
+    hangs r1
+    muli r1, r1, 150
+    sub r0, r0, r1
+    ldi r3, 0
+scan:
+    pieceat r1, r3
+    addi r1, r1, 6
+    jz r1, found
+    addi r3, r3, 1
+    ldi r2, 64
+    jlt r3, r2, scan
+    jmp done
+found:
+    ldi r2, 8
+    div r7, r3, r2
+    mod r8, r3, r2
+    ldi r9, 0
+    ldi r10, -1
+row:
+    add r13, r7, r10
+    jlt r13, r5, nextrow
+    jgt r13, r4, nextrow
+    ldi r11, -1
+col:
+    add r14, r8, r11
+    jlt r14, r5, nextcol
+    jgt r14, r4, nextcol
+    muli r12, r13, 8
+    add r12, r12, r14
+    defenders r6, r12
+    add r9, r9, r6
+nextcol:
+    add r11, r11, r15
+    jle r11, r15, col
+nextrow:
+    add r10, r10, r15
+    jle r10, r15, row
+    muli r9, r9, 35
+    add r0, r0, r9
+done:
+    score r0
+    halt

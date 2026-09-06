@@ -1,0 +1,5 @@
+    fromsq r1
+    movecount r0, r1
+    neg r0, r0
+    score r0
+    halt

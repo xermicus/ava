@@ -45,6 +45,7 @@ pub struct Score {
     /// The directory holding the inputs of the turn, the entries of the other
     /// seats by name.
     pub inputs: Option<String>,
+    pub prepare: bool,
 }
 
 /// Where the verifier of a turn without inputs looks for them: an empty
@@ -110,6 +111,14 @@ struct Report {
 
 /// Run the score sub command and print the requested reports as one JSON document.
 pub fn run(command: &Score) -> std::io::Result<i32> {
+    if command.prepare {
+        let name = command.game.as_deref().unwrap_or_default();
+        find(name)?.prepare()?;
+        log::info!("prepared {name}");
+
+        return Ok(0);
+    }
+
     let mut report = Report {
         verdict: None,
         entry: None,

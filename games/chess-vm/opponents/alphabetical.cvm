@@ -1,0 +1,19 @@
+    ldi r9, 8
+    fromsq r1
+    mod r2, r1, r9
+    div r3, r1, r9
+    muli r2, r2, 8
+    add r2, r2, r3
+    tosq r1
+    mod r4, r1, r9
+    div r5, r1, r9
+    muli r4, r4, 8
+    add r4, r4, r5
+    muli r2, r2, 64
+    add r2, r2, r4
+    promo r6
+    muli r2, r2, 8
+    add r2, r2, r6
+    neg r0, r2
+    score r0
+    halt

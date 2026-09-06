@@ -1,0 +1,78 @@
+    ldi r0, 0
+    ldi r12, 0
+
+    matein1 r1
+    muli r1, r1, 1000000
+    add r0, r0, r1
+
+    see r1
+    add r0, r0, r1
+
+    givescheck r1
+    muli r1, r1, 25
+    add r0, r0, r1
+
+    iscapture r1
+    jz r1, nocap
+    addi r0, r0, 15
+nocap:
+
+    iscastle r1
+    muli r1, r1, 60
+    add r0, r0, r1
+
+    ispromo r1
+    jz r1, nopromo
+    promo r2
+    ld r3, r2, 0
+    addi r3, r3, 200
+    add r0, r0, r3
+nopromo:
+
+    iscapture r1
+    jnz r1, nosafe
+    safe r1
+    muli r1, r1, 45
+    add r0, r0, r1
+nosafe:
+
+    center r1
+    muli r1, r1, 10
+    add r0, r0, r1
+
+    tosq r11
+    movecount r1, r11
+    addi r1, r1, -1
+    jgt r1, r12, nodev
+    ply r2
+    addi r2, r2, -30
+    jge r2, r12, nodev
+    addi r0, r0, 35
+nodev:
+
+    movedpiece r1
+    addi r1, r1, -1
+    jnz r1, nopush
+    ispromo r2
+    jnz r2, nopush
+    torank r2
+    muli r2, r2, 12
+    add r0, r0, r2
+nopush:
+
+    mobility r2
+    oppmob r3
+    sub r2, r2, r3
+    muli r2, r2, 11
+    add r0, r0, r2
+
+    exposed r2
+    ldi r3, 4
+    div r2, r2, r3
+    sub r0, r0, r2
+
+    score r0
+    halt
+
+.data
+    .word 0, 100, 320, 330, 500, 900

@@ -264,6 +264,7 @@ impl ScoreCli {
     const COMBATS_LONG: &str = "combats";
     const TURN_LONG: &str = "turn";
     const INPUTS_LONG: &str = "inputs";
+    const PREPARE_LONG: &str = "prepare";
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
@@ -295,10 +296,21 @@ impl ScoreCli {
             &format!("--{}", Self::ATTEMPTS_LONG),
             "the attempts log to read",
         );
+        arg_help_str(
+            &format!("--{}", Self::PREPARE_LONG),
+            "run the prepare step of the game instead of verifying a submission",
+        );
     }
 
     /// Exit(1) unless at least one report was requested.
     fn require_arguments(command: &ava_scorer::score::Score) {
+        if command.prepare && command.game.is_none() {
+            fail(&format!(
+                "nothing to prepare, pass the game with --{}",
+                Self::GAME_LONG
+            ));
+        }
+
         if command.metrics.is_none() && command.game.is_none() && command.attempts.is_none() {
             fail(&format!(
                 "nothing to score, pass --{}, --{} or --{}",
@@ -733,6 +745,15 @@ impl Parser {
                     );
                 };
                 command.game = Some(game);
+            }
+            ScoreCli::PREPARE_LONG => {
+                let Some(SubCommand::Score(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", ScoreCli::NAME),
+                    );
+                };
+                command.prepare = true;
             }
             ScoreCli::ATTEMPTS_LONG => {
                 let log = Self::long_value(args, next, "missing log file");

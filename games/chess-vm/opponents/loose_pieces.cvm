@@ -1,0 +1,65 @@
+    ldi r7, 0
+    ldi r13, 2
+    ldi r14, 4
+    ldi r8, 64
+    ldi r12, 1
+    matein1 r0
+    jz r0, live
+    ldi r0, 1000000
+    score r0
+    halt
+live:
+    ldi r9, 0
+    ldi r10, 0
+    ldi r1, 0
+loop:
+    pieceat r2, r1
+    jz r2, next
+    jlt r2, r7, theirs
+    ld r5, r2, values
+    jz r5, next
+    attackers r3, r1
+    jz r3, next
+    defenders r4, r1
+    jle r3, r4, next
+    jz r4, full
+    div r5, r5, r13
+full:
+    add r9, r9, r5
+    jmp next
+theirs:
+    neg r2, r2
+    ld r5, r2, values
+    jz r5, next
+    defenders r4, r1
+    jz r4, next
+    attackers r3, r1
+    jle r4, r3, next
+    div r5, r5, r14
+    add r10, r10, r5
+next:
+    add r1, r1, r12
+    jlt r1, r8, loop
+    material r0
+    sub r0, r0, r9
+    add r0, r0, r10
+    givescheck r6
+    muli r6, r6, 30
+    add r0, r0, r6
+    iscastle r6
+    muli r6, r6, 120
+    add r0, r0, r6
+    center r6
+    muli r6, r6, 5
+    add r0, r0, r6
+    promo r6
+    jz r6, nopromo
+    ld r11, r6, values
+    addi r11, r11, -100
+    add r0, r0, r11
+nopromo:
+    score r0
+    halt
+
+.data
+values: .word 0, 100, 320, 330, 500, 900, 0

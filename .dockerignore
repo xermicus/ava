@@ -4,6 +4,7 @@
 !crates
 !games/Cargo.toml
 !games/src
-!games/*/scorer.rs
+!games/*/*.rs
+!games/chess-vm/opponents
 !scorer/entry.sh
 !scorer/hooks

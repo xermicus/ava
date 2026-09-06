@@ -1,5 +1,7 @@
 //! The games benchmark submissions are verified and ranked by.
 
+#[path = "../chess-vm/scorer.rs"]
+pub mod chess_vm;
 #[path = "../crackme/scorer.rs"]
 pub mod crackme;
 #[path = "../fib-golf/scorer.rs"]
@@ -11,7 +13,8 @@ pub mod sanity_check;
 pub mod scoring;
 
 /// Every game a benchmark run can play.
-pub const GAMES: [&dyn Game; 5] = [
+pub const GAMES: [&dyn Game; 6] = [
+    &chess_vm::ChessVm,
     &crackme::Crackme,
     &fib_golf::FibGolf,
     &r2wars::GAMES[0],
@@ -133,6 +136,10 @@ pub trait Game {
     fn inputs(&self, turn: usize, opponents: &[usize]) -> Vec<Input> {
         let _ = (turn, opponents);
         Vec::new()
+    }
+
+    fn prepare(&self) -> std::io::Result<()> {
+        Ok(())
     }
 
     /// Whether the contents of the `submission` directory do what the task of

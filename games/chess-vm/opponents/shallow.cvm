@@ -1,0 +1,4 @@
+.search 2
+    material r0
+    score r0
+    halt

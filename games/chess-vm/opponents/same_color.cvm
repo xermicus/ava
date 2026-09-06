@@ -1,0 +1,3 @@
+    lightcount r0
+    score r0
+    halt
