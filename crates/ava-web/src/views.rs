@@ -278,25 +278,32 @@ const FACTS_CLASSES: &str = "flex-1 min-w-0 max-w-xl flex flex-col gap-1.5";
 const FACT_ROW_CLASSES: &str = "flex items-center gap-3 h-5";
 /// Who holds the record, under its row, kept as a line even when empty so
 /// every face stands the same height.
-const HOLDER_CLASSES: &str = "block h-4 mt-1 pl-[4.25rem] text-xs text-neutral-500 truncate";
-const FACT_LABEL_CLASSES: &str = "w-14 shrink-0 text-xs text-neutral-500";
+const HOLDER_CLASSES: &str = "block h-4 mt-1 pl-[4.25rem] text-xs text-neutral-400 truncate";
+const FACT_LABEL_CLASSES: &str = "w-14 shrink-0 text-xs text-neutral-400";
 
-/// The tournament card beside the game card: the pairing scheme drawn as the
-/// seats on a ring with a line for every pairing, and the run budget as a bar
-/// ending in its last call.
-const ABOUT_GRID_CLASSES: &str = "mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch";
+/// The tournament card beside the game card: the lobby as the numbered seats
+/// on a ring with a line for every pairing.
+const ABOUT_GRID_CLASSES: &str = "mt-4 grid grid-cols-2 gap-4 items-stretch";
 const RING_SIDE: f64 = 80.0;
 const RING_RADIUS: f64 = 30.0;
-const RING_SEAT_RADIUS: f64 = 3.5;
+const RING_SEAT_RADIUS: f64 = 8.0;
+const RING_DOT_RADIUS: f64 = 3.5;
 const RING_STROKE_WIDTH: f64 = 1.0;
+const RING_NUMBER_SIZE: f64 = 9.0;
+/// A lobby of more seats than this shows them as dots, too close for numbers.
+const RING_NUMBERED_SEATS: usize = 8;
 const RING_EDGE_CLASSES: &str = "stroke-neutral-600";
-const RING_SEAT_CLASSES: &str = "fill-neutral-300";
-const BUDGET_TRACK_CLASSES: &str = "flex h-1.5 w-32 shrink-0 gap-0.5";
-const BUDGET_SEGMENT_CLASSES: &str = "block h-full rounded-full";
-const BUDGET_LOOP_FILL: &str = "bg-indigo-500";
-const BUDGET_LAST_CALL_FILL: &str = "bg-amber-500";
+const RING_SEAT_CLASSES: &str = "fill-neutral-800 stroke-neutral-500";
+const RING_NUMBER_CLASSES: &str = "fill-neutral-200 font-mono";
+const RING_DOT_CLASSES: &str = "fill-neutral-300";
 const FACT_TEXT_CLASSES: &str = "flex items-center gap-2 whitespace-nowrap";
 const NO_ANALYST: &str = "none";
+/// The header of every page is its section, the run or the tournament being
+/// the title of the body. The settings card holds what was fixed when the
+/// tournament opened.
+const RUNS_HEADING: &str = "runs";
+const TOURNAMENTS_HEADING: &str = "tournaments";
+const SETTINGS_TITLE: &str = "settings";
 
 /// A tile with nothing to show says why, quietly.
 const PLACEHOLDER_CLASSES: &str = "text-sm font-normal text-neutral-500";
@@ -1280,7 +1287,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     ));
     body.push_str("</div>");
 
-    Ok(page(name, &body))
+    Ok(page(RUNS_HEADING, &body))
 }
 
 /// The best of every played pairing, grouped over the finished runs.
@@ -1472,7 +1479,7 @@ fn game_face(
          <span class=\"{GAME_NAME_CLASSES}\">{}</span>{}<span class=\"flex-1\"></span>\
          {}\
          </span>\
-         <span class=\"flex items-start gap-4 mt-4\">{}\
+         <span class=\"flex items-start gap-6 mt-4\">{}\
          <span class=\"{FACTS_CLASSES}\">{}{}{}<span class=\"{HOLDER_CLASSES}\">{holder}</span></span>\
          </span>\
          </summary>",
@@ -1786,8 +1793,8 @@ pub(crate) fn tournament_page(
     );
     body.push_str(&notice.render());
 
-    // The tournament, and beside it its game as the games page shows it, over
-    // the runs of this tournament.
+    // The game as the games page shows it, over the runs of this tournament,
+    // and beside it the settings of the tournament.
     let runs = collect_runs()?;
     let played: Vec<&RunEntry> =
         runs.iter()
@@ -1800,8 +1807,8 @@ pub(crate) fn tournament_page(
             .collect();
     body.push_str(&format!(
         "<div data-refresh=\"about\" class=\"{ABOUT_GRID_CLASSES}\">{}{}</div>",
-        tournament_card(&record),
-        game_card(&record.game, &played)
+        game_card(&record.game, &played),
+        tournament_card(&record)
     ));
 
     // The seats with their standings: one table, the ratings blank until a
@@ -1935,12 +1942,12 @@ pub(crate) fn tournament_page(
     ));
     body.push_str("</div>");
 
-    Ok(page(name, &body))
+    Ok(page(TOURNAMENTS_HEADING, &body))
 }
 
-/// The tournament in the shape of a game card: the pairing scheme as its
-/// name, the seats drawn on a ring with a line for every pairing as its cover,
-/// and when it opened, the run budget and the analyst as its facts.
+/// The tournament in the shape of a game card: the numbered seats on a ring
+/// with a line for every pairing as its cover, and the pairing scheme, the
+/// seconds of a run and the analyst as its facts.
 fn tournament_card(record: &ava_wire::Tournament) -> String {
     let seats = record.seats.len();
     let ring = if seats == 0 {
@@ -1952,6 +1959,10 @@ fn tournament_card(record: &ava_wire::Tournament) -> String {
         )
     };
 
+    let run = format!(
+        "<span class=\"{FACT_VALUE_CLASSES}\">{}s</span>",
+        record.limit_seconds
+    );
     let analyst = match &record.analyst {
         Some(analyst) => format!(
             "<span class=\"{FACT_TEXT_CLASSES}\"><span class=\"{FACT_WORDS_CLASSES} truncate\">{}</span><span class=\"{FACT_VALUE_CLASSES}\">{}s</span></span>",
@@ -1960,25 +1971,21 @@ fn tournament_card(record: &ava_wire::Tournament) -> String {
         ),
         None => words(NO_ANALYST),
     };
-    let opened = format!(
-        "<span class=\"{FACT_TEXT_CLASSES}\"><span class=\"{FACT_WORDS_CLASSES}\">{} ago</span><span class=\"{FACT_VALUE_CLASSES}\">{}</span></span>",
-        usage::age(record.created_seconds),
-        usage::utc_date(record.created_seconds)
-    );
 
     format!(
         "<div class=\"{CARD_CLASSES} p-4 h-full\">\
          <span class=\"flex items-center gap-3\"><span class=\"{GAME_NAME_CLASSES}\">{}</span></span>\
-         <span class=\"flex items-start gap-4 mt-4\">{ring}<span class=\"{FACTS_CLASSES}\">{}{}{}</span></span>\
+         <span class=\"flex items-start gap-6 mt-4\">{ring}<span class=\"{FACTS_CLASSES}\">{}{}{}</span></span>\
          </div>",
-        escape(&record.pairing),
-        fact("opened", &opened),
-        fact("run", &budget_bar(record.limit_seconds)),
+        SETTINGS_TITLE,
+        fact("type", &words(&escape(&record.pairing))),
+        fact("run", &run),
         fact("analyst", &analyst),
     )
 }
 
-/// The `seats` on a ring with a line for every pairing of the round robin.
+/// The `seats` on a ring with a line for every pairing of the round robin,
+/// numbered the way the standings and the round graph count them.
 fn pairing_ring(seats: usize) -> String {
     let center = RING_SIDE / 2.0;
     let point = |seat: usize| {
@@ -2002,24 +2009,20 @@ fn pairing_ring(seats: usize) -> String {
     }
     for seat in 0..seats {
         let (x, y) = point(seat);
+        if seats > RING_NUMBERED_SEATS {
+            svg.push_str(&format!(
+                "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{RING_DOT_RADIUS}\" class=\"{RING_DOT_CLASSES}\"/>"
+            ));
+            continue;
+        }
         svg.push_str(&format!(
-            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{RING_SEAT_RADIUS}\" class=\"{RING_SEAT_CLASSES}\"/>"
+            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{RING_SEAT_RADIUS}\" class=\"{RING_SEAT_CLASSES}\"/>\
+             <text x=\"{x:.1}\" y=\"{y:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" font-size=\"{RING_NUMBER_SIZE}\" class=\"{RING_NUMBER_CLASSES}\">{}</text>",
+            seat + 1
         ));
     }
     svg.push_str("</svg>");
     svg
-}
-
-/// The budget of a run as a bar: the turn loop, then the last call.
-fn budget_bar(limit: u64) -> String {
-    let last_call = docker::LAST_CALL_SECONDS.min(limit);
-    let loop_percent = (limit - last_call) * 100 / limit.max(1);
-
-    format!(
-        "<span class=\"{FACT_TEXT_CLASSES}\">\
-         <span class=\"{BUDGET_TRACK_CLASSES}\"><span class=\"{BUDGET_SEGMENT_CLASSES} {BUDGET_LOOP_FILL}\" style=\"width:{loop_percent}%\"></span><span class=\"{BUDGET_SEGMENT_CLASSES} flex-1 {BUDGET_LAST_CALL_FILL}\"></span></span>\
-         <span class=\"{FACT_VALUE_CLASSES}\">{limit}s</span></span>"
-    )
 }
 
 /// The runs of a round as the graph the tournament walks: a column per turn,
