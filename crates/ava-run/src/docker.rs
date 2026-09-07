@@ -162,6 +162,13 @@ pub struct Analyze {
 }
 
 const NETWORK_EGRESS: &str = "ava-egress";
+
+/// Where a running web interface leaves its process and the port it answers on.
+const BUS_FILE: &str = ".ava-bus";
+const ANNOUNCEMENT_SEPARATOR: char = ' ';
+const BUS_HOST: &str = "host.docker.internal";
+const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
+const BUS_VARIABLE: &str = "AVA_BUS";
 const SOCKET_VOLUME_PREFIX: &str = "ava-sockets-";
 const SOCKET_DIRECTORY: &str = "/run/ava";
 const SOCKET_PATH: &str = "/run/ava/proxy.sock";
@@ -697,6 +704,10 @@ fn start_proxy(run: &str) -> std::io::Result<()> {
             &container,
             "--network",
             NETWORK_EGRESS,
+            "--add-host",
+            HOST_GATEWAY,
+            "--env",
+            &format!("{BUS_VARIABLE}={}", bus(run)),
             "--volume",
             &format!("{}:{SOCKET_DIRECTORY}", socket_volume(run)),
             "--volume",
@@ -706,6 +717,44 @@ fn start_proxy(run: &str) -> std::io::Result<()> {
     )?;
 
     await_socket(&container, SOCKET_PATH)
+}
+
+/// The interface announced here, when its process is still alive.
+fn announced() -> Option<(i32, u16)> {
+    let marker = std::fs::read_to_string(BUS_FILE).ok()?;
+    let (pid, port) = marker.trim().split_once(ANNOUNCEMENT_SEPARATOR)?;
+    let pid = pid.parse().ok()?;
+    let port = port.parse().ok()?;
+
+    process::alive(pid).then_some((pid, port))
+}
+
+/// Where the proxy of `run` publishes, empty when nothing serves here.
+fn bus(run: &str) -> String {
+    let Some((_, port)) = announced() else {
+        return String::new();
+    };
+
+    format!("http://{BUS_HOST}:{port}/run/{run}/chat")
+}
+
+/// Announce the interface on `port` as the bus the proxies publish to.
+pub fn announce_bus(port: u16) -> std::io::Result<()> {
+    if let Some((pid, announced)) = announced() {
+        log::warn!("another interface is serving here on port {announced}, pid {pid}");
+    }
+
+    std::fs::write(
+        BUS_FILE,
+        format!("{}{ANNOUNCEMENT_SEPARATOR}{port}\n", std::process::id()),
+    )
+}
+
+/// Take the announcement back, unless another interface took it over.
+pub fn withdraw_bus() {
+    if announced().is_some_and(|(pid, _)| pid == std::process::id() as i32) {
+        let _ = std::fs::remove_file(BUS_FILE);
+    }
 }
 
 /// Start the scoring server of one run, sharing the socket volume and no

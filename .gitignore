@@ -3,6 +3,7 @@
 /tournaments
 /openapi-proxy/hosts.conf
 __pycache__
+/.ava-bus
 /.env
 /registry.json
 /agents.json

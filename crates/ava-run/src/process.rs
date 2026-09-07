@@ -1,5 +1,17 @@
 //! Helpers for driving external programs.
 
+/// The signal that asks whether a process is there and nothing else.
+const NO_SIGNAL: i32 = 0;
+
+unsafe extern "C" {
+    fn kill(pid: i32, signal: i32) -> i32;
+}
+
+/// Whether the process `pid` is running.
+pub fn alive(pid: i32) -> bool {
+    unsafe { kill(pid, NO_SIGNAL) == 0 }
+}
+
 /// Run `program` with `arguments` and return its trimmed standard output.
 ///
 /// Anything other than a successful exit becomes an error carrying the trimmed

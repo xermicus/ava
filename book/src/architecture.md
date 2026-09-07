@@ -30,6 +30,8 @@ A verifier that needs the same data for every push computes it once when the con
 `ava` collects the entries and the metrics from the side-car logs after the run.
 The metrics also record which models were accessed through the proxy, exposing a run that used another model than the pre-configured one.
 
+The proxy also scrapes the text the models generate out of the answers and publishes it to the chat bus, a route of the web interface it is given the address of when one is up. The interface holds it in memory per run and the run page reads it as it arrives. Nothing of it is written down, and a run played without an interface publishes nothing.
+
 ### Sequence diagram of a benchmark run
 
 ```text

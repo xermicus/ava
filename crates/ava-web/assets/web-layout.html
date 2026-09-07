@@ -128,10 +128,46 @@ async function refresh() {
     }
 
     restoreSorts();
+    drawChat();
     history.replaceState(null, "", location.pathname);
 }
 
 setInterval(() => refresh().catch(() => {}), REFRESH_MILLISECONDS);
+
+/* The chat box of a live run holds what its proxy publishes. The text is kept
+ * here rather than in the box, since a refresh replaces the box, and it
+ * follows the newest text unless the reader scrolled up. */
+const CHAT_BOTTOM_PIXELS = 32;
+const CHAT_KEPT_CHARACTERS = 16384;
+
+let spoken = "";
+
+function drawChat() {
+    const box = document.querySelector("[data-chat]");
+    if (!box || box.textContent === spoken) {
+        return;
+    }
+
+    const view = box.parentElement;
+    const bottom = view.scrollHeight - view.scrollTop - view.clientHeight < CHAT_BOTTOM_PIXELS;
+    box.textContent = spoken;
+    if (bottom) {
+        view.scrollTop = view.scrollHeight;
+    }
+}
+
+const chatting = document.querySelector("[data-chat]");
+if (chatting) {
+    const bus = new EventSource(`/run/${encodeURIComponent(chatting.dataset.chat)}/chat`);
+    bus.addEventListener("kept", (event) => {
+        spoken = (spoken + JSON.parse(event.data)).slice(-CHAT_KEPT_CHARACTERS);
+        drawChat();
+    });
+    bus.onmessage = (event) => {
+        spoken = (spoken + JSON.parse(event.data)).slice(-CHAT_KEPT_CHARACTERS);
+        drawChat();
+    };
+}
 
 /* The header of a sortable table sorts it. The column and its direction are
  * kept by the name of the table, since a refresh replaces the table with the

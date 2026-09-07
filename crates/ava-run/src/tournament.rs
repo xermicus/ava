@@ -23,13 +23,6 @@ const ROUND_LOG_SUFFIX: &str = ".log";
 /// pid, so another process knows the round is going on.
 pub const PLAYING_FILE: &str = "playing";
 
-/// The signal number that probes a process without signaling it.
-const NO_SIGNAL: i32 = 0;
-
-unsafe extern "C" {
-    fn kill(pid: i32, signal: i32) -> i32;
-}
-
 /// A seat on the command line.
 const SEAT_SHAPE: &str = "agent[/thinking], the agent a name of the registry or harness/model";
 
@@ -155,7 +148,7 @@ pub fn playing(name: &str) -> bool {
         return false;
     };
 
-    pid != std::process::id() as i32 && unsafe { kill(pid, NO_SIGNAL) } == 0
+    pid != std::process::id() as i32 && crate::process::alive(pid)
 }
 
 /// Run the tournament command.

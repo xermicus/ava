@@ -68,6 +68,9 @@ const FONT_CONTENT_TYPE: &str = "font/woff2";
 /// A form submission larger than this is not one of ours.
 const MAX_FORM_BYTES: u64 = 16 * 1024;
 
+/// A publication larger than this is not one of ours.
+const MAX_CHAT_BYTES: u64 = 128 * 1024;
+
 /// The form fields choosing an agent and its settings: the agent by its name
 /// in the registry and the thinking level, under a prefix telling apart the
 /// agents one form chooses.
@@ -113,8 +116,11 @@ static PENDING: std::sync::Mutex<Vec<(u64, views::Pending)>> = std::sync::Mutex:
 /// Tickets telling the pending starts apart.
 static PENDING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// One buffered answer, the only response shape the interface sends.
+/// One buffered answer, the shape of every response but the chat stream.
 type Answer = tiny_http::Response<std::io::Cursor<Vec<u8>>>;
+
+/// The path a run publishes its chat to and the browsers read it from.
+const CHAT_PATH: &str = "chat";
 
 /// Serve the web interface until interrupted.
 pub fn run(command: &Serve) -> std::io::Result<i32> {
@@ -123,10 +129,12 @@ pub fn run(command: &Serve) -> std::io::Result<i32> {
         .map_err(|error| std::io::Error::other(format!("{address}: {error}")))?;
 
     views::watch_containers();
+    docker::announce_bus(command.port)?;
     log::info!("serving http://{address}");
 
     loop {
         if ava_run::interrupt::interrupted() {
+            docker::withdraw_bus();
             return Ok(0);
         }
 
@@ -135,11 +143,36 @@ pub fn run(command: &Serve) -> std::io::Result<i32> {
         };
 
         std::thread::spawn(move || {
+            // The chat stream answers for as long as the browser reads it.
+            if let Some(run) = subscription(&request) {
+                if let Err(error) = crate::chat::stream(&run, request) {
+                    log::warn!("the chat stream of {run} ended: {error}");
+                }
+                return;
+            }
+
             let response = respond(&mut request);
             if let Err(error) = request.respond(response) {
                 log::warn!("answering the browser failed: {error}");
             }
         });
+    }
+}
+
+/// The run whose chat `request` subscribes to, if that is what it asks for.
+fn subscription(request: &tiny_http::Request) -> Option<String> {
+    if request.method() != &tiny_http::Method::Get {
+        return None;
+    }
+
+    match request
+        .url()
+        .trim_matches('/')
+        .split('/')
+        .collect::<Vec<_>>()[..]
+    {
+        ["run", name, CHAT_PATH] => Some(urldecode(name)),
+        _ => None,
     }
 }
 
@@ -158,11 +191,35 @@ fn respond(request: &mut tiny_http::Request) -> Answer {
         .split_once('?')
         .map(|(_, query)| query.to_string());
 
-    match request.method() {
-        tiny_http::Method::Get => view(&segments, query.as_deref()),
-        tiny_http::Method::Post => action(&segments, &form(request)),
+    match (request.method(), &segments[..]) {
+        (tiny_http::Method::Get, _) => view(&segments, query.as_deref()),
+        (tiny_http::Method::Post, ["run", name, CHAT_PATH]) => publish(&urldecode(name), request),
+        (tiny_http::Method::Post, _) => action(&segments, &form(request)),
         _ => plain_response(405, "only GET and POST are served\n"),
     }
+}
+
+/// Take one publication of the proxy of `run`.
+fn publish(run: &str, request: &mut tiny_http::Request) -> Answer {
+    let mut published = String::new();
+    if let Err(error) = request
+        .as_reader()
+        .take(MAX_CHAT_BYTES)
+        .read_to_string(&mut published)
+    {
+        return plain_response(400, &format!("the publication does not read: {error}\n"));
+    }
+
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str(&published) else {
+        return plain_response(400, "the publication is no JSON object\n");
+    };
+    let Some(serde_json::Value::String(text)) = fields.get(CHAT_PATH) else {
+        return plain_response(400, "the publication carries no chat\n");
+    };
+
+    crate::chat::publish(run, text);
+
+    plain_response(204, "")
 }
 
 /// Answer one reading request.

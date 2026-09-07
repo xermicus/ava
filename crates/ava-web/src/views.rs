@@ -21,6 +21,9 @@ const AVATAR_SIDE: u64 = 5;
 const AVATAR_COLUMNS: u64 = 3;
 const AVATAR_HUES: u64 = 360;
 const AVATAR_CLASSES: &str = "h-6 w-6 rounded";
+
+/// The avatar on the agent tile of a run, the height of the line beside it.
+const AGENT_TILE_AVATAR_CLASSES: &str = "h-5 w-5 shrink-0 rounded";
 const AVATAR_GROUND_CLASSES: &str = "fill-neutral-800";
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -72,19 +75,17 @@ const MARKERS: [char; 3] = [NUMERIC_MARKER, SLACK_MARKER, CENTER_MARKER];
 const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
-const RUN_HEADERS: [&str; 12] = [
-    "run|the run directory under runs/ and how long ago it started",
+const RUN_HEADERS: [&str; 10] = [
+    "agent|the agent that played the run, with the harness and the thinking level it was asked \
+     for",
+    "run|the run under runs/, named after the agent that played it, and how long ago it started",
     "state|live or the last call while the run goes, whether a push passed the verifier once it is over",
     "analysis|what became of the analysis the run is due: pending until the analyst starts, then \
      analyzing, analyzed or failed, a dash for a run started without one",
     "game|the game that was played",
     "tournament|the tournament the run plays a seat in, or a dash for a run of its own",
     "model|the model under test",
-    "harness|the harness driving the model, with the thinking level it was asked for",
     "*time|seconds spent of the time budget, red once the whole budget is gone",
-    "#pushes|the pushes to the task branch the verifier graded",
-    "#cut|requests a model answered without ever reporting usage, so the stream was cut short \
-     upstream",
     "*points|the entry of record ranked on the 0 to 10000 scale every game ranks in, once the run \
      is over",
     "",
@@ -153,6 +154,9 @@ const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoratio
      underline-offset-4 hover:text-neutral-300 hover:decoration-neutral-500 transition-colors";
 const CELL_CLASSES: &str = "py-2.5 border-t border-neutral-800 align-middle";
 const ROW_CLASSES: &str = "hover:bg-neutral-800/40 transition-colors";
+
+/// A cell that is a link, filling the cell so the whole of it leads there.
+const CELL_LINK_CLASSES: &str = "block hover:text-neutral-100 transition-colors";
 const NUMERIC_CLASSES: &str = "text-right font-mono tabular-nums";
 const CENTERED_CLASSES: &str = "text-center";
 const EMPTY_ROW_CLASSES: &str =
@@ -168,6 +172,24 @@ const MONO_CLASSES: &str = "font-mono";
 const LINK_CLASSES: &str = "font-mono text-indigo-300 hover:text-indigo-200 transition-colors";
 const CONSOLE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-950 p-4 text-xs \
      font-mono text-neutral-300 whitespace-pre overflow-x-auto";
+
+/// The chat box: prose, so it wraps, and a screenful, so it scrolls.
+const CHAT_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-950 p-4 text-xs \
+     font-mono leading-relaxed text-neutral-300 whitespace-pre-wrap break-words \
+     overflow-y-auto min-h-24 max-h-56";
+
+/// What the line above the chat box says while the run is live, in the margins
+/// of a title without its weight.
+const THINKING_CLASSES: &str = "text-sm italic text-neutral-400 mt-8 mb-3";
+const THINKING_NOTE: &str = "is thinking..";
+
+/// The caret trailing the generated text.
+const CARET_CLASSES: &str = "text-indigo-400 animate-pulse";
+const CARET: &str = "\u{258c}";
+
+/// A ring turning while a run generates.
+const SPINNER_CLASSES: &str = "inline-block h-3 w-3 align-[-1px] rounded-full border-2 \
+     border-neutral-700 border-t-indigo-400 animate-spin";
 /// A section title that folds its section.
 const COLLAPSIBLE_TITLE_CLASSES: &str = "cursor-pointer list-none [&::-webkit-details-marker]:hidden \
      text-sm font-semibold text-neutral-100 mt-8 mb-3";
@@ -531,9 +553,22 @@ impl RunEntry {
         self.record.as_ref().and_then(|entry| entry.points)
     }
 
-    /// The run name as a link into its page.
-    fn link(&self) -> String {
-        run_link(&self.name)
+    /// The agent cell of the runs table: the avatar beside the name it is
+    /// registered under, over the harness and the thinking level, leading to
+    /// the run it played.
+    fn agent_cell(&self, registry: &registry::Registry) -> String {
+        let agent = self.run.agent();
+
+        format!(
+            "<a class=\"{CELL_LINK_CLASSES}\" href=\"/run/{}\">\
+             <span class=\"flex items-center gap-2\">{}{}</span>\
+             <div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} {}</div></a>",
+            escape(&self.name),
+            avatar(&agent, AGENT_TILE_AVATAR_CLASSES),
+            escape(&agent_name(registry, &agent)),
+            escape(&self.run.harness),
+            escape(self.run.thinking.as_deref().unwrap_or_default())
+        )
     }
 
     /// Whether an analyst is up for the run.
@@ -572,12 +607,19 @@ impl RunEntry {
         }
     }
 
-    /// The run cell of the runs table: the link with the age beneath it, and
-    /// the tournament seat it plays.
+    /// The run cell of the runs table: what the run is called after its
+    /// agent, linked, with the age beneath it.
     fn run_cell(&self) -> String {
+        let id = self
+            .name
+            .strip_prefix(&format!("{}-", self.run.harness))
+            .unwrap_or(&self.name);
+
         format!(
-            "{}<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} ago</div>",
-            self.link(),
+            "<a class=\"{LINK_CLASSES} block text-xs\" href=\"/run/{}\">{}\
+             <div class=\"{MUTED_CLASSES} mt-0.5\">{} ago</div></a>",
+            escape(&self.name),
+            escape(id),
             usage::age(self.run.started_seconds)
         )
     }
@@ -664,22 +706,6 @@ impl RunEntry {
         )
     }
 
-    /// The requests a model answered without ever reporting their usage.
-    ///
-    /// Blank when there were none. It is what tells a run that spent its
-    /// budget on streams which never finished apart from one where the model
-    /// simply did not pass the task, since both rank nowhere.
-    fn truncated_cell(&self) -> String {
-        match self
-            .metrics
-            .as_ref()
-            .map(|metrics| metrics.truncated_requests)
-        {
-            Some(0) | None => String::new(),
-            Some(cut) => cut.to_string(),
-        }
-    }
-
     /// The points cell of the runs table: the entry of record ranked, once
     /// the run is over. The entries stay in the scoring container while it plays.
     fn points_cell(&self) -> String {
@@ -702,18 +728,16 @@ impl RunEntry {
     }
 
     /// The row of this run in the runs table.
-    fn row(&self) -> Vec<String> {
+    fn row(&self, registry: &registry::Registry) -> Vec<String> {
         vec![
+            self.agent_cell(registry),
             self.run_cell(),
             self.state(),
             self.analysis_cell(),
             game_label(&self.run),
             self.tournament_cell(),
             escape(&self.run.model),
-            self.agent(),
             self.time_cell(),
-            self.attempts.len().to_string(),
-            self.truncated_cell(),
             self.points_cell(),
             self.stop_form(),
         ]
@@ -900,8 +924,8 @@ pub(crate) fn runs_page(
                 String::new(),
                 escape(&start.game),
                 format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>"),
-                escape(&start.model),
                 agent_label(&start.agent, &start.thinking),
+                escape(&start.model),
                 String::new(),
                 String::new(),
                 String::new(),
@@ -911,7 +935,8 @@ pub(crate) fn runs_page(
         }
     }
 
-    rows.extend(runs.iter().map(RunEntry::row));
+    let registry = registry::load()?;
+    rows.extend(runs.iter().map(|run| run.row(&registry)));
 
     let live = runs.iter().filter(|run| run.live).count();
     let mut body = start_panel(selection)?;
@@ -1020,6 +1045,17 @@ fn analyst_seconds_field(selection: &Selection, prefix: &str) -> String {
             "the seconds the analyst is given per run, one turn"
         ),
         docker::LAST_CALL_SECONDS,
+    )
+}
+
+/// The generated text of a live run, filled by the script off the bus.
+fn chat_panel(name: &str, agent: &str) -> String {
+    format!(
+        "<p class=\"{THINKING_CLASSES}\"><span class=\"{SPINNER_CLASSES}\"></span> {} {THINKING_NOTE}</p>\
+         <div class=\"{CHAT_CLASSES}\"><span data-chat=\"{}\"></span>\
+         <span class=\"{CARET_CLASSES}\">{CARET}</span></div>",
+        escape(agent),
+        escape(name)
     )
 }
 
@@ -1147,7 +1183,23 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         .run
         .context_window
         .map(|window| format!("{window} context tokens"));
+    let registry = registry::load()?;
+    let agent = entry.run.agent();
     let mut facts = vec![
+        tile(
+            "agent",
+            &format!(
+                "<span class=\"flex items-center gap-2\">{}<span class=\"truncate\">{}</span></span>",
+                avatar(&agent, AGENT_TILE_AVATAR_CLASSES),
+                escape(&agent_name(&registry, &agent))
+            ),
+            &joined(&[
+                &entry.run.harness,
+                entry.run.thinking.as_deref().unwrap_or_default(),
+                &entry.run.harness_version,
+            ]),
+            TILE_TEXT_CLASSES,
+        ),
         tile(
             "game",
             &escape(&entry.run.game),
@@ -1161,15 +1213,6 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
                 &entry.run.backend,
                 context.as_deref().unwrap_or_default(),
                 &served,
-            ]),
-            TILE_TEXT_CLASSES,
-        ),
-        tile(
-            "harness",
-            &escape(&entry.run.harness),
-            &joined(&[
-                entry.run.thinking.as_deref().unwrap_or_default(),
-                &entry.run.harness_version,
             ]),
             TILE_TEXT_CLASSES,
         ),
@@ -1273,6 +1316,10 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         ),
     ]);
     body.push_str(&tiles(&facts));
+
+    if entry.live {
+        body.push_str(&chat_panel(name, &agent_name(&registry, &agent)));
+    }
 
     if !entry.live {
         let title = "analysis";
@@ -2822,15 +2869,20 @@ fn alias_actions(alias: &registry::Alias) -> String {
 /// harness on the model when the registry has none for it. The name is plain
 /// text in its cell, so it sits on the line of the cells beside it.
 fn agent_cells(registry: &registry::Registry, agent: &ava_wire::Agent) -> [String; 2] {
-    let name = registry
-        .alias_of(agent)
-        .map(|alias| alias.name.clone())
-        .unwrap_or_else(|| agent.label());
+    let name = agent_name(registry, agent);
 
     [
         avatar(agent, AVATAR_CLASSES),
         format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(&name)),
     ]
+}
+
+/// The name `agent` is registered under, else the harness on the model.
+fn agent_name(registry: &registry::Registry, agent: &ava_wire::Agent) -> String {
+    registry
+        .alias_of(agent)
+        .map(|alias| alias.name.clone())
+        .unwrap_or_else(|| agent.label())
 }
 
 /// The avatar of `agent`: a grid of cells lit by the bits of the hash of its

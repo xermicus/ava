@@ -1,7 +1,8 @@
 /*
  * WARNING: THIS FILE IS STINKING AI SLOP FROM ONE OF THE WORST LLM (claude opus 5).
  *
- * Harvest per-request metrics out of the bodies as they stream past.
+ * Harvest per-request metrics out of the bodies as they stream past, and
+ * publish the generated text to the bus as it goes.
  *
  * The filters never parse a body as JSON. A streamed answer is a sequence of
  * server sent events, so no single chunk is a complete document, and every
@@ -56,6 +57,29 @@ const DELTA_PATTERNS = [
 ];
 
 const FIRST_TOKEN_MARKER = new RegExp(DELTA_PATTERNS.join('|'));
+
+/* The generated text of a delta event, one pattern per streaming shape, in the
+ * order of DELTA_PATTERNS. The captured value is escaped the way the source
+ * escaped it, so it is written on as it stands and read back as JSON. */
+const TEXT_PATTERNS = [
+    '"(?:text|thinking)_delta"[^}]*?"(?:text|thinking)"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"',
+    '"delta"\\s*:\\s*\\{[^}]*?"(?:content|reasoning_content|text)"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"',
+    '"type"\\s*:\\s*"response\\.(?:output_text|reasoning_text|reasoning_summary_text)\\.delta"[^}]*?"delta"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"',
+];
+
+/* Where the generated text is published, named in the environment when a web
+ * interface is up. Nothing is published without it. */
+const BUS = process.env.AVA_BUS;
+
+/* The queue the filter fills and the timer drains. A body filter may not do
+ * anything asynchronous, and every request and every tick runs in a VM of its
+ * own, so the queue is the shared zone and not a variable of this module.
+ *
+ * Past the limit nobody is reading, and the newest text is the one worth
+ * keeping, since it is what a subscriber watches arrive. */
+const QUEUE_ZONE = 'chat';
+const QUEUE_KEY = 'queued';
+const QUEUE_LIMIT_CHARACTERS = 64 * 1024;
 
 function matchAll(text, pattern) {
     const values = [];
@@ -196,6 +220,73 @@ function countDeltas(window, tail) {
     return count;
 }
 
+/*
+ * The generated text of the delta events in `window` that end past the first
+ * `tail` bytes, joined, escaped as the source escaped it.
+ *
+ * One event matches at most one shape, so the shape with the most matches is
+ * the one the stream speaks and its matches are the text in order.
+ */
+function deltaText(window, tail) {
+    let text = '';
+
+    for (let shape = 0; shape < TEXT_PATTERNS.length; shape++) {
+        const pattern = new RegExp(TEXT_PATTERNS[shape], 'g');
+        let spoken = '';
+        let match;
+
+        while ((match = pattern.exec(window)) !== null) {
+            if (match.index + match[0].length > tail) {
+                spoken += match[1];
+            }
+        }
+
+        if (spoken.length > text.length) {
+            text = spoken;
+        }
+    }
+
+    return text;
+}
+
+/*
+ * Hold `text` until the next tick of the timer.
+ */
+function queue(text) {
+    if (text === '' || !BUS) {
+        return;
+    }
+
+    const queue = ngx.shared[QUEUE_ZONE];
+    const queued = (queue.get(QUEUE_KEY) || '') + text;
+
+    queue.set(QUEUE_KEY, queued.slice(-QUEUE_LIMIT_CHARACTERS));
+}
+
+/*
+ * Publish what the filters scraped since the last tick.
+ *
+ * The text is escaped as the source escaped it, so what the queue holds is a
+ * JSON string body already and the bus reads it back as one. A publish that
+ * fails is an interface that went away, and the text goes with it.
+ */
+async function publish() {
+    if (!BUS) {
+        return;
+    }
+
+    const queued = ngx.shared[QUEUE_ZONE].pop(QUEUE_KEY);
+    if (!queued) {
+        return;
+    }
+
+    try {
+        await ngx.fetch(BUS, { method: 'POST', body: '{"chat":"' + queued + '"}' });
+    } catch (error) {
+        ngx.log(ngx.WARN, 'the chat was not published: ' + error);
+    }
+}
+
 /* The backends report the account limits in their answer headers, and the
  * gateway the budget of the key. The last captured set is the state of the
  * account as of the newest request. */
@@ -257,11 +348,14 @@ function captureResponse(request, data, flags) {
 
     recordModels(request, 'ava_served_models', window);
 
-    const deltas = countDeltas(window, request.variables.ava_response_tail.length);
+    const tail = request.variables.ava_response_tail.length;
+    const deltas = countDeltas(window, tail);
     if (deltas > 0) {
         request.variables.ava_streamed_deltas =
             String(Number(request.variables.ava_streamed_deltas) + deltas);
     }
+
+    queue(deltaText(window, tail));
 
     for (let field = 0; field < TOKEN_FIELDS.length; field++) {
         const name = TOKEN_FIELDS[field][0];
@@ -285,4 +379,4 @@ function captureResponse(request, data, flags) {
     request.sendBuffer(data, flags);
 }
 
-export default { captureResponse, captureLimits };
+export default { captureResponse, captureLimits, publish };
