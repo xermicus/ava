@@ -75,7 +75,8 @@ const MARKERS: [char; 3] = [NUMERIC_MARKER, SLACK_MARKER, CENTER_MARKER];
 const TOOLTIP_SEPARATOR: char = '|';
 
 /// The unified runs table, holding pending, live and finished runs alike.
-const RUN_HEADERS: [&str; 10] = [
+const RUN_HEADERS: [&str; 11] = [
+    "",
     "agent|the agent that played the run, with the harness and the thinking level it was asked \
      for",
     "run|the run under runs/, named after the agent that played it, and how long ago it started",
@@ -91,6 +92,9 @@ const RUN_HEADERS: [&str; 10] = [
     "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
+
+/// The columns naming an agent: its avatar and its name.
+const AGENT_CELLS: usize = 2;
 /// What the tournament column shows for a run of its own, and the run and
 /// state columns for a start that has not reached the disk.
 const NO_TOURNAMENT: &str = "-";
@@ -235,8 +239,6 @@ const TOOLTIP_CLASSES: &str = "cursor-help underline decoration-dotted decoratio
 const CELL_CLASSES: &str = "py-2.5 border-t border-neutral-800 align-middle";
 const ROW_CLASSES: &str = "hover:bg-neutral-800/40 transition-colors";
 
-/// A cell that is a link, filling the cell so the whole of it leads there.
-const CELL_LINK_CLASSES: &str = "block hover:text-neutral-100 transition-colors";
 const NUMERIC_CLASSES: &str = "text-right font-mono tabular-nums";
 const CENTERED_CLASSES: &str = "text-center";
 const EMPTY_ROW_CLASSES: &str =
@@ -691,16 +693,17 @@ impl RunEntry {
             .join(COST_PART_SEPARATOR)
     }
 
-    /// The agent cell of the runs table, leading to the run it played.
-    fn agent_cell(&self, registry: &registry::Registry) -> String {
-        format!(
-            "<a class=\"{CELL_LINK_CLASSES}\" href=\"/run/{}\">{}</a>",
-            escape(&self.name),
-            agent_stack(
-                self.agent_title(registry),
-                &self.run.agent(),
-                self.run.thinking.as_deref().unwrap_or_default()
-            )
+    /// The two agent cells of the runs table: the avatar and the name, the
+    /// harness with the level it played at under it.
+    fn agent_cells(&self, registry: &registry::Registry) -> [String; 2] {
+        agent_cells(
+            registry,
+            &self.run.agent(),
+            self.run.agent_name.as_deref(),
+            &agent_label(
+                &self.run.harness,
+                self.run.thinking.as_deref().unwrap_or_default(),
+            ),
         )
     }
 
@@ -862,8 +865,10 @@ impl RunEntry {
 
     /// The row of this run in the runs table.
     fn row(&self, registry: &registry::Registry) -> Vec<String> {
+        let [avatar, agent] = self.agent_cells(registry);
         vec![
-            self.agent_cell(registry),
+            avatar,
+            agent,
             self.run_cell(),
             self.state(),
             self.analysis_cell(),
@@ -1056,15 +1061,19 @@ pub(crate) fn runs_page(
             .count() as u64;
 
         for _ in appeared..start.parallel {
+            let started = ava_wire::Agent {
+                harness: start.agent.clone(),
+                model: start.model.clone(),
+            };
+            let [avatar, agent] = agent_cells(
+                &registry,
+                &started,
+                Some(start.name.as_str()),
+                &agent_label(&start.agent, &start.thinking),
+            );
             rows.push(vec![
-                agent_stack(
-                    start.name.clone(),
-                    &ava_wire::Agent {
-                        harness: start.agent.clone(),
-                        model: start.model.clone(),
-                    },
-                    &start.thinking,
-                ),
+                avatar,
+                agent,
                 format!(
                     "<span class=\"{MUTED_CLASSES}\">{NO_RUN_YET}</span>\
                      <div class=\"text-xs {MUTED_CLASSES} mt-0.5\">asked {} ago</div>",
@@ -1738,8 +1747,13 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
                 .find(|(_, known)| known == competitor)
                 .and_then(|(label, _)| standings.iter().find(|standing| standing.agent == *label));
 
-            let mut row =
-                agent_cells(&registry, &competitor.agent, competitor.name.as_deref()).to_vec();
+            let mut row = agent_cells(
+                &registry,
+                &competitor.agent,
+                competitor.name.as_deref(),
+                &agent_pairing(&registry, &competitor.agent, competitor.name.as_deref()),
+            )
+            .to_vec();
             row.extend([
                 seen.map(|seen| seen.runs.to_string()).unwrap_or_default(),
                 seen.map(|seen| seen.passed.to_string()).unwrap_or_default(),
@@ -2342,7 +2356,12 @@ pub(crate) fn tournament_page(
                 .filter(|_| rated);
             let score = standing.and_then(|standing| standing.rounds.score());
             let mut row = vec![(seat + 1).to_string()];
-            row.extend(agent_cells(&registry, &setup.agent, setup.name.as_deref()));
+            row.extend(agent_cells(
+                &registry,
+                &setup.agent,
+                setup.name.as_deref(),
+                "",
+            ));
             row.extend([
                 agent_label(&setup.agent.harness, setup.thinking.as_deref().unwrap_or("")),
                 agent_label(&setup.agent.model, setup.backend.as_deref().unwrap_or("")),
@@ -3147,7 +3166,7 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
         .agents
         .iter()
         .map(|alias| {
-            let mut row = named_cells(&alias.agent(), &alias.name).to_vec();
+            let mut row = agent_cells(&registry, &alias.agent(), Some(&alias.name), "").to_vec();
             row.extend([
                 escape(&alias.harness),
                 escape(&alias.model),
@@ -3323,11 +3342,11 @@ pub(crate) fn agent_page(
     // The agent is the page, so the runs table drops its column.
     let rows = played
         .iter()
-        .map(|entry| entry.row(&registry)[1..].to_vec())
+        .map(|entry| entry.row(&registry)[AGENT_CELLS..].to_vec())
         .collect();
     body.push_str(&format!(
         "<p class=\"{TITLE_CLASSES}\">{RUNS_HEADING}</p>{}",
-        table(&RUN_HEADERS[1..], rows, Some(NO_AGENT_RUNS_NOTE))
+        table(&RUN_HEADERS[AGENT_CELLS..], rows, Some(NO_AGENT_RUNS_NOTE))
     ));
     body.push_str("</div>");
 
@@ -3460,7 +3479,13 @@ fn rivals(
     Ok(met
         .iter()
         .map(|seen| {
-            let mut row = agent_cells(registry, &seen.agent, seen.name.as_deref()).to_vec();
+            let mut row = agent_cells(
+                registry,
+                &seen.agent,
+                seen.name.as_deref(),
+                &agent_pairing(registry, &seen.agent, seen.name.as_deref()),
+            )
+            .to_vec();
             row.extend([
                 format!(
                     "<span class=\"{MONO_CLASSES} {}\">{}</span>",
@@ -3612,34 +3637,38 @@ fn agent_cells(
     registry: &registry::Registry,
     agent: &ava_wire::Agent,
     name: Option<&str>,
+    detail: &str,
 ) -> [String; 2] {
-    match name.or_else(|| registry.alias_of(agent).map(|alias| alias.name.as_str())) {
-        Some(name) => named_cells(agent, name),
-        None => [
-            avatar(agent, AVATAR_CLASSES),
-            format!(
-                "<span class=\"{MONO_CLASSES}\">{}</span>",
-                escape(&agent.label())
-            ),
-        ],
+    let named = recorded_name(registry, agent, name);
+    let titled = match &named {
+        Some(named) if registry.alias(named).is_some() => agent_link(named),
+        Some(named) => format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(named)),
+        None => format!(
+            "<span class=\"{MONO_CLASSES}\">{}</span>",
+            escape(&agent.label())
+        ),
+    };
+    let detail = if detail.is_empty() {
+        String::new()
+    } else {
+        format!("<div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{detail}</div>")
+    };
+
+    [avatar(agent, AVATAR_CLASSES), format!("{titled}{detail}")]
+}
+
+/// What an agent cell says under the name where no column beside it holds the
+/// pairing: the harness on the model, for an agent that goes by a name of its
+/// own, nothing for one whose name is that pairing already.
+fn agent_pairing(
+    registry: &registry::Registry,
+    agent: &ava_wire::Agent,
+    name: Option<&str>,
+) -> String {
+    match recorded_name(registry, agent, name) {
+        Some(_) => escape(&agent.label()),
+        None => String::new(),
     }
-}
-
-/// The avatar of `agent` beside `name`, over the harness and the thinking level.
-fn agent_stack(name: String, agent: &ava_wire::Agent, thinking: &str) -> String {
-    format!(
-        "<span class=\"flex items-center gap-2\">{}{}</span>\
-         <div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} {}</div>",
-        avatar(agent, AGENT_TILE_AVATAR_CLASSES),
-        escape(&name),
-        escape(&agent.harness),
-        escape(thinking)
-    )
-}
-
-/// The avatar of `agent` beside `name`, leading to the page of the agent.
-fn named_cells(agent: &ava_wire::Agent, name: &str) -> [String; 2] {
-    [avatar(agent, AVATAR_CLASSES), agent_link(name)]
 }
 
 /// `name` leading to the page of the agent it names.
