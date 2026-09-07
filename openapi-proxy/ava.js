@@ -20,18 +20,25 @@ const RETAINED_TAIL_BYTES = 256;
  * line without bound. */
 const DISTINCT_MODEL_LIMIT = 8;
 
-const MODEL_SEPARATOR = ' ';
+/* A model name can hold spaces, as `DeepSeek V4 Flash (Wyna)` does. */
+const MODEL_SEPARATOR = '\t';
 const UNSET_ELAPSED = '0';
 const MODEL_KEY = 'model';
 
 /* Each entry names a log variable and the usage keys feeding it, in the
  * Anthropic shape first and the OpenAI shape second. */
+const INPUT_KEYS = ['input_tokens', 'prompt_tokens'];
 const TOKEN_FIELDS = [
-    ['ava_input_tokens', ['input_tokens', 'prompt_tokens']],
+    ['ava_input_tokens', INPUT_KEYS],
     ['ava_output_tokens', ['output_tokens', 'completion_tokens']],
     ['ava_cache_read_tokens', ['cache_read_input_tokens', 'cached_tokens']],
     ['ava_cache_write_tokens', ['cache_creation_input_tokens']],
 ];
+
+/* The OpenAI shapes count the cached tokens inside the input tokens, the
+ * Anthropic shape reports them apart, so the input tokens are the uncached
+ * ones on every shape once these are taken out. */
+const OPENAI_CACHED_KEY = 'cached_tokens';
 
 /* An event carrying generated content, one pattern per streaming shape: the
  * Anthropic shape, the OpenAI chat shapes and the OpenAI responses shape,
@@ -128,6 +135,28 @@ function recordOnce(request, name, elapsed) {
     if (request.variables[name] === UNSET_ELAPSED) {
         request.variables[name] = elapsed;
     }
+}
+
+/*
+ * The input tokens of a usage object in `window` less the cached ones, or
+ * null unless the window holds both, so a usage split across two chunks is
+ * reduced once.
+ */
+function uncachedInput(window) {
+    const cached = usageInteger(window, OPENAI_CACHED_KEY);
+    if (cached === null) {
+        return null;
+    }
+
+    for (let key = 0; key < INPUT_KEYS.length; key++) {
+        const input = usageInteger(window, INPUT_KEYS[key]);
+
+        if (input !== null) {
+            return String(Math.max(0, Number(input) - Number(cached)));
+        }
+    }
+
+    return null;
 }
 
 function recordModels(request, name, window) {
@@ -245,6 +274,11 @@ function captureResponse(request, data, flags) {
                 request.variables[name] = tokens;
             }
         }
+    }
+
+    const uncached = uncachedInput(window);
+    if (uncached !== null) {
+        request.variables.ava_input_tokens = uncached;
     }
 
     request.variables.ava_response_tail = window.slice(-RETAINED_TAIL_BYTES);

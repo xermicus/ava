@@ -19,6 +19,9 @@ const DEFAULT_COMBATS: u64 = 1;
 /// What the proxy logs for a request it finished serving.
 const COMPLETED: &str = "OK";
 
+/// What the proxy puts between the served models of a request.
+const MODEL_SEPARATOR: char = '\t';
+
 /// The share of a request an upstream has to withhold its headers for before
 /// the answer counts as buffered rather than streamed. A streamed answer sends
 /// its headers within the first fraction of the request, while a buffered one
@@ -56,14 +59,19 @@ const NO_INPUTS_PREFIX: &str = "ava-no-inputs-";
 #[derive(serde::Deserialize)]
 struct Record {
     host: String,
+    /// The backend the request was forwarded to, empty for one the scoring
+    /// socket answered: a push or a score post.
+    #[serde(default)]
+    upstream: String,
     #[serde(default = "model_call_method")]
     method: String,
     status: u32,
     /// What the proxy logged for the completion of the request. Empty means the
     /// client went away before the answer was fully written, which is what the
-    /// restart at the end of a turn does to whatever request is in flight. A
-    /// log written before the proxy recorded it holds no answer either way, so
-    /// it reads as completed and reports nothing abandoned.
+    /// restart at the end of a turn does to whatever request is in flight, and
+    /// what a harness closing the stream once it has the final event does too.
+    /// A log written before the proxy recorded it holds no answer either way,
+    /// so it reads as completed and reports nothing abandoned.
     #[serde(default = "completed")]
     completed: String,
     request_bytes: u64,
@@ -243,6 +251,10 @@ pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
 
         metrics.requests += 1;
         record_distinct(&mut metrics.hosts, &record.host);
+        if record.upstream.is_empty() {
+            continue;
+        }
+
         metrics.request_bytes += record.request_bytes;
         metrics.response_bytes += record.response_bytes;
         metrics.request_seconds += record.request_seconds;
@@ -256,12 +268,16 @@ pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
             metrics.failed_requests += 1;
         }
 
-        for model in record.served_models.split_whitespace() {
+        for model in record
+            .served_models
+            .split(MODEL_SEPARATOR)
+            .filter(|model| !model.is_empty())
+        {
             record_distinct(&mut metrics.served_models, model);
         }
 
         let answered = !record.served_models.is_empty();
-        let aborted = record.completed != COMPLETED;
+        let aborted = record.completed != COMPLETED && record.output_tokens == 0;
 
         if aborted {
             metrics.aborted_requests += 1;
@@ -363,10 +379,11 @@ fn record_distinct(seen: &mut Vec<String>, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    const ANSWERED: &str = r#"{"host":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":1.5,"header_seconds":"0.2","upstream_seconds":"1.4","first_token_seconds":0.3,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":5,"ratelimits":"","gateway_cost":"0.01"}"#;
-    const CUT: &str = r#"{"host":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":2.0,"header_seconds":"0.2","upstream_seconds":"1.9","first_token_seconds":0.5,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":9,"ratelimits":"","gateway_cost":""}"#;
-    const PROBE: &str = r#"{"host":"llm.substrate.dev","method":"GET","uri":"/api/hello","status":404,"completed":"OK","request_bytes":160,"response_bytes":298,"request_seconds":0.1,"header_seconds":"0.1","upstream_seconds":"0.1","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
-    const REFUSED: &str = r#"{"host":"llm.substrate.dev","method":"POST","uri":"/v1/messages","status":502,"completed":"OK","request_bytes":5000,"response_bytes":300,"request_seconds":0.4,"header_seconds":"0.4","upstream_seconds":"0.4","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
+    const ANSWERED: &str = r#"{"host":"api.anthropic.com","upstream":"api.anthropic.com","status":200,"completed":"","request_bytes":10,"response_bytes":20,"request_seconds":1.5,"header_seconds":"0.2","upstream_seconds":"1.4","first_token_seconds":0.3,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":5,"ratelimits":"","gateway_cost":"0.01"}"#;
+    const CUT: &str = r#"{"host":"api.anthropic.com","upstream":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":2.0,"header_seconds":"0.2","upstream_seconds":"1.9","first_token_seconds":0.5,"served_models":"claude-sonnet-5\tClaude Sonnet 5","input_tokens":100,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":9,"ratelimits":"","gateway_cost":""}"#;
+    const PROBE: &str = r#"{"host":"llm.substrate.dev","upstream":"llm.substrate.dev","method":"GET","uri":"/api/hello","status":404,"completed":"OK","request_bytes":160,"response_bytes":298,"request_seconds":0.1,"header_seconds":"0.1","upstream_seconds":"0.1","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
+    const PUSHED: &str = r#"{"host":"git","upstream":"","method":"GET","uri":"/task.git/info/refs","status":200,"completed":"OK","request_bytes":200,"response_bytes":400,"request_seconds":0.3,"header_seconds":"0.3","upstream_seconds":"0.3","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
+    const REFUSED: &str = r#"{"host":"llm.substrate.dev","upstream":"llm.substrate.dev","method":"POST","uri":"/v1/messages","status":502,"completed":"OK","request_bytes":5000,"response_bytes":300,"request_seconds":0.4,"header_seconds":"0.4","upstream_seconds":"0.4","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
 
     #[test]
     fn records_aggregate_without_a_file() {
@@ -374,21 +391,30 @@ mod tests {
 
         assert_eq!(metrics.requests, 2);
         assert_eq!(metrics.truncated_requests, 1);
+        assert_eq!(metrics.aborted_requests, 0);
         assert_eq!(metrics.output_tokens, 40);
-        assert_eq!(metrics.served_models, ["claude-sonnet-5"]);
+        assert_eq!(
+            metrics.served_models,
+            ["claude-sonnet-5", "Claude Sonnet 5"]
+        );
         assert!((metrics.gateway_cost - 0.01).abs() < f64::EPSILON);
         assert!((metrics.mean_first_token_seconds - 0.4).abs() < 1e-9);
     }
 
     #[test]
     fn probes_are_counted_apart_from_failed_model_calls() {
-        let metrics = super::aggregate(&format!("{ANSWERED}\n{PROBE}\n{REFUSED}\n")).unwrap();
+        let metrics =
+            super::aggregate(&format!("{ANSWERED}\n{PROBE}\n{REFUSED}\n{PUSHED}\n")).unwrap();
 
-        assert_eq!(metrics.requests, 3);
+        assert_eq!(metrics.requests, 4);
         assert_eq!(metrics.probe_requests, 1);
         assert_eq!(metrics.failed_requests, 1);
-        assert_eq!(metrics.hosts, ["api.anthropic.com", "llm.substrate.dev"]);
+        assert_eq!(
+            metrics.hosts,
+            ["api.anthropic.com", "llm.substrate.dev", "git"]
+        );
         assert_eq!(metrics.request_bytes, 5170);
+        assert!((metrics.request_seconds - 2.0).abs() < 1e-9);
     }
 
     #[test]

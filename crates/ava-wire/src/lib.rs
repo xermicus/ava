@@ -179,19 +179,20 @@ impl Tally {
     }
 }
 
-/// The aggregate over every request in the proxy access log of a run.
+/// The aggregate over every request in the proxy access log of a run. The
+/// pushes and the score posts count as requests and hosts and nothing else.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Metrics {
     pub requests: u64,
-    /// The startup probes of a harness, every request that is not a POST.
+    /// The startup probes of a harness, every request to a backend that is not a POST.
     pub probe_requests: u64,
     /// The model calls answered with a non-200 status.
     pub failed_requests: u64,
     /// The requests a model answered in full without ever reporting its usage,
     /// so the stream was cut short upstream.
     pub truncated_requests: u64,
-    /// The requests the client abandoned before the answer was written. The
+    /// The requests the client abandoned before their usage arrived. The
     /// restart at the end of a turn leaves one of these behind whenever the
     /// agent had a request in flight.
     pub aborted_requests: u64,
@@ -201,6 +202,7 @@ pub struct Metrics {
     pub hosts: Vec<String>,
     /// Every distinct model identifier seen in a response body.
     pub served_models: Vec<String>,
+    /// The input tokens not read from the cache, on every shape.
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -215,6 +217,8 @@ pub struct Metrics {
     pub gateway_cost: f64,
     pub request_bytes: u64,
     pub response_bytes: u64,
+    /// The seconds of every request to a backend, summed, so the requests a
+    /// harness has in flight at once add up past the wall clock.
     pub request_seconds: f64,
     /// The mean time to the first generated token, over the requests reporting one.
     pub mean_first_token_seconds: f64,
