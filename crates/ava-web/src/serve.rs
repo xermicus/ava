@@ -265,7 +265,7 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
 
     let outcome = match segments {
         [""] => views::runs_page(&notice, &selection, &pending),
-        ["scoreboard"] => views::scoreboard_page(),
+        ["scoreboard"] => views::scoreboard_page(&selection),
         ["agents"] => views::agents_page(&notice, &selection),
         ["agent", name] => views::agent_page(&urldecode(name), &notice, &selection),
         ["games"] => views::games_page(),

@@ -104,14 +104,42 @@ const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
 const STANDINGS_TABLE: &str = "standings";
 const AGENTS_TABLE: &str = "agents";
 const RIVALS_TABLE: &str = "rivals";
+const SCOREBOARD_TABLE: &str = "scoreboard";
 
-/// The columns of the standings after the cross table of the seats.
-const STANDINGS_HEADERS: [&str; 5] = [
-    "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
+/// The scoreboard: every agent, its runs and its ratings over the tournaments.
+const SCOREBOARD_HEADING: &str = "scoreboard";
+const SCOREBOARD_HEADERS: [&str; 8] = [
+    "",
+    "*agent",
+    "#runs|the runs on disk that are over",
+    "#passed|the runs a push of which passed the verifier",
+    "#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
      than lost is won",
     "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
     "#elo|updated in match order, anchored at 1000",
     "#bradley-terry|fitted over the whole history, anchored at 1000",
+];
+
+/// The column the scoreboard arrives sorted by, and the one a chosen game adds.
+const SCOREBOARD_RATING_COLUMN: usize = 7;
+const SCOREBOARD_POINTS_HEADER: &str =
+    "*points|the best entry of record of the game, on the 0 to 10000 scale it ranks in";
+const NO_SCOREBOARD_NOTE: &str = "nothing played yet";
+
+/// The game filter of the scoreboard.
+const GAME_FIELD: &str = "game";
+const EVERY_GAME: &str = "all";
+const FILTER_CLASSES: &str = "flex flex-wrap items-center gap-1.5 mb-3";
+const FILTER_LINK_CLASSES: &str = "rounded-md px-2.5 py-1 text-xs text-neutral-400 \
+                                   hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors";
+const FILTER_CHOSEN_CLASSES: &str =
+    "rounded-md px-2.5 py-1 text-xs bg-neutral-800 text-neutral-100";
+
+/// The columns of the standings after the cross table of the seats.
+const STANDINGS_HEADERS: [&str; 3] = [
+    "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
+     than lost is won",
+    "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
     "",
 ];
 
@@ -1505,99 +1533,168 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     Ok(page(RUNS_HEADING, &body))
 }
 
-/// The best of every played pairing, grouped over the finished runs.
-pub(crate) fn scoreboard_page() -> std::io::Result<String> {
-    struct Standing {
+/// The agents over the tournaments: the runs of each and its ratings over the
+/// finished rounds, of one game when the query names one.
+pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> {
+    /// What the runs of an agent came to.
+    #[derive(Default)]
+    struct Played {
         runs: u64,
         passed: u64,
-        /// The best entry of record, with the seconds it arrived at.
-        best: Option<(Option<u64>, u64)>,
+        /// The points of its best entry of record.
+        best: Option<u64>,
     }
 
-    let runs = collect_runs()?;
-    let mut standings: Vec<(String, String, String, Standing)> = Vec::new();
+    let games = games()?;
+    let chosen = games
+        .iter()
+        .find(|game| game.as_str() == selection.get(GAME_FIELD, ""));
 
-    for run in runs.iter().filter(|run| run.run.finished_seconds.is_some()) {
-        let key = (game_label(&run.run), run.run.model.clone(), run.agent());
-
-        let standing = match standings
-            .iter_mut()
-            .find(|(game, model, agent, _)| (game, model, agent) == (&key.0, &key.1, &key.2))
-        {
-            Some((_, _, _, standing)) => standing,
+    let mut played: Vec<(ava_wire::Agent, Played)> = Vec::new();
+    for entry in collect_runs()?
+        .iter()
+        .filter(|entry| entry.run.finished_seconds.is_some())
+        .filter(|entry| chosen.is_none_or(|game| entry.run.game == *game))
+    {
+        let agent = entry.run.agent();
+        let seen = match played.iter().position(|(known, _)| *known == agent) {
+            Some(index) => &mut played[index].1,
             None => {
-                standings.push((
-                    key.0,
-                    key.1,
-                    key.2,
-                    Standing {
-                        runs: 0,
-                        passed: 0,
-                        best: None,
-                    },
-                ));
-                &mut standings.last_mut().expect("just pushed").3
+                played.push((agent, Played::default()));
+                &mut played.last_mut().expect("just pushed").1
             }
         };
-
-        standing.runs += 1;
-        standing.passed += u64::from(run.passed());
-        if let Some(record) = &run.record
-            && standing
-                .best
-                .is_none_or(|(points, _)| record.points > points)
-        {
-            standing.best = Some((record.points, record.seconds));
+        seen.runs += 1;
+        seen.passed += u64::from(entry.passed());
+        if entry.points() > seen.best {
+            seen.best = entry.points();
         }
     }
 
-    standings.sort_by(|left, right| {
-        left.0.cmp(&right.0).then(
-            right
-                .3
-                .best
-                .map(|(points, _)| points)
-                .cmp(&left.3.best.map(|(points, _)| points)),
-        )
-    });
+    // Every match of every finished round, of the chosen game alone when one
+    // is chosen, and the agent behind every label the ratings key on.
+    let mut labeled = Vec::new();
+    let mut seated: Vec<(String, ava_wire::Agent)> = Vec::new();
+    for record in tournament::list()? {
+        if chosen.is_some_and(|game| record.game != *game) {
+            continue;
+        }
+        let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
+        for (label, seat) in labels.iter().zip(&record.seats) {
+            if !seated.iter().any(|(known, _)| known == label) {
+                seated.push((label.clone(), seat.agent.clone()));
+            }
+        }
+        for round in record.finished_rounds() {
+            labeled.extend(label_pairings(
+                &labels,
+                &tournament::pairings(&record, round)?,
+            ));
+        }
+    }
+    let standings = standings(&labeled);
 
-    let rows = standings
+    // The rated agents in rating order, then whatever else was run.
+    let mut ranked: Vec<ava_wire::Agent> = standings
         .iter()
-        .map(|(game, model, agent, standing)| {
-            vec![
-                game.clone(),
-                escape(model),
-                agent.clone(),
-                standing.runs.to_string(),
-                standing.passed.to_string(),
+        .filter_map(|standing| seated.iter().find(|(label, _)| *label == standing.agent))
+        .map(|(_, agent)| agent.clone())
+        .collect();
+    let mut unrated: Vec<&(ava_wire::Agent, Played)> = played
+        .iter()
+        .filter(|(agent, _)| !ranked.contains(agent))
+        .collect();
+    unrated.sort_by_key(|(_, seen)| std::cmp::Reverse(seen.runs));
+    ranked.extend(unrated.into_iter().map(|(agent, _)| agent.clone()));
+
+    let registry = registry::load()?;
+    let rows = ranked
+        .iter()
+        .map(|agent| {
+            let seen = played
+                .iter()
+                .find(|(known, _)| known == agent)
+                .map(|(_, seen)| seen);
+            let standing = seated
+                .iter()
+                .find(|(_, known)| known == agent)
+                .and_then(|(label, _)| standings.iter().find(|standing| standing.agent == *label));
+
+            let mut row = agent_cells(&registry, agent).to_vec();
+            row.extend([
+                seen.map(|seen| seen.runs.to_string()).unwrap_or_default(),
+                seen.map(|seen| seen.passed.to_string()).unwrap_or_default(),
                 standing
-                    .best
-                    .and_then(|(points, _)| points.map(points_meter))
+                    .map(|standing| tally_label(&standing.fights))
                     .unwrap_or_default(),
                 standing
-                    .best
-                    .map(|(_, seconds)| seconds.to_string())
+                    .and_then(|standing| standing.rounds.score())
+                    .map(|score| format!("{score:.2}"))
                     .unwrap_or_default(),
-            ]
+                standing
+                    .map(|standing| rating_label(standing.elo))
+                    .unwrap_or_default(),
+                standing
+                    .map(|standing| rating_label(standing.bradley_terry))
+                    .unwrap_or_default(),
+            ]);
+            if chosen.is_some() {
+                row.push(
+                    seen.and_then(|seen| seen.best)
+                        .map(points_meter)
+                        .unwrap_or_default(),
+                );
+            }
+            row
         })
         .collect();
 
+    let mut headers: Vec<&str> = SCOREBOARD_HEADERS.to_vec();
+    if chosen.is_some() {
+        headers.push(SCOREBOARD_POINTS_HEADER);
+    }
+
     let body = format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">{}</p>{}",
-        explained(
-            "scoreboard",
-            "the best entry of every pairing, ranked as the games rank today"
-        ),
-        table(
-            &[
-                "game", "model", "harness", "#runs", "#passed", "*best", "#seconds",
-            ],
+        "{}{}",
+        game_filter(&games, chosen),
+        sorted_table(
+            SCOREBOARD_TABLE,
+            Some(SCOREBOARD_RATING_COLUMN),
+            &headers,
             rows,
-            Some("nothing played yet"),
+            Some(NO_SCOREBOARD_NOTE),
         )
     );
 
-    Ok(page("scoreboard", &body))
+    Ok(page(SCOREBOARD_HEADING, &body))
+}
+
+/// The games the scoreboard rates within, the chosen one marked.
+fn game_filter(games: &[String], chosen: Option<&String>) -> String {
+    let link = |game: Option<&String>| {
+        let (href, label) = match game {
+            Some(game) => (
+                format!("/scoreboard?{GAME_FIELD}={}", escape(game)),
+                escape(game),
+            ),
+            None => ("/scoreboard".to_string(), EVERY_GAME.to_string()),
+        };
+        let classes = if game == chosen {
+            FILTER_CHOSEN_CLASSES
+        } else {
+            FILTER_LINK_CLASSES
+        };
+        format!("<a class=\"{classes}\" href=\"{href}\">{label}</a>")
+    };
+
+    format!(
+        "<div class=\"{FILTER_CLASSES}\">{}{}</div>",
+        link(None),
+        games
+            .iter()
+            .map(|game| link(Some(game)))
+            .collect::<String>()
+    )
 }
 
 /// Every game as a card: the name, its turns and the record on its face,
@@ -2059,12 +2156,6 @@ pub(crate) fn tournament_page(
                     .map(|standing| tally_label(&standing.fights))
                     .unwrap_or_default(),
                 score.map(|score| format!("{score:.2}")).unwrap_or_default(),
-                standing
-                    .map(|standing| rating_label(standing.elo))
-                    .unwrap_or_default(),
-                standing
-                    .map(|standing| rating_label(standing.bradley_terry))
-                    .unwrap_or_default(),
                 if removable {
                     format!(
                         "<form method=\"post\" action=\"/tournament/{}/unseat\"><input type=\"hidden\" name=\"seat\" value=\"{seat}\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
