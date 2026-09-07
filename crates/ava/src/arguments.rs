@@ -200,7 +200,10 @@ impl TournamentCli {
         );
         arg_help_chr(
             AgentCli::PARALLEL_SHORT,
-            "the most runs a round starts at once, all of them by default",
+            &format!(
+                "the most runs a round starts at once, {} by default",
+                ava_run::tournament::DEFAULT_PARALLEL
+            ),
         );
         arg_help_str(
             &format!("--{}", Self::ANALYST_LONG),

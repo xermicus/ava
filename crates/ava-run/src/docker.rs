@@ -500,6 +500,9 @@ fn seed_home_command() -> String {
     )
 }
 
+/// One home is seeded at a time, the heaviest thing a run asks of docker.
+static SEEDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Create the agent home of one run, keep it mounted and seed it.
 ///
 /// The holder starts first and stays for the whole run: a tmpfs is torn down
@@ -508,6 +511,7 @@ fn seed_home_command() -> String {
 /// hides what the image installed there and the volume is not populated from
 /// the image on its own.
 fn prepare_agent_home(run: &str, image: &str) -> std::io::Result<()> {
+    let _seeding = SEEDING.lock().expect("the seeding lock is not poisoned");
     let holder = holder_container(run);
     let home = format!("{}:{HOME_STAGE}", home_volume(run));
     let workspace = format!("{}:{WORKSPACE_STAGE}", workspace_volume(run));

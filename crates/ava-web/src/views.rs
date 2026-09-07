@@ -177,6 +177,9 @@ const FORM_LIVE: &str = "bg-neutral-600 animate-pulse";
 const PROFILE_AVATAR_CLASSES: &str = "h-10 w-10 shrink-0 rounded-md";
 const NO_REPORT_NOTE: &str = "the record holds neither a report nor a reason";
 const IMAGE_FORMAT: &str = "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
+
+/// How long a page waits for docker before it renders without it.
+const DOCKER_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const IMAGE_PREFIX: &str = "ava/";
 
 /// A card holds one table or one form, so every block on a page shares the
@@ -2081,13 +2084,17 @@ pub(crate) fn tournament_page(
         format!(
             "<form method=\"post\" action=\"/tournament/{}/play\" class=\"flex items-end gap-3\">\
              <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
-             <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" min=\"1\" placeholder=\"all\"></label>\
+             <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" min=\"1\" placeholder=\"{}\"></label>\
              <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">play round {}</button></form>",
             escape(name),
             explained(
                 "parallel",
-                "the most runs the round starts at once, every run of a phase at once when empty"
+                &format!(
+                    "the most runs the round starts at once, {} when empty; a sandbox holds its home in memory, so more than the host carries takes docker down",
+                    tournament::DEFAULT_PARALLEL
+                )
             ),
+            tournament::DEFAULT_PARALLEL,
             record.rounds.len() + 1
         )
     };
@@ -3495,9 +3502,13 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
 
 /// The images of ava as table rows, or nothing when docker does not answer.
 fn image_rows() -> Option<Vec<Vec<String>>> {
-    let listing =
-        process::run_and_assume_success("docker", &["image", "ls", "--format", IMAGE_FORMAT])
-            .ok()?;
+    let listing = process::run_within(
+        "docker",
+        &["image", "ls", "--format", IMAGE_FORMAT],
+        DOCKER_ANSWER_TIMEOUT,
+    )
+    .inspect_err(|error| log::warn!("listing the images failed: {error}"))
+    .ok()?;
 
     Some(
         listing
@@ -3657,12 +3668,15 @@ pub(crate) fn watch_containers() {
 }
 
 fn refresh_snapshot() {
-    let containers: Vec<String> =
-        process::run_and_assume_success("docker", &["ps", "--format", "{{.Names}}"])
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect();
+    let containers: Vec<String> = process::run_within(
+        "docker",
+        &["ps", "--format", "{{.Names}}"],
+        DOCKER_ANSWER_TIMEOUT,
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::to_string)
+    .collect();
     let live = containers
         .iter()
         .filter_map(|container| container.strip_prefix(docker::SCORER_CONTAINER_PREFIX))
@@ -3704,11 +3718,7 @@ fn aggregated(name: &str, logged: &str) -> Option<ava_wire::Metrics> {
 }
 
 fn container_logs(container: &str) -> String {
-    std::process::Command::new("docker")
-        .args(["logs", container])
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default()
+    process::run_within("docker", &["logs", container], DOCKER_ANSWER_TIMEOUT).unwrap_or_default()
 }
 
 /// The names of the running containers.

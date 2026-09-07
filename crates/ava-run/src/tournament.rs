@@ -34,6 +34,9 @@ const NAME_PUNCTUATION: [char; 3] = ['-', '_', '.'];
 /// tell a win share from a coin flip.
 pub const DEFAULT_COMBATS: u64 = 5;
 
+/// The runs a round starts at once unless a count is chosen.
+pub const DEFAULT_PARALLEL: usize = 8;
+
 /// `combats` as the combats a fight may play: at least one.
 pub fn checked_combats(combats: u64) -> std::io::Result<u64> {
     if combats == 0 {
@@ -64,7 +67,7 @@ pub struct Tournament {
     pub analyst_seconds: Option<u64>,
     /// Whether the docker images are rebuilt instead of reused.
     pub force_build_images: bool,
-    /// The most runs a round starts at once, all of them without a cap.
+    /// The most runs a round starts at once, [`DEFAULT_PARALLEL`] without one.
     pub parallel: Option<usize>,
 }
 
@@ -566,6 +569,7 @@ pub fn play_round(
     let game = find(&record.game)?;
     let seats = record.seats.len();
     let round = record.rounds.len() + 1;
+    let parallel = parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
 
     modify(name, |record| {
         record.rounds.push(ava_wire::Round {
@@ -577,7 +581,7 @@ pub fn play_round(
         Ok(())
     })?;
     log::info!(
-        "{name}: round {round} starts, {seats} seats play {} over {} turns",
+        "{name}: round {round} starts, {seats} seats play {} over {} turns, {parallel} runs at once",
         record.game,
         game.turns().len()
     );
@@ -850,13 +854,8 @@ struct Analyses {
 
 impl Analyses {
     /// Ready to analyze the runs of the named tournament with `analyst`, at
-    /// most `parallel` at a time, or as many as end without a cap.
-    fn new(
-        name: &str,
-        analyst: Option<ava_wire::Setup>,
-        seconds: u64,
-        parallel: Option<usize>,
-    ) -> Self {
+    /// most `parallel` at a time.
+    fn new(name: &str, analyst: Option<ava_wire::Setup>, seconds: u64, parallel: usize) -> Self {
         let mut analyses = Self {
             name: name.to_string(),
             analyst,
@@ -865,11 +864,11 @@ impl Analyses {
             handles: std::sync::Mutex::new(Vec::new()),
         };
 
-        if let (Some(analyst), Some(workers)) = (&analyses.analyst, parallel) {
+        if let Some(analyst) = &analyses.analyst {
             let (sender, receiver) = std::sync::mpsc::channel::<String>();
             let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
             let mut handles = Vec::new();
-            for _ in 0..workers.max(1) {
+            for _ in 0..parallel.max(1) {
                 let receiver = receiver.clone();
                 let name = analyses.name.clone();
                 let analyst = analyst.clone();
@@ -891,30 +890,14 @@ impl Analyses {
         analyses
     }
 
-    /// Analyze `run`, unless the tournament has no analyst.
+    /// Queue `run` for analysis, unless the tournament has no analyst.
     fn start(&self, run: &str) {
-        let Some(analyst) = &self.analyst else {
-            return;
-        };
-
         if let Some(queue) = &self.queue {
             let _ = queue
                 .lock()
                 .expect("the queue is not poisoned")
                 .send(run.to_string());
-            return;
         }
-
-        let name = self.name.clone();
-        let analyst = analyst.clone();
-        let seconds = self.seconds;
-        let run = run.to_string();
-        self.handles
-            .lock()
-            .expect("the handles are not poisoned")
-            .push(std::thread::spawn(move || {
-                analyze(&name, &analyst, seconds, &run)
-            }));
     }
 
     /// Wait for every analysis started.
@@ -942,15 +925,14 @@ fn analyze(name: &str, analyst: &ava_wire::Setup, seconds: u64, run: &str) {
     }
 }
 
-/// Play `runs` with at most `parallel` sandboxes at a time, or all at once
-/// without a cap, calling `finished` on each run as it ends. The outcomes come
-/// back in the order the runs were given.
+/// Play `count` runs, at most `parallel` sandboxes at a time. The outcomes
+/// come back in the order the runs were given.
 fn bounded(
     count: usize,
-    parallel: Option<usize>,
+    parallel: usize,
     job: impl Fn(usize) -> std::io::Result<i32> + Sync,
 ) -> Vec<std::io::Result<i32>> {
-    let workers = parallel.unwrap_or(count).clamp(1, count.max(1));
+    let workers = parallel.clamp(1, count.max(1));
     let queue = std::sync::Mutex::new((0..count).collect::<std::collections::VecDeque<_>>());
     let outcomes = std::sync::Mutex::new(Vec::new());
 
