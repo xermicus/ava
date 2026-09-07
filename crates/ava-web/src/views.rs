@@ -103,6 +103,7 @@ const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
 /// The names the script keeps the sort of a table under.
 const STANDINGS_TABLE: &str = "standings";
 const AGENTS_TABLE: &str = "agents";
+const RIVALS_TABLE: &str = "rivals";
 
 /// The columns of the standings after the cross table of the seats.
 const STANDINGS_HEADERS: [&str; 5] = [
@@ -121,6 +122,31 @@ const STANDINGS_SCORE_COLUMN: usize = 1;
 const UNRATED_SCORE: f64 = f64::NEG_INFINITY;
 const NO_AGENTS_NOTE: &str = "no agents";
 const NO_AGENTS_ROW_NOTE: &str = "no agents";
+
+/// The columns of the rivals table and the one it sorts by.
+const RIVALS_HEADERS: [&str; 5] = [
+    "",
+    "agent",
+    "*rounds|the rounds against that agent as won-drawn-lost, over the finished rounds of every \
+     tournament",
+    "#fought|the pairings the two played",
+    "#score|the share of those rounds won, half for a draw",
+];
+const RIVALS_FOUGHT_COLUMN: usize = 3;
+const NO_RIVALS_NOTE: &str = "no tournament rounds against another agent yet";
+const NO_AGENT_RUNS_NOTE: &str = "no runs yet";
+
+/// The last runs of an agent, oldest first, as one square each.
+const FORM_RUNS: usize = 40;
+const FORM_CLASSES: &str = "flex flex-wrap gap-1";
+const FORM_MARK_CLASSES: &str = "block h-5 w-5 rounded-sm transition-colors";
+const FORM_PASSED: &str = "bg-emerald-500/70 hover:bg-emerald-400";
+const FORM_FAILED: &str = "bg-orange-500/60 hover:bg-orange-400";
+const FORM_BROKEN: &str = "bg-red-500/50 hover:bg-red-400";
+const FORM_LIVE: &str = "bg-neutral-600 animate-pulse";
+
+/// The avatar over the name on the page of an agent.
+const PROFILE_AVATAR_CLASSES: &str = "h-10 w-10 shrink-0 rounded-md";
 const NO_REPORT_NOTE: &str = "the record holds neither a report nor a reason";
 const IMAGE_FORMAT: &str = "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
 const IMAGE_PREFIX: &str = "ava/";
@@ -560,6 +586,23 @@ impl RunEntry {
         self.attempts.iter().any(|attempt| attempt.verdict.passed)
     }
 
+    /// Whether `alias` played the run: the name it was started under, else the
+    /// pairing, for a record from before the names.
+    fn by(&self, alias: &registry::Alias) -> bool {
+        match &self.run.agent_name {
+            Some(name) => *name == alias.name,
+            None => self.run.agent() == alias.agent(),
+        }
+    }
+
+    /// The name the agent of the run goes by.
+    fn agent_title(&self, registry: &registry::Registry) -> String {
+        self.run
+            .agent_name
+            .clone()
+            .unwrap_or_else(|| agent_name(registry, &self.run.agent()))
+    }
+
     /// The points of the entry of record, nothing for a game ranking nothing.
     fn points(&self) -> Option<u64> {
         self.record.as_ref().and_then(|entry| entry.points)
@@ -571,10 +614,7 @@ impl RunEntry {
             "<a class=\"{CELL_LINK_CLASSES}\" href=\"/run/{}\">{}</a>",
             escape(&self.name),
             agent_stack(
-                self.run
-                    .agent_name
-                    .clone()
-                    .unwrap_or_else(|| agent_name(registry, &self.run.agent())),
+                self.agent_title(registry),
                 &self.run.agent(),
                 self.run.thinking.as_deref().unwrap_or_default()
             )
@@ -1203,13 +1243,17 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
         .map(|window| format!("{window} context tokens"));
     let registry = registry::load()?;
     let agent = entry.run.agent();
+    let title = entry.agent_title(&registry);
     let mut facts = vec![
         tile(
             "agent",
             &format!(
                 "<span class=\"flex items-center gap-2\">{}<span class=\"truncate\">{}</span></span>",
                 avatar(&agent, AGENT_TILE_AVATAR_CLASSES),
-                escape(&agent_name(&registry, &agent))
+                match registry.alias(&title) {
+                    Some(_) => agent_link(&title),
+                    None => escape(&title),
+                }
             ),
             &joined(&[
                 &entry.run.harness,
@@ -1336,7 +1380,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     body.push_str(&tiles(&facts));
 
     if entry.live {
-        body.push_str(&chat_panel(name, &agent_name(&registry, &agent)));
+        body.push_str(&chat_panel(name, &title));
     }
 
     if !entry.live {
@@ -2700,7 +2744,10 @@ fn tint(tally: &ava_wire::Tally) -> &'static str {
 /// The agents named in the registry, and the form naming one.
 pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
     let registry = registry::load()?;
-    let mut body = alias_panel(&registry, selection);
+    let mut body = format!(
+        "<p class=\"{FIRST_TITLE_CLASSES}\">new agent</p>{}",
+        alias_panel(&registry, selection, None)
+    );
     body.push_str(&notice.render());
     body.push_str(&format!(
         "<p class=\"{TITLE_CLASSES}\">{}</p>",
@@ -2747,10 +2794,245 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
     Ok(page(AGENTS_HEADING, &body))
 }
 
-/// The form naming an agent in the registry, or changing the one the
-/// selection asks to edit, with what was submitted or that agent preselected.
-fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
-    let editing = registry.alias(selection.get(crate::serve::EDIT_KEY, ""));
+/// The page of one agent: what it pairs, how its runs went, who it met in the
+/// tournaments, the runs themselves and the form changing it.
+pub(crate) fn agent_page(
+    name: &str,
+    notice: &Notice,
+    selection: &Selection,
+) -> std::io::Result<String> {
+    let registry = registry::load()?;
+    let alias = registry
+        .alias(name)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no agent named `{name}`"),
+            )
+        })?
+        .clone();
+    let agent = alias.agent();
+    let runs = collect_runs()?;
+    let played: Vec<&RunEntry> = runs.iter().filter(|entry| entry.by(&alias)).collect();
+
+    let mut body = format!(
+        "<div class=\"flex items-center gap-3\">{}\
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}</div>",
+        avatar(&agent, PROFILE_AVATAR_CLASSES),
+        escape(&alias.name),
+        if alias.analyst {
+            pill(ANALYZED_PILL, false, "analyst")
+        } else {
+            String::new()
+        }
+    );
+    body.push_str(&notice.render());
+    body.push_str("<div data-refresh=\"agent\">");
+
+    let live = played.iter().filter(|entry| entry.live).count();
+    let finished = played
+        .iter()
+        .filter(|entry| entry.run.finished_seconds.is_some())
+        .count();
+    let passed = played.iter().filter(|entry| entry.passed()).count();
+    let tokens: u64 = played
+        .iter()
+        .filter_map(|entry| entry.metrics.as_ref())
+        .map(|metrics| metrics.output_tokens)
+        .sum();
+    let spent: u64 = played
+        .iter()
+        .filter_map(|entry| entry.run.wall_seconds())
+        .sum();
+    body.push_str(&tiles(&[
+        tile("harness", &escape(&alias.harness), "", TILE_TEXT_CLASSES),
+        tile(
+            "model",
+            &escape(&alias.model),
+            &escape(
+                &registry
+                    .route(&alias.harness, &alias.model, alias.backend.as_deref())
+                    .map(|(_, backend)| backend.name.clone())
+                    .unwrap_or_default(),
+            ),
+            TILE_TEXT_CLASSES,
+        ),
+        tile(
+            "runs",
+            &played.len().to_string(),
+            &if live > 0 {
+                format!("{live} live")
+            } else {
+                String::new()
+            },
+            TILE_VALUE_CLASSES,
+        ),
+        tile(
+            "passed",
+            &passed.to_string(),
+            &format!("of {finished} finished"),
+            TILE_VALUE_CLASSES,
+        ),
+        tile("output tokens", &tokens.to_string(), "", TILE_VALUE_CLASSES),
+        tile("time played", &usage::span(spent), "", TILE_VALUE_CLASSES),
+    ]));
+
+    if !played.is_empty() {
+        body.push_str(&format!(
+            "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
+            explained("form", "the last runs, oldest first"),
+            form_strip(&played)
+        ));
+    }
+
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
+        explained(
+            "rivals",
+            "the agents this one was paired against in a tournament"
+        ),
+        sorted_table(
+            RIVALS_TABLE,
+            Some(RIVALS_FOUGHT_COLUMN),
+            &RIVALS_HEADERS,
+            rivals(&registry, &agent)?,
+            Some(NO_RIVALS_NOTE),
+        )
+    ));
+
+    // The agent is the page, so the runs table drops its column.
+    let rows = played
+        .iter()
+        .map(|entry| entry.row(&registry)[1..].to_vec())
+        .collect();
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">{RUNS_HEADING}</p>{}",
+        table(&RUN_HEADERS[1..], rows, Some(NO_AGENT_RUNS_NOTE))
+    ));
+    body.push_str("</div>");
+
+    // The form stays outside the refreshed region, so what is typed into it
+    // survives the refresh.
+    body.push_str(&format!(
+        "<p class=\"{TITLE_CLASSES}\">{SETTINGS_TITLE}</p>{}",
+        alias_panel(&registry, selection, Some(&alias))
+    ));
+
+    Ok(page(AGENTS_HEADING, &body))
+}
+
+/// The last runs as one square each, oldest first, tinted by outcome and
+/// leading to the run.
+fn form_strip(played: &[&RunEntry]) -> String {
+    let marks: String = played
+        .iter()
+        .take(FORM_RUNS)
+        .rev()
+        .map(|entry| {
+            let (tint, state) = if entry.live {
+                (FORM_LIVE, "live")
+            } else if entry.passed() {
+                (FORM_PASSED, "passed")
+            } else if entry.run.finished_seconds.is_some() {
+                (FORM_FAILED, "failed")
+            } else {
+                (FORM_BROKEN, UNFINISHED)
+            };
+            format!(
+                "<a class=\"{FORM_MARK_CLASSES} {tint}\" href=\"/run/{run}\" title=\"{run} \u{00b7} {game} \u{00b7} {state}\"></a>",
+                run = escape(&entry.name),
+                game = escape(&entry.run.game)
+            )
+        })
+        .collect();
+
+    format!("<div class=\"{FORM_CLASSES}\">{marks}</div>")
+}
+
+/// The rows of the agents `agent` was paired against in a tournament, from its
+/// view, over the finished rounds of every tournament.
+fn rivals(
+    registry: &registry::Registry,
+    agent: &ava_wire::Agent,
+) -> std::io::Result<Vec<Vec<String>>> {
+    struct Met {
+        agent: ava_wire::Agent,
+        tally: ava_wire::Tally,
+        /// The pairings the two played.
+        fought: u64,
+    }
+
+    let mut met: Vec<Met> = Vec::new();
+    for record in tournament::list()? {
+        for round in record.finished_rounds() {
+            for pairing in tournament::pairings(&record, round)? {
+                let (Some(first), Some(second)) = (
+                    record.seats.get(pairing.first),
+                    record.seats.get(pairing.second),
+                ) else {
+                    continue;
+                };
+                if pairing.tally.rounds() == 0 {
+                    continue;
+                }
+                let (other, view) = if first.agent == *agent && second.agent != *agent {
+                    (&second.agent, pairing.tally)
+                } else if second.agent == *agent && first.agent != *agent {
+                    (&first.agent, mirrored(&pairing.tally))
+                } else {
+                    continue;
+                };
+
+                let seen = match met.iter().position(|seen| seen.agent == *other) {
+                    Some(index) => &mut met[index],
+                    None => {
+                        met.push(Met {
+                            agent: other.clone(),
+                            tally: ava_wire::Tally::default(),
+                            fought: 0,
+                        });
+                        met.last_mut().expect("just pushed")
+                    }
+                };
+                seen.tally.won += view.won;
+                seen.tally.drawn += view.drawn;
+                seen.tally.lost += view.lost;
+                seen.fought += 1;
+            }
+        }
+    }
+
+    // The most fought rival first, since one round decides nothing.
+    met.sort_by_key(|seen| std::cmp::Reverse(seen.fought));
+
+    Ok(met
+        .iter()
+        .map(|seen| {
+            let mut row = agent_cells(registry, &seen.agent).to_vec();
+            row.extend([
+                format!(
+                    "<span class=\"{MONO_CLASSES} {}\">{}</span>",
+                    tint(&seen.tally),
+                    tally_label(&seen.tally)
+                ),
+                seen.fought.to_string(),
+                seen.tally
+                    .score()
+                    .map(|score| format!("{score:.2}"))
+                    .unwrap_or_default(),
+            ]);
+            row
+        })
+        .collect())
+}
+
+/// The form naming an agent in the registry, or changing `editing`, with what
+/// was submitted or that agent preselected.
+fn alias_panel(
+    registry: &registry::Registry,
+    selection: &Selection,
+    editing: Option<&registry::Alias>,
+) -> String {
     let fields = crate::serve::ALIAS_FIELDS;
     let [name_field, harness_field, model_field, analyst_field] = fields;
     let route = |alias: &registry::Alias| {
@@ -2760,9 +3042,8 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
             .unwrap_or_default();
         format!("{}{}{backend}", alias.model, registry::ROUTE_SEPARATOR)
     };
-    let (title, action, button, defaults) = match editing {
+    let (action, button, defaults) = match editing {
         Some(alias) => (
-            "edit agent",
             format!("/agents/{}/edit", escape(&alias.name)),
             "save",
             [
@@ -2773,7 +3054,6 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
             ],
         ),
         None => (
-            "new agent",
             "/agents/create".to_string(),
             "add",
             [String::new(), String::new(), String::new(), String::new()],
@@ -2835,23 +3115,15 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
             })
         })
         .collect();
-    let cancel = match editing {
-        Some(_) => format!(
-            "<a class=\"{LINK_CLASSES} {CONTROL_HEIGHT} flex items-center\" href=\"/agents\">cancel</a>"
-        ),
-        None => String::new(),
-    };
-
     format!(
-        "<p class=\"{FIRST_TITLE_CLASSES}\">{title}</p>\
-         <form method=\"post\" action=\"{action}\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
+        "<form method=\"post\" action=\"{action}\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" placeholder=\"letters, digits, dashes\" required></label>\
          {}{}\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
          <input type=\"checkbox\" name=\"{analyst_field}\" class=\"h-4 w-4 rounded accent-indigo-500\"{}>\
          <span class=\"{NOTE_CLASSES}\">{}</span></label>\
-         <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">{button}</button>{cancel}</form>",
+         <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">{button}</button></form>",
         explained(
             name_field,
             "what selects the agent on the command line and in the forms; the records hold the harness and the model, so renaming changes nothing there"
@@ -2874,22 +3146,27 @@ fn alias_panel(registry: &registry::Registry, selection: &Selection) -> String {
     )
 }
 
-/// The edit link and the remove button of `alias` on the agents page.
+/// The remove button of `alias` on the agents page.
 fn alias_actions(alias: &registry::Alias) -> String {
     format!(
-        "<span class=\"flex items-center gap-3\">\
-         <a class=\"{LINK_CLASSES}\" href=\"/agents?{}={name}\">edit</a>\
-         <form method=\"post\" action=\"/agents/{name}/delete\"><button class=\"{STOP_CLASSES}\">remove</button></form></span>",
-        crate::serve::EDIT_KEY,
-        name = escape(&alias.name)
+        "<form method=\"post\" action=\"/agents/{}/delete\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
+        escape(&alias.name)
     )
 }
 
 /// Two cells: the avatar of `agent`, and its name in the registry, or the
-/// harness on the model when the registry has none for it. The name is plain
-/// text in its cell, so it sits on the line of the cells beside it.
+/// harness on the model when the registry has none for it.
 fn agent_cells(registry: &registry::Registry, agent: &ava_wire::Agent) -> [String; 2] {
-    named_cells(agent, &agent_name(registry, agent))
+    match registry.alias_of(agent) {
+        Some(alias) => named_cells(agent, &alias.name),
+        None => [
+            avatar(agent, AVATAR_CLASSES),
+            format!(
+                "<span class=\"{MONO_CLASSES}\">{}</span>",
+                escape(&agent.label())
+            ),
+        ],
+    }
 }
 
 /// The avatar of `agent` beside `name`, over the harness and the thinking level.
@@ -2904,12 +3181,17 @@ fn agent_stack(name: String, agent: &ava_wire::Agent, thinking: &str) -> String 
     )
 }
 
-/// The avatar of `agent` beside `name`.
+/// The avatar of `agent` beside `name`, leading to the page of the agent.
 fn named_cells(agent: &ava_wire::Agent, name: &str) -> [String; 2] {
-    [
-        avatar(agent, AVATAR_CLASSES),
-        format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(name)),
-    ]
+    [avatar(agent, AVATAR_CLASSES), agent_link(name)]
+}
+
+/// `name` leading to the page of the agent it names.
+fn agent_link(name: &str) -> String {
+    format!(
+        "<a class=\"{LINK_CLASSES}\" href=\"/agent/{name}\">{name}</a>",
+        name = escape(name)
+    )
 }
 
 /// The name `agent` is registered under, else the harness on the model.

@@ -564,8 +564,11 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
 
 /// How long ago the epoch second `started` was.
 pub fn age(started: u64) -> String {
-    let elapsed = epoch_now().saturating_sub(started);
+    span(epoch_now().saturating_sub(started))
+}
 
+/// A span of `elapsed` seconds, to two units.
+pub fn span(elapsed: u64) -> String {
     match elapsed {
         seconds if seconds < SECONDS_PER_MINUTE => format!("{seconds}s"),
         seconds if seconds < SECONDS_PER_HOUR => format!("{}m", seconds / SECONDS_PER_MINUTE),

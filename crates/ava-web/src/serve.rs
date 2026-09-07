@@ -76,10 +76,8 @@ const MAX_CHAT_BYTES: u64 = 128 * 1024;
 /// agents one form chooses.
 pub(crate) const AGENT_FIELDS: [&str; 2] = ["agent", "thinking"];
 
-/// The form fields naming an agent in the registry, carried back to the
-/// agents page, and the query key naming the agent its form edits.
+/// The form fields naming an agent in the registry, carried back to its form.
 pub(crate) const ALIAS_FIELDS: [&str; 4] = ["name", "harness", "model", "analyst"];
-pub(crate) const EDIT_KEY: &str = "edit";
 
 /// The prefix of the fields choosing the analyst on the start panel.
 pub(crate) const ANALYST_PREFIX: &str = "analyst_";
@@ -234,7 +232,6 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
             .chain(CREATE_FIELDS.iter())
             .chain(AGENT_FIELDS.iter())
             .chain(ALIAS_FIELDS.iter())
-            .chain(std::iter::once(&EDIT_KEY))
             .map(|key| (key.to_string(), query_value(query, key)))
             .chain(AGENT_FIELDS.iter().map(|key| {
                 let key = format!("{ANALYST_PREFIX}{key}");
@@ -256,6 +253,7 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         [""] => views::runs_page(&notice, &selection, &pending),
         ["scoreboard"] => views::scoreboard_page(),
         ["agents"] => views::agents_page(&notice, &selection),
+        ["agent", name] => views::agent_page(&urldecode(name), &notice, &selection),
         ["games"] => views::games_page(),
         ["games", name, "cover"] => {
             return match views::game_cover(name) {
@@ -361,12 +359,8 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
             create_alias(form),
         ),
         ["agents", name, "edit"] => (
-            "/agents".to_string(),
-            format!(
-                "&{EDIT_KEY}={}{}",
-                urlencode(name),
-                preserved(form, &ALIAS_FIELDS)
-            ),
+            format!("/agent/{name}"),
+            preserved(form, &ALIAS_FIELDS),
             edit_alias(name, form),
         ),
         ["agents", name, "delete"] => ("/agents".to_string(), String::new(), delete_alias(name)),
@@ -690,7 +684,7 @@ fn edit_alias(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
 
     Ok(Done {
         note: format!("{} is {} on {}", alias.name, alias.harness, alias.model),
-        landing: Some("/agents".to_string()),
+        landing: Some(format!("/agent/{}", urlencode(&alias.name))),
     })
 }
 
