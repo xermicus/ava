@@ -8,3 +8,4 @@ __pycache__
 /registry.json
 /agents.json
 /agents.json.tmp
+/docs
