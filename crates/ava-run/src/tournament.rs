@@ -664,9 +664,13 @@ pub fn play_round(
         let mut launches = Vec::new();
         for (seat, setup) in record.seats.iter().enumerate() {
             let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
+            let (seated, model) = match &setup.name {
+                Some(named) => (named.clone(), String::new()),
+                None => (setup.agent.harness.clone(), setup.agent.model.clone()),
+            };
             let mut launch = docker::prepare(&docker::Agent {
-                name: setup.agent.harness.clone(),
-                model: setup.agent.model.clone(),
+                name: seated,
+                model,
                 game: record.game.clone(),
                 limit: record.limit_seconds,
                 parallel: 1,

@@ -649,10 +649,11 @@ impl RunEntry {
 
     /// Whether `alias` played the run: the name it was started under, else the
     /// pairing, for a record from before the names.
-    fn by(&self, alias: &registry::Alias) -> bool {
-        match &self.run.agent_name {
-            Some(name) => *name == alias.name,
-            None => self.run.agent() == alias.agent(),
+    fn by(&self, registry: &registry::Registry, alias: &registry::Alias) -> bool {
+        let agent = self.run.agent();
+        match recorded_name(registry, &agent, self.run.agent_name.as_deref()) {
+            Some(name) => name == alias.name,
+            None => agent == alias.agent(),
         }
     }
 
@@ -1630,6 +1631,24 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         }
     }
 
+    #[derive(Clone, PartialEq)]
+    struct Competitor {
+        agent: ava_wire::Agent,
+        name: Option<String>,
+    }
+
+    impl Competitor {
+        fn of(registry: &registry::Registry, agent: ava_wire::Agent, name: Option<String>) -> Self {
+            let name = recorded_name(registry, &agent, name.as_deref());
+
+            Self { agent, name }
+        }
+
+        fn label(&self) -> String {
+            self.name.clone().unwrap_or_else(|| self.agent.label())
+        }
+    }
+
     let registry = registry::load()?;
     let weights = selection.weights();
     let games = games()?;
@@ -1637,17 +1656,17 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         .iter()
         .find(|game| game.as_str() == selection.get(GAME_FIELD, ""));
 
-    let mut played: Vec<(ava_wire::Agent, Played)> = Vec::new();
+    let mut played: Vec<(Competitor, Played)> = Vec::new();
     for entry in collect_runs()?
         .iter()
         .filter(|entry| entry.run.finished_seconds.is_some())
         .filter(|entry| chosen.is_none_or(|game| entry.run.game == *game))
     {
-        let agent = entry.run.agent();
-        let seen = match played.iter().position(|(known, _)| *known == agent) {
+        let competitor = Competitor::of(&registry, entry.run.agent(), entry.run.agent_name.clone());
+        let seen = match played.iter().position(|(known, _)| *known == competitor) {
             Some(index) => &mut played[index].1,
             None => {
-                played.push((agent, Played::default()));
+                played.push((competitor, Played::default()));
                 &mut played.last_mut().expect("just pushed").1
             }
         };
@@ -1667,16 +1686,21 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
     // Every match of every finished round, of the chosen game alone when one
     // is chosen, and the agent behind every label the ratings key on.
     let mut labeled = Vec::new();
-    let mut seated: Vec<(String, ava_wire::Agent)> = Vec::new();
+    let mut seated: Vec<(String, Competitor)> = Vec::new();
     let mut seats = Vec::new();
     for record in tournament::list()? {
         if chosen.is_some_and(|game| record.game != *game) {
             continue;
         }
-        let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
-        for (label, seat) in labels.iter().zip(&record.seats) {
+        let seatings: Vec<Competitor> = record
+            .seats
+            .iter()
+            .map(|seat| Competitor::of(&registry, seat.agent.clone(), seat.name.clone()))
+            .collect();
+        let labels: Vec<String> = seatings.iter().map(Competitor::label).collect();
+        for (label, seating) in labels.iter().zip(&seatings) {
             if !seated.iter().any(|(known, _)| known == label) {
-                seated.push((label.clone(), seat.agent.clone()));
+                seated.push((label.clone(), seating.clone()));
             }
         }
         for round in record.finished_rounds() {
@@ -1690,31 +1714,36 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
     let standings = standings(&labeled);
 
     // The rated agents in rating order, then whatever else was run.
-    let mut ranked: Vec<ava_wire::Agent> = standings
+    let mut ranked: Vec<Competitor> = standings
         .iter()
         .filter_map(|standing| seated.iter().find(|(label, _)| *label == standing.agent))
-        .map(|(_, agent)| agent.clone())
+        .map(|(_, seating)| seating.clone())
         .collect();
-    let mut unrated: Vec<&(ava_wire::Agent, Played)> = played
+    let mut unrated: Vec<&(Competitor, Played)> = played
         .iter()
-        .filter(|(agent, _)| !ranked.contains(agent))
+        .filter(|(competitor, _)| !ranked.contains(competitor))
         .collect();
     unrated.sort_by_key(|(_, seen)| std::cmp::Reverse(seen.runs));
-    ranked.extend(unrated.into_iter().map(|(agent, _)| agent.clone()));
+    ranked.extend(
+        unrated
+            .into_iter()
+            .map(|(competitor, _)| competitor.clone()),
+    );
 
     let rows = ranked
         .iter()
-        .map(|agent| {
+        .map(|competitor| {
             let seen = played
                 .iter()
-                .find(|(known, _)| known == agent)
+                .find(|(known, _)| known == competitor)
                 .map(|(_, seen)| seen);
             let standing = seated
                 .iter()
-                .find(|(_, known)| known == agent)
+                .find(|(_, known)| known == competitor)
                 .and_then(|(label, _)| standings.iter().find(|standing| standing.agent == *label));
 
-            let mut row = agent_cells(&registry, agent).to_vec();
+            let mut row =
+                agent_cells(&registry, &competitor.agent, competitor.name.as_deref()).to_vec();
             row.extend([
                 seen.map(|seen| seen.runs.to_string()).unwrap_or_default(),
                 seen.map(|seen| seen.passed.to_string()).unwrap_or_default(),
@@ -2352,7 +2381,7 @@ pub(crate) fn tournament_page(
                 .filter(|_| rated);
             let score = standing.and_then(|standing| standing.rounds.score());
             let mut row = vec![(seat + 1).to_string()];
-            row.extend(agent_cells(&registry, &setup.agent));
+            row.extend(agent_cells(&registry, &setup.agent, setup.name.as_deref()));
             row.extend([
                 agent_label(&setup.agent.harness, setup.thinking.as_deref().unwrap_or("")),
                 agent_label(&setup.agent.model, setup.backend.as_deref().unwrap_or("")),
@@ -2429,7 +2458,7 @@ pub(crate) fn tournament_page(
     }
     if removable {
         body.push_str(&format!(
-            "<form method=\"post\" action=\"/tournament/{}/seat\" class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
+            "<form method=\"post\" action=\"/tournament/{}/seat\" data-submit class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
              {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
             escape(name),
             agent_fields(&registry, "", selection.agent("", ["", DEFAULT_THINKING])),
@@ -3197,7 +3226,10 @@ pub(crate) fn agent_page(
         .clone();
     let agent = alias.agent();
     let runs = collect_runs()?;
-    let played: Vec<&RunEntry> = runs.iter().filter(|entry| entry.by(&alias)).collect();
+    let played: Vec<&RunEntry> = runs
+        .iter()
+        .filter(|entry| entry.by(&registry, &alias))
+        .collect();
 
     let mut body = format!(
         "<div class=\"flex items-center gap-3\">{}\
@@ -3309,7 +3341,7 @@ pub(crate) fn agent_page(
             RIVALS_TABLE,
             Some(RIVALS_FOUGHT_COLUMN),
             &RIVALS_HEADERS,
-            rivals(&registry, &agent)?,
+            rivals(&registry, &alias)?,
             Some(NO_RIVALS_NOTE),
         )
     ));
@@ -3363,14 +3395,37 @@ fn form_strip(played: &[&RunEntry]) -> String {
     format!("<div class=\"{FORM_CLASSES}\">{marks}</div>")
 }
 
-/// The rows of the agents `agent` was paired against in a tournament, from its
+/// The name a run or a seat goes by: the one it recorded, else the one the
+/// registry gives its pairing.
+fn recorded_name(
+    registry: &registry::Registry,
+    agent: &ava_wire::Agent,
+    name: Option<&str>,
+) -> Option<String> {
+    name.map(str::to_string)
+        .or_else(|| registry.alias_of(agent).map(|alias| alias.name.clone()))
+}
+
+fn seated_by(
+    registry: &registry::Registry,
+    seat: &ava_wire::Setup,
+    alias: &registry::Alias,
+) -> bool {
+    match recorded_name(registry, &seat.agent, seat.name.as_deref()) {
+        Some(name) => name == alias.name,
+        None => seat.agent == alias.agent(),
+    }
+}
+
+/// The rows of the agents `alias` was paired against in a tournament, from its
 /// view, over the finished rounds of every tournament.
 fn rivals(
     registry: &registry::Registry,
-    agent: &ava_wire::Agent,
+    alias: &registry::Alias,
 ) -> std::io::Result<Vec<Vec<String>>> {
     struct Met {
         agent: ava_wire::Agent,
+        name: Option<String>,
         tally: ava_wire::Tally,
         /// The pairings the two played.
         fought: u64,
@@ -3394,19 +3449,28 @@ fn rivals(
                 if pairing.tally.rounds() == 0 {
                     continue;
                 }
-                let (other, view) = if first.agent == *agent && second.agent != *agent {
-                    (&second.agent, pairing.tally)
-                } else if second.agent == *agent && first.agent != *agent {
-                    (&first.agent, mirrored(&pairing.tally))
+                let (played, other) = (
+                    seated_by(registry, first, alias),
+                    seated_by(registry, second, alias),
+                );
+                let (other, view) = if played && !other {
+                    (second, pairing.tally)
+                } else if other && !played {
+                    (first, mirrored(&pairing.tally))
                 } else {
                     continue;
                 };
 
-                let seen = match met.iter().position(|seen| seen.agent == *other) {
+                let name = recorded_name(registry, &other.agent, other.name.as_deref());
+                let seen = match met
+                    .iter()
+                    .position(|seen| seen.agent == other.agent && seen.name == name)
+                {
                     Some(index) => &mut met[index],
                     None => {
                         met.push(Met {
-                            agent: other.clone(),
+                            agent: other.agent.clone(),
+                            name,
                             tally: ava_wire::Tally::default(),
                             fought: 0,
                         });
@@ -3427,7 +3491,7 @@ fn rivals(
     Ok(met
         .iter()
         .map(|seen| {
-            let mut row = agent_cells(registry, &seen.agent).to_vec();
+            let mut row = agent_cells(registry, &seen.agent, seen.name.as_deref()).to_vec();
             row.extend([
                 format!(
                     "<span class=\"{MONO_CLASSES} {}\">{}</span>",
@@ -3573,11 +3637,15 @@ fn alias_actions(alias: &registry::Alias) -> String {
     )
 }
 
-/// Two cells: the avatar of `agent`, and its name in the registry, or the
-/// harness on the model when the registry has none for it.
-fn agent_cells(registry: &registry::Registry, agent: &ava_wire::Agent) -> [String; 2] {
-    match registry.alias_of(agent) {
-        Some(alias) => named_cells(agent, &alias.name),
+/// Two cells: the avatar of `agent`, and the name it was started under, else
+/// its name in the registry, else the harness on the model.
+fn agent_cells(
+    registry: &registry::Registry,
+    agent: &ava_wire::Agent,
+    name: Option<&str>,
+) -> [String; 2] {
+    match name.or_else(|| registry.alias_of(agent).map(|alias| alias.name.as_str())) {
+        Some(name) => named_cells(agent, name),
         None => [
             avatar(agent, AVATAR_CLASSES),
             format!(

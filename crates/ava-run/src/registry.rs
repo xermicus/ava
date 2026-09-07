@@ -534,16 +534,18 @@ impl Registry {
             (Some((harness, model)), None) => self.agent(harness, Some(model))?,
             _ => self.agent(name, model)?,
         };
-        let backend = self
-            .alias(name)
-            .filter(|_| model.is_none())
-            .and_then(|alias| alias.backend.as_deref());
-        let (_, backend) = self.route(&agent.harness, &agent.model, backend)?;
+        let named = self.alias(name).filter(|_| model.is_none());
+        let (_, backend) = self.route(
+            &agent.harness,
+            &agent.model,
+            named.and_then(|alias| alias.backend.as_deref()),
+        )?;
 
         Ok(ava_wire::Setup {
             backend: Some(backend.name.clone()),
             agent,
             thinking: thinking.map(str::to_string),
+            name: named.map(|alias| alias.name.clone()),
         })
     }
 
@@ -675,10 +677,25 @@ impl Registry {
         let mut endpoints: Vec<Endpoint> = Vec::new();
 
         for backend in &self.backends {
-            if endpoints.iter().any(|held| held.host == backend.host) {
-                continue;
+            let named = |error: std::io::Error| {
+                std::io::Error::new(INVALID, format!("{}: {error}", backend.name))
+            };
+            let endpoint = backend.endpoint().map_err(named)?;
+            match endpoints.iter().find(|held| held.host == endpoint.host) {
+                Some(held)
+                    if held.scheme != endpoint.scheme || held.address != endpoint.address =>
+                {
+                    return Err(named(std::io::Error::new(
+                        INVALID,
+                        format!(
+                            "the {} host is reached at {}://{}",
+                            endpoint.host, held.scheme, held.address
+                        ),
+                    )));
+                }
+                Some(_) => {}
+                None => endpoints.push(endpoint),
             }
-            endpoints.push(backend.endpoint()?);
         }
 
         Ok(endpoints)
@@ -723,11 +740,7 @@ fn check(registry: &Registry) -> std::io::Result<()> {
         std::io::Error::new(INVALID, format!("{subject}: {error}"))
     };
 
-    for backend in &registry.backends {
-        backend
-            .endpoint()
-            .map_err(|error| invalid(&backend.name, error))?;
-    }
+    registry.endpoints()?;
 
     for model in &registry.models {
         for route in &model.routes {
@@ -1352,6 +1365,7 @@ mod tests {
             },
             thinking: None,
             backend: backend.map(str::to_string),
+            name: None,
         };
 
         assert_eq!(registry.cost(&setup(None), &metrics), Some(3.6));

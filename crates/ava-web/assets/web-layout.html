@@ -255,7 +255,7 @@ document.addEventListener("click", (event) => {
 });
 
 /* An open picker filters its rows by what is typed into it, and enter takes
- * the first row left. */
+ * the first row left, submitting a form that asks to be sent on a pick. */
 function filterPicker(picker, filter) {
     const wanted = filter.value.trim().toLowerCase();
 
@@ -299,6 +299,7 @@ for (const picker of document.querySelectorAll("details[data-picker]")) {
         if (first) {
             first.checked = true;
             first.dispatchEvent(new Event("change", { bubbles: true }));
+            picker.closest("form[data-submit]")?.requestSubmit();
         }
     });
 }

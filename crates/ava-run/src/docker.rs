@@ -132,9 +132,14 @@ impl Analyst {
 
     /// The command running `setup` for `limit` seconds.
     pub fn of(setup: &ava_wire::Setup, limit: u64) -> Self {
+        let (name, model) = match &setup.name {
+            Some(named) => (named.clone(), String::new()),
+            None => (setup.agent.harness.clone(), setup.agent.model.clone()),
+        };
+
         Self {
-            name: setup.agent.harness.clone(),
-            model: setup.agent.model.clone(),
+            name,
+            model,
             thinking: setup.thinking.clone(),
             limit,
         }

@@ -61,6 +61,9 @@ pub struct Setup {
     /// record from before backends were chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// The registry name the agent was chosen by, none for a pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Setup {
@@ -326,6 +329,7 @@ impl Run {
             agent: self.agent(),
             thinking: self.thinking.clone(),
             backend: (!self.backend.is_empty()).then(|| self.backend.clone()),
+            name: self.agent_name.clone(),
         }
     }
 
