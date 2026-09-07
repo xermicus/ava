@@ -13,7 +13,7 @@ The `tinycc` directory holds the Tiny C Compiler at commit 0fb5430. Build code s
 
 All four have to pass. The score is the file size of `minigzip`, `sqlite3`, `pngtest` and `tcc` as linked by your compiler with `TCC_OPT_SIZE=1`, each against the same program built by the unmodified upstream compiler, a baseline the CI measured once ahead of time. The four count equally, and halving all four earns everything. The push output reports the sizes.
 
-`make quick-check` builds and runs the zlib check in a few seconds. `make test` runs all four suites with the switch on, which takes several minutes, and `make -j4 test` runs them in parallel. Run one suite by hand with `/opt/tcc-opt/check /opt/tcc-opt/bootstrap zlib` for the unmodified compiler or your `build` prefix for yours, and `/opt/tcc-opt/suites` holds the sources of the four programs. The check script and the suites live outside the workspace and are the same in the CI, which has no C compiler but yours: nothing else compiles the test programs there.
+`make quick-check` builds and runs the zlib check in a few seconds. `make test` builds once and runs all four suites at once with the switch on, which takes a few minutes. Run one suite by hand with `/opt/tcc-opt/check /opt/tcc-opt/bootstrap zlib` for the unmodified compiler or your `build` prefix for yours, and `/opt/tcc-opt/suites` holds the sources of the four programs. The check script and the suites live outside the workspace and are the same in the CI, which has no C compiler but yours: nothing else compiles the test programs there.
 
 The CI takes several minutes per push. Run the push with a timeout well above that, or in the background with its output in a file.
 
