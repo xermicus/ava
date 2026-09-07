@@ -1,29 +1,231 @@
 [
   {
-    "name": "claude-opus",
-    "harness": "claude",
-    "model": "claude-opus-5"
+    "name": "jensen",
+    "harness": "pi",
+    "model": "qwen3.8-max",
+    "backend": "substrate"
   },
   {
-    "name": "claude-sonnet",
-    "harness": "claude",
-    "model": "claude-sonnet-5",
+    "name": "sam",
+    "harness": "codex",
+    "model": "glm-5.3-flash",
+    "backend": "substrate",
     "analyst": true
   },
   {
-    "name": "pi-deepseek-flash",
+    "name": "dario",
+    "harness": "claude",
+    "model": "claude-opus-5",
+    "backend": "anthropic"
+  },
+  {
+    "name": "alex",
+    "harness": "opencode",
+    "model": "qwen3.8-max",
+    "backend": "substrate"
+  },
+  {
+    "name": "daniela",
+    "harness": "claude",
+    "model": "claude-sonnet-5",
+    "backend": "anthropic"
+  },
+  {
+    "name": "larry",
+    "harness": "codex",
+    "model": "kimi-k3",
+    "backend": "substrate"
+  },
+  {
+    "name": "elon",
+    "harness": "opencode",
+    "model": "deepseek-v4-pro",
+    "backend": "substrate"
+  },
+  {
+    "name": "satya",
+    "harness": "claude",
+    "model": "glm-5.3-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "mark",
+    "harness": "pi",
+    "model": "qwen3.8-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "sundar",
+    "harness": "pi",
+    "model": "kimi-k3",
+    "backend": "substrate"
+  },
+  {
+    "name": "ed",
+    "harness": "claude",
+    "model": "qwen3.8-max",
+    "backend": "substrate"
+  },
+  {
+    "name": "andy",
+    "harness": "pi",
+    "model": "glm-5.3-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "john",
     "harness": "pi",
     "model": "deepseek-v4-flash",
     "backend": "substrate"
   },
   {
-    "name": "opencode-kimi",
-    "harness": "opencode",
-    "model": "kimi-k3"
+    "name": "ilya",
+    "harness": "codex",
+    "model": "claude-opus-5",
+    "backend": "substrate"
   },
   {
-    "name": "codex-glm",
+    "name": "geohot",
+    "harness": "pi",
+    "model": "claude-sonnet-5",
+    "backend": "substrate"
+  },
+  {
+    "name": "greg",
     "harness": "codex",
-    "model": "glm-5.3"
+    "model": "deepseek-v4-pro",
+    "backend": "substrate"
+  },
+  {
+    "name": "arthur",
+    "harness": "claude",
+    "model": "deepseek-v4-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "garry",
+    "harness": "opencode",
+    "model": "glm-5.3-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "jeff",
+    "harness": "opencode",
+    "model": "kimi-k3",
+    "backend": "substrate"
+  },
+  {
+    "name": "tim",
+    "harness": "claude",
+    "model": "kimi-k3",
+    "backend": "substrate"
+  },
+  {
+    "name": "steve",
+    "harness": "claude",
+    "model": "qwen3.8-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "bill",
+    "harness": "opencode",
+    "model": "qwen3.8-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "lisa",
+    "harness": "claude",
+    "model": "glm-5.3",
+    "backend": "substrate"
+  },
+  {
+    "name": "michael",
+    "harness": "pi",
+    "model": "glm-5.3",
+    "backend": "substrate"
+  },
+  {
+    "name": "ray",
+    "harness": "opencode",
+    "model": "glm-5.3",
+    "backend": "substrate"
+  },
+  {
+    "name": "terence",
+    "harness": "codex",
+    "model": "glm-5.3",
+    "backend": "substrate"
+  },
+  {
+    "name": "dhh",
+    "harness": "codex",
+    "model": "qwen3.8-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "theprimagen",
+    "harness": "codex",
+    "model": "qwen3.8-max",
+    "backend": "substrate"
+  },
+  {
+    "name": "vitalik",
+    "harness": "pi",
+    "model": "deepseek-v4-pro",
+    "backend": "substrate"
+  },
+  {
+    "name": "satoshi",
+    "harness": "claude",
+    "model": "deepseek-v4-pro",
+    "backend": "substrate"
+  },
+  {
+    "name": "gavin",
+    "harness": "opencode",
+    "model": "deepseek-v4-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "toly",
+    "harness": "codex",
+    "model": "deepseek-v4-flash",
+    "backend": "substrate"
+  },
+  {
+    "name": "marc",
+    "harness": "pi",
+    "model": "claude-opus-5",
+    "backend": "substrate"
+  },
+  {
+    "name": "richard",
+    "harness": "opencode",
+    "model": "claude-opus-5",
+    "backend": "substrate"
+  },
+  {
+    "name": "linus",
+    "harness": "codex",
+    "model": "claude-opus-5",
+    "backend": "substrate"
+  },
+  {
+    "name": "dennis",
+    "harness": "codex",
+    "model": "claude-sonnet-5",
+    "backend": "substrate"
+  },
+  {
+    "name": "brian",
+    "harness": "opencode",
+    "model": "claude-sonnet-5",
+    "backend": "substrate"
+  },
+  {
+    "name": "peter",
+    "harness": "pi",
+    "model": "claude-sonnet-5",
+    "backend": "substrate"
   }
 ]

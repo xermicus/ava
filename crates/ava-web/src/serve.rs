@@ -453,6 +453,7 @@ fn preserved(form: &[(String, String)], fields: &[&str]) -> String {
 fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
     let registry = registry::load().map_err(|error| Refusal::Failed(error.to_string()))?;
     let setup = agent_choice(&registry, form, "")?;
+    let picked = value(form, AGENT_FIELDS[0]).to_string();
 
     let analyst = if value(form, "analyze") == "on" {
         let analyst = agent_choice(&registry, form, ANALYST_PREFIX)?;
@@ -480,9 +481,18 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
         ));
     }
 
+    let named = registry.alias(&picked).is_some();
     let command = docker::Agent {
-        name: setup.agent.harness,
-        model: setup.agent.model,
+        name: if named {
+            picked.clone()
+        } else {
+            setup.agent.harness.clone()
+        },
+        model: if named {
+            String::new()
+        } else {
+            setup.agent.model.clone()
+        },
         game: game.to_string(),
         limit,
         parallel,
@@ -512,8 +522,9 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
         .push((
             ticket,
             views::Pending {
-                agent: command.name.clone(),
-                model: command.model.clone(),
+                name: picked,
+                agent: setup.agent.harness.clone(),
+                model: setup.agent.model.clone(),
                 game: command.game.clone(),
                 thinking: command.thinking.clone().unwrap_or_default(),
                 parallel: command.parallel,

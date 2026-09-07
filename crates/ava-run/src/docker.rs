@@ -954,6 +954,7 @@ fn record_run(run: &str, launch: &Launch, harness_version: &str) -> std::io::Res
             .map(|input| input.record.clone())
             .collect(),
         challenge: None,
+        agent_name: launch.agent_name.clone(),
         analyst: launch.analyst.clone(),
         finished_seconds: None,
         attempts: Vec::new(),
@@ -1300,6 +1301,8 @@ pub struct Launch {
     /// The immutable id of the harness image, with the layer of the game when it has one.
     pub identity: String,
     invocation: crate::registry::Invocation,
+    /// The name the agent is registered under, when it is one of the registry.
+    pub agent_name: Option<String>,
     /// The analyst the run records.
     pub analyst: Option<ava_wire::Setup>,
     pub game_version: String,
@@ -1322,6 +1325,10 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
         .as_ref()
         .map(|analyst| analyst.setup(&registry))
         .transpose()?;
+    let agent_name = registry
+        .alias(&command.name)
+        .or_else(|| registry.alias_of(&setup.agent))
+        .map(|alias| alias.name.clone());
 
     let force = command.force_build_images;
     build_image(BASE_IMAGE, BASE_CONTEXT, force)?;
@@ -1350,6 +1357,7 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
         setup,
         identity,
         invocation,
+        agent_name,
         analyst,
         game_version: game_version(&command.game),
         architecture: process::run_and_assume_success(

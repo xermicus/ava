@@ -242,6 +242,55 @@ document.addEventListener("click", (event) => {
     sortTable(table);
 });
 
+/* An open picker filters its rows by what is typed into it, and enter takes
+ * the first row left. */
+function filterPicker(picker, filter) {
+    const wanted = filter.value.trim().toLowerCase();
+
+    // The rows carry a display of their own, which the hidden attribute of the
+    // browser does not win against.
+    for (const row of picker.querySelectorAll("label")) {
+        const matches = wanted === "" || row.textContent.toLowerCase().includes(wanted);
+        row.style.display = matches ? "" : "none";
+    }
+}
+
+for (const picker of document.querySelectorAll("details[data-picker]")) {
+    const filter = picker.querySelector("[data-filter]");
+    if (!filter) {
+        continue;
+    }
+
+    picker.addEventListener("toggle", () => {
+        if (picker.open) {
+            filter.value = "";
+            filterPicker(picker, filter);
+            filter.focus();
+        }
+    });
+
+    filter.addEventListener("input", () => filterPicker(picker, filter));
+
+    filter.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            picker.open = false;
+            return;
+        }
+        if (event.key !== "Enter") {
+            return;
+        }
+
+        event.preventDefault();
+        const first = [...picker.querySelectorAll("label")]
+            .find((row) => row.style.display !== "none")
+            ?.querySelector("input");
+        if (first) {
+            first.checked = true;
+            first.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    });
+}
+
 /* An agent picker shows the row of the chosen agent on its face and folds
  * shut once one is picked, or when the page is clicked elsewhere. */
 for (const picker of document.querySelectorAll("details[data-picker]")) {

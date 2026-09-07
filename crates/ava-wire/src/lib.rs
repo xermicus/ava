@@ -293,6 +293,9 @@ pub struct Run {
     /// The entry the run attacked, on a record from before the inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub challenge: Option<Challenge>,
+    /// The name the agent was started under, when it is one of the registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
     /// The analyst the run was started with, due once it is over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analyst: Option<Setup>,

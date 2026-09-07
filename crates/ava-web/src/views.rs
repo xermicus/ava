@@ -91,14 +91,18 @@ const RUN_HEADERS: [&str; 10] = [
     "",
 ];
 const NO_RUNS_NOTE: &str = "no runs yet, start one above";
-/// What the tournament column shows for a run of its own.
+/// What the tournament column shows for a run of its own, and the run and
+/// state columns for a start that has not reached the disk.
 const NO_TOURNAMENT: &str = "-";
+const NO_RUN_YET: &str = "-";
+const PENDING_STATE: &str = "pending";
 const NO_LIMITS_NOTE: &str = "no backend reported its limits";
 const NO_TOURNAMENTS_NOTE: &str = "no tournaments yet, open one above";
 const NO_SEATS_NOTE: &str = "no seats yet, seat an agent below";
 
-/// The name the script keeps the sort of the standings under.
+/// The names the script keeps the sort of a table under.
 const STANDINGS_TABLE: &str = "standings";
+const AGENTS_TABLE: &str = "agents";
 
 /// The columns of the standings after the cross table of the seats.
 const STANDINGS_HEADERS: [&str; 5] = [
@@ -222,6 +226,12 @@ const PICKER_LIST_CLASSES: &str = "absolute z-10 mt-1 min-w-full w-max max-w-2xl
 const PICKER_ROW_CLASSES: &str = "flex items-center gap-2 px-3 py-2 cursor-pointer \
      hover:bg-neutral-800 has-[:checked]:bg-neutral-800/60";
 const PICKER_LINES_CLASSES: &str = "flex flex-col min-w-0 leading-tight";
+
+/// The field an open picker filters its rows by, above them as they scroll.
+const PICKER_FILTER_CLASSES: &str = "sticky top-0 z-10 w-full bg-neutral-950 border-b \
+     border-neutral-800 px-3 py-2 text-neutral-100 placeholder:text-neutral-600 \
+     focus:outline-none";
+const PICKER_FILTER_NOTE: &str = "type to filter";
 const PICKER_CONFIGURATION_CLASSES: &str = "text-xs text-neutral-500 whitespace-nowrap";
 const LABEL_CLASSES: &str = "block text-xs font-medium text-neutral-400 mb-1.5";
 
@@ -459,6 +469,8 @@ impl Selection {
 /// A run the server was asked to start whose containers are not up yet.
 #[derive(Clone)]
 pub(crate) struct Pending {
+    /// The name the agent was picked under.
+    pub name: String,
     pub agent: String,
     pub model: String,
     pub game: String,
@@ -553,21 +565,19 @@ impl RunEntry {
         self.record.as_ref().and_then(|entry| entry.points)
     }
 
-    /// The agent cell of the runs table: the avatar beside the name it is
-    /// registered under, over the harness and the thinking level, leading to
-    /// the run it played.
+    /// The agent cell of the runs table, leading to the run it played.
     fn agent_cell(&self, registry: &registry::Registry) -> String {
-        let agent = self.run.agent();
-
         format!(
-            "<a class=\"{CELL_LINK_CLASSES}\" href=\"/run/{}\">\
-             <span class=\"flex items-center gap-2\">{}{}</span>\
-             <div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} {}</div></a>",
+            "<a class=\"{CELL_LINK_CLASSES}\" href=\"/run/{}\">{}</a>",
             escape(&self.name),
-            avatar(&agent, AGENT_TILE_AVATAR_CLASSES),
-            escape(&agent_name(registry, &agent)),
-            escape(&self.run.harness),
-            escape(self.run.thinking.as_deref().unwrap_or_default())
+            agent_stack(
+                self.run
+                    .agent_name
+                    .clone()
+                    .unwrap_or_else(|| agent_name(registry, &self.run.agent())),
+                &self.run.agent(),
+                self.run.thinking.as_deref().unwrap_or_default()
+            )
         )
     }
 
@@ -899,6 +909,7 @@ pub(crate) fn runs_page(
 ) -> std::io::Result<String> {
     let runs = collect_runs()?;
 
+    let registry = registry::load()?;
     let mut rows: Vec<Vec<String>> = Vec::new();
 
     // A start shows up the moment it was asked for, and stays a starting row
@@ -916,18 +927,24 @@ pub(crate) fn runs_page(
 
         for _ in appeared..start.parallel {
             rows.push(vec![
+                agent_stack(
+                    start.name.clone(),
+                    &ava_wire::Agent {
+                        harness: start.agent.clone(),
+                        model: start.model.clone(),
+                    },
+                    &start.thinking,
+                ),
                 format!(
-                    "<span class=\"{MUTED_CLASSES}\">pending</span><div class=\"text-xs {MUTED_CLASSES} mt-0.5\">asked {} ago</div>",
+                    "<span class=\"{MUTED_CLASSES}\">{NO_RUN_YET}</span>\
+                     <div class=\"text-xs {MUTED_CLASSES} mt-0.5\">asked {} ago</div>",
                     usage::age(start.started)
                 ),
-                pill(STARTING_PILL, true, "starting"),
+                pill(STARTING_PILL, true, PENDING_STATE),
                 String::new(),
                 escape(&start.game),
                 format!("<span class=\"{MUTED_CLASSES}\">{NO_TOURNAMENT}</span>"),
-                agent_label(&start.agent, &start.thinking),
                 escape(&start.model),
-                String::new(),
-                String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
@@ -935,7 +952,6 @@ pub(crate) fn runs_page(
         }
     }
 
-    let registry = registry::load()?;
     rows.extend(runs.iter().map(|run| run.row(&registry)));
 
     let live = runs.iter().filter(|run| run.live).count();
@@ -1110,7 +1126,9 @@ fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 2]
             format!(
                 "<span class=\"{PICKER_CLASSES}\"><span class=\"{LABEL_CLASSES}\">{agent_field}</span>\
                  <details data-picker><summary class=\"{FIELD_CLASSES} {CONTROL_HEIGHT} {PICKER_FACE_CLASSES}\"><span data-chosen class=\"flex items-center gap-2 min-w-0 grow\">{}</span>{}</summary>\
-                 <div class=\"{PICKER_LIST_CLASSES}\">{rows}</div></details></span>",
+                 <div class=\"{PICKER_LIST_CLASSES}\">\
+                 <input data-filter type=\"text\" autocomplete=\"off\" placeholder=\"{PICKER_FILTER_NOTE}\" class=\"{PICKER_FILTER_CLASSES}\">\
+                 {rows}</div></details></span>",
                 row(chosen),
                 chevron("h-4 w-4 shrink-0 text-neutral-500")
             )
@@ -2695,7 +2713,7 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
         .agents
         .iter()
         .map(|alias| {
-            let mut row = agent_cells(&registry, &alias.agent()).to_vec();
+            let mut row = named_cells(&alias.agent(), &alias.name).to_vec();
             row.extend([
                 escape(&alias.harness),
                 escape(&alias.model),
@@ -2710,7 +2728,9 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
             row
         })
         .collect();
-    body.push_str(&table(
+    body.push_str(&sorted_table(
+        AGENTS_TABLE,
+        None,
         &[
             "",
             "agent",
@@ -2869,11 +2889,26 @@ fn alias_actions(alias: &registry::Alias) -> String {
 /// harness on the model when the registry has none for it. The name is plain
 /// text in its cell, so it sits on the line of the cells beside it.
 fn agent_cells(registry: &registry::Registry, agent: &ava_wire::Agent) -> [String; 2] {
-    let name = agent_name(registry, agent);
+    named_cells(agent, &agent_name(registry, agent))
+}
 
+/// The avatar of `agent` beside `name`, over the harness and the thinking level.
+fn agent_stack(name: String, agent: &ava_wire::Agent, thinking: &str) -> String {
+    format!(
+        "<span class=\"flex items-center gap-2\">{}{}</span>\
+         <div class=\"text-xs {MUTED_CLASSES} mt-0.5\">{} {}</div>",
+        avatar(agent, AGENT_TILE_AVATAR_CLASSES),
+        escape(&name),
+        escape(&agent.harness),
+        escape(thinking)
+    )
+}
+
+/// The avatar of `agent` beside `name`.
+fn named_cells(agent: &ava_wire::Agent, name: &str) -> [String; 2] {
     [
         avatar(agent, AVATAR_CLASSES),
-        format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(&name)),
+        format!("<span class=\"{MONO_CLASSES}\">{}</span>", escape(name)),
     ]
 }
 
