@@ -168,8 +168,13 @@ pub struct Analyze {
 
 const NETWORK_EGRESS: &str = "ava-egress";
 
-/// The docker format printing the gateway of a network.
-const GATEWAY_FORMAT: &str = "{{range .IPAM.Config}}{{.Gateway}}{{end}}";
+/// The name the host answers under inside a container, and the command
+/// reading the address out of the hosts file it stands in.
+const HOST_NAME: &str = "host.docker.internal";
+const HOST_LOOKUP: &str = "grep host.docker.internal /etc/hosts";
+
+/// The address of the host, looked up once.
+static HOST_ADDRESS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 /// Where a running web interface leaves its process and the port it answers on.
 const BUS_FILE: &str = ".ava-bus";
@@ -740,31 +745,64 @@ fn announced() -> Option<(i32, u16)> {
     process::alive(pid).then_some((pid, port))
 }
 
-/// Where the proxy of `run` publishes, empty when nothing serves here.
+/// Where the proxy of `run` publishes, empty when nothing serves here or the
+/// host has no address the proxy can reach it at.
 fn bus(run: &str) -> String {
     let Some((_, port)) = announced() else {
         return String::new();
     };
-    let Ok(gateway) = egress_gateway() else {
+    let Some(host) = host_address() else {
+        log::warn!(
+            "the host has no address inside a container, the chat of {run} stays unpublished"
+        );
         return String::new();
     };
 
-    format!("http://{gateway}:{port}/run/{run}/chat")
+    format!("http://{host}:{port}/run/{run}/chat")
 }
 
-/// The address the host answers at from inside the egress network, which the
-/// nginx resolver of the publisher cannot look up by name.
-fn egress_gateway() -> std::io::Result<String> {
-    process::run_and_assume_success(
-        "docker",
-        &[
-            "network",
-            "inspect",
-            "--format",
-            GATEWAY_FORMAT,
-            NETWORK_EGRESS,
-        ],
-    )
+/// The address the host answers at from inside a container, looked up once by
+/// reading the hosts file of one.
+///
+/// The name alone is not enough: nginx resolves the bus through the docker
+/// resolver, which knows nothing of the hosts file the name stands in, so the
+/// address has to travel in the environment. The gateway of the network is
+/// not it either, since that is the host on linux and the virtual machine on
+/// macOS. The IPv4 address is the one taken, because the resolver of the
+/// proxy is set to IPv4.
+fn host_address() -> Option<String> {
+    HOST_ADDRESS
+        .get_or_init(|| {
+            let hosts = process::run_and_assume_success(
+                "docker",
+                &[
+                    "run",
+                    "--rm",
+                    "--add-host",
+                    HOST_GATEWAY,
+                    "--entrypoint",
+                    BASH,
+                    PROXY_IMAGE,
+                    "-c",
+                    HOST_LOOKUP,
+                ],
+            )
+            .inspect_err(|error| log::warn!("looking {HOST_NAME} up failed: {error}"))
+            .ok()?;
+
+            let address = hosts
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+                .find(|address| address.parse::<std::net::Ipv4Addr>().is_ok())
+                .map(str::to_string);
+            match &address {
+                Some(address) => log::info!("the host answers at {address} inside a container"),
+                None => log::warn!("{HOST_NAME} has no IPv4 address in `{hosts}`"),
+            }
+
+            address
+        })
+        .clone()
 }
 
 /// Announce the interface on `port` as the bus the proxies publish to.
