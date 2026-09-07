@@ -63,8 +63,10 @@ pub enum Start {
 const CLAUDE_CONTINUE: &str = "--continue";
 const PI_CONTINUE: &str = "--continue";
 const OPENCODE_CONTINUE: &str = "--continue";
-const CODEX_EXEC: [&str; 2] = ["exec", "--json"];
-const CODEX_RESUME: [&str; 4] = ["exec", "resume", "--last", "--json"];
+/// Codex refuses a workspace that is not a git repository, which the analysis workspace is not.
+const CODEX_GIT_CHECK: &str = "--skip-git-repo-check";
+const CODEX_EXEC: [&str; 3] = ["exec", CODEX_GIT_CHECK, "--json"];
+const CODEX_RESUME: [&str; 5] = ["exec", "resume", "--last", CODEX_GIT_CHECK, "--json"];
 
 /// The arguments printing every event of an unattended opencode run as a JSON line.
 const OPENCODE_RUN: [&str; 4] = ["run", "--auto", "--format", "json"];
