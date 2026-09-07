@@ -1,6 +1,6 @@
 # Compiler optimizations: code size in tinycc
 
-The `tinycc` directory holds the Tiny C Compiler at commit 0fb5430. Build code size optimizations into it. They are on when `TCC_OPT_SIZE=1` is in the environment and `-O` (any level) is on the command line, and off otherwise: without the variable the compiler has to behave as it does now, whatever `-O` says. Today tcc parses `-O` into `s->optimize` (`libtcc.c`) and uses it for nothing but defining `__OPTIMIZE__`.
+The `tinycc` directory holds the Tiny C Compiler at commit 0fb5430. Build code size optimizations into it. They are on when `TCC_OPT_SIZE=1` is in the environment and `-O` (any level) is on the command line. Today tcc parses `-O` into `s->optimize` (`libtcc.c`) and uses it for nothing but defining `__OPTIMIZE__`.
 
 ## How it is built and verified
 
@@ -11,7 +11,7 @@ The `tinycc` directory holds the Tiny C Compiler at commit 0fb5430. Build code s
 - libpng 1.6.50: `make check`, against the zlib the same compiler built.
 - tinycc itself at the commit you started from: `make test`, which includes compiling itself three times over.
 
-All four have to pass. The score is the file size of `minigzip`, `sqlite3`, `pngtest` and `tcc` as linked by your compiler with `TCC_OPT_SIZE=1`, each against the same program built by the unmodified upstream compiler, a baseline the CI measured once ahead of time. The four count equally, and halving all four earns everything. The push output reports the sizes. Only the switch-on build is tested, so the switch-off requirement is on you to keep, not a thing the CI checks.
+All four have to pass. The score is the file size of `minigzip`, `sqlite3`, `pngtest` and `tcc` as linked by your compiler with `TCC_OPT_SIZE=1`, each against the same program built by the unmodified upstream compiler, a baseline the CI measured once ahead of time. The four count equally, and halving all four earns everything. The push output reports the sizes.
 
 `make quick-check` builds and runs the zlib check in a few seconds. `make test` runs all four suites with the switch on, which takes several minutes, and `make -j4 test` runs them in parallel. Run one suite by hand with `/opt/tcc-opt/check /opt/tcc-opt/bootstrap zlib` for the unmodified compiler or your `build` prefix for yours, and `/opt/tcc-opt/suites` holds the sources of the four programs. The check script and the suites live outside the workspace and are the same in the CI, which has no C compiler but yours: nothing else compiles the test programs there.
 

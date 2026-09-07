@@ -85,7 +85,7 @@ Both games play on the image of `games/r2wars/Dockerfile`, which builds r2wars f
 
 ## tcc-opt
 
-The task hands the agent the tinycc tree at commit `0fb5430` with a `Makefile` and asks for code size optimizations in the compiler, on when `TCC_OPT_SIZE=1` is in the environment and `-O` on the command line, off otherwise.
+The task hands the agent the tinycc tree at commit `0fb5430` with a `Makefile` and asks for code size optimizations in the compiler, on when `TCC_OPT_SIZE=1` is in the environment and `-O` on the command line.
 
 The verifier runs `make build` in the submission, takes `build/bin/tcc` and `build/lib/tcc` out of it, and runs the check script `/opt/tcc-opt/check` on four suites with that compiler and the switch on, in parallel. Every check builds its suite from the pristine sources under `/opt/tcc-opt/suites` in a scratch directory of its own with `-O2`, runs its tests and prints the file size of one program the compiler linked:
 
