@@ -1093,13 +1093,11 @@ pub(crate) fn runs_page(
 
     rows.extend(runs.iter().map(|run| run.row(&registry)));
 
-    let live = runs.iter().filter(|run| run.live).count();
     let mut body = start_panel(selection)?;
     body.push_str("<div data-refresh=\"runs\">");
     body.push_str(&notice.render());
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">runs <span class=\"{NOTE_CLASSES} font-normal\">{} on disk, {live} live</span></p>{}",
-        runs.len(),
+        "<p class=\"{TITLE_CLASSES}\">runs</p>{}",
         table(&RUN_HEADERS, rows, Some(NO_RUNS_NOTE))
     ));
     body.push_str("</div>");
@@ -1142,7 +1140,7 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">start</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
          <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
-         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyze the run</label>\
+         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyzer</label>\
          <div class=\"hidden peer-checked:contents\">{}{}</div>\
          </div>\
          </form>",
@@ -2165,7 +2163,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         "<p class=\"{FIRST_TITLE_CLASSES}\">new tournament</p>\
          <form method=\"post\" action=\"/tournaments/create\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">name</span>\
-         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"name\" value=\"{}\" placeholder=\"letters, digits, dashes\" required></label>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"name\" value=\"{}\" required></label>\
          {}\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
@@ -2174,7 +2172,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">open</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
          <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
-         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyze every run of a round</label>\
+         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyzer</label>\
          <div class=\"hidden peer-checked:contents\">{}{}</div>\
          </div>\
          </form>",
@@ -2228,10 +2226,11 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
     body.push_str("<div data-refresh=\"tournaments\">");
     body.push_str(&notice.render());
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">tournaments <span class=\"{NOTE_CLASSES} font-normal\">{} on disk</span></p>{}",
-        tournaments.len(),
+        "<p class=\"{TITLE_CLASSES}\">tournaments</p>{}",
         table(
-            &["name", "state", "game", "#seats", "#rounds", "*seconds", "#combats"],
+            &[
+                "name", "state", "game", "#seats", "#rounds", "*seconds", "#combats"
+            ],
             rows,
             Some(NO_TOURNAMENTS_NOTE),
         )
@@ -3595,7 +3594,7 @@ fn alias_panel(
     format!(
         "<form method=\"post\" action=\"{action}\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{}</span>\
-         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" placeholder=\"letters, digits, dashes\" required></label>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" required></label>\
          {}{}\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
          <input type=\"checkbox\" name=\"{analyst_field}\" class=\"h-4 w-4 rounded accent-indigo-500\"{}>\
