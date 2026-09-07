@@ -8,6 +8,7 @@ The trait separates what is recorded from what is derived:
 - `inputs()` says what a seat gets before a turn from the seats it meets: entries of earlier turns, under the names the task text uses. The tournament seeds them into the workspace and mounts them for the verifier. A game with one turn says nothing.
 - `verify()` runs in the scoring container on every push and reaches the verdict of the turn, passed or failed with the reason, naming the inputs the submission defeated when the turn is played against the entries of other seats. It records a fact and pays no points.
 - `prepare()` computes the data every verification needs, once when the scoring container starts, so no push has to compute it. The default does nothing.
+- `scoring_seconds()` is how long a verification may take, 90 unless the game says otherwise.
 - `points()` ranks an entry within 0 and 10000 from the file and the verdict of the push that left it, without executing anything, wherever standings are shown. A game with nothing to rank beyond passing ranks nothing, and its entries show no points.
 - `outcome()` reads how two seats came out of a round from what the round recorded, their entries and their verdicts, as a tally from the view of the first. Unless the game says otherwise the entries of the last turn are compared by their points: more points win, equal points draw, a missing entry forfeits. A game answering nothing needs a fight.
 - `fight()` plays one pairing for such a game and tallies the rounds from the view of the first entry.
@@ -21,9 +22,10 @@ The tasks asking for a binary ask for an x86-64 Linux ELF whatever the host runs
 1. Write the task of every turn, `games/<name>/task/task.md` for a game with one turn, and any files the agent needs.
 2. Implement the `Game` trait in `games/<name>/scorer.rs`: the turns, the verifier, and the points curve when passing is not the whole story.
 3. Declare the module by its path in `games/src/lib.rs` and add the implementation to the `GAMES` constant.
-4. If the base image lacks software the game needs, return a folder under `games` from `image()` and write its `Dockerfile`, starting with `ARG BASE` and `FROM ${BASE}`. The build context is the `games` folder.
+4. If the base image lacks software the game needs, return a folder under `games` from `image()` and write its `Dockerfile`, starting with `ARG BASE` and `FROM ${BASE}`. The build context is the `games` folder. A scaffold too large for the repository goes into the image under `/opt/scaffold`, which the scoring container seeds into the workspace with the task.
 5. For a game whose entries fight each other, answer nothing from `outcome()` and implement `fight()`. For a game of several turns, list them in `turns()`, say in `inputs()` what a later turn gets from the other seats, verify every turn, and settle a pairing in `outcome()` from the verdicts. The tournaments do the rest.
 6. If every verification needs the same data, compute it in `prepare()`.
+7. If a verification takes longer than 90 seconds, say how long in `scoring_seconds()`.
 
 A `cover.png`, `cover.svg`, `cover.webp` or `cover.jpg` in the game folder is the cover of its card on the games page. Without one the card shows the entry of record.
 
@@ -80,3 +82,26 @@ The game has one turn and nothing in the records settles a pairing, so the score
 A round is capped at 50000 cycles, `MAX_CYCLES` in the patch, up from the 2000 of upstream r2wars. A cycle is one turn of one warrior, and an instruction costing several cycles takes as many turns. Two warriors looping past each other reach the cap, the round is a timeout, tallied as a draw and replayed from fresh positions without counting as one of the three, and the third timeout of a combat ends it as a draw. A timed out round takes about 18 seconds, a fight of five combats between two warriors that never meet about 280, under the wall clock of 600 seconds every fight runs under, `FIGHT_TIMEOUT_SECONDS` in `ava-run`; a fight that outlives it fails as described under [the pairings](tournaments.md#the-pairings).
 
 Both games play on the image of `games/r2wars/Dockerfile`, which builds r2wars from a pinned commit plus `r2wars-headless.patch`, adding `r2wars --fight a.asm b.asm`, a combat on the console without the web server, and installs it with radare2 6.2.0 and the .NET runtime. The sandbox holds the two READMEs of r2wars and two small warriors per architecture under `/opt/r2wars/examples/<architecture>/`, the x86 ones from r2wars and the Game Boy ones from `games/r2wars/examples`, and none of the tournament entries.
+
+## tcc-opt
+
+The task hands the agent the tinycc tree at commit `0fb5430` with a `Makefile` and asks for code size optimizations in the compiler, on when `TCC_OPT_SIZE=1` is in the environment and `-O` on the command line, off otherwise.
+
+The verifier runs `make build` in the submission, takes `build/bin/tcc` and `build/lib/tcc` out of it, and runs the check script `/opt/tcc-opt/check` on four suites with that compiler, once without the variable and once with it, in parallel. Every check builds its suite from the pristine sources under `/opt/tcc-opt/suites` in a scratch directory of its own with `-O2`, runs its tests and prints the bytes of the executable segments of one program the compiler linked:
+
+| suite | tests | program |
+|---|---|---|
+| zlib 1.3.1 | `make test`, then four corpora deflated at every level, window and strategy against the output recorded when the image was built | `minigzip` |
+| sqlite 3.50.4 | `testfixture test/veryquick.test` | `sqlite3`, the shell with the options of `main.mk` |
+| libpng 1.6.50 | `make check`, against the zlib the same compiler built | `pngtest` |
+| tinycc at the starting commit | `make test` | `tcc` |
+
+A push passes when all eight checks pass. The verdict records the bytes of every program under `measurements`: `zlib.plain` without the variable, `zlib.optimized` with it, and `zlib.reference` as the unmodified compiler gives it, and so on for every suite. `prepare` measures the reference sizes with the bootstrap compiler when the scoring container starts and caches them in the temporary directory; a push finding no cache measures them itself. The reason of a passing verdict lists the optimized sizes against the reference and the average reduction.
+
+The points are the average over the four suites of `optimized / reference`, taken off one and scaled so that halving the code earns 10000 and code no smaller earns nothing, `FULL_REDUCTION` in the scorer. The entry kept is `tinycc.patch`, the diff of the submitted tree against the tree the task handed out.
+
+The workspace `Makefile` runs the same check script: `make quick-check` runs zlib both ways, `make test` every suite both ways. The script and the suites are in the image, so the agent runs what the verifier runs and can change neither.
+
+The build and the checks run with a cleared environment on a fixed path, each in a process group killed when it is over, under 300 seconds for the build and 900 for a check, and the game declares 1260 scoring seconds. The scoring image carries no C compiler but the bootstrap tcc the submission is built with, so the only compiler a submission can reach is the one it built: the verifier refuses to run where `cc`, `gcc`, `clang`, `c++`, `g++` or `tcc` is on the path. The compiler targets the architecture of the host, so sizes compare across hosts as shares of the reference and not as bytes.
+
+The image of `games/tcc-opt/Dockerfile` fetches tinycc at the pinned commit into `/opt/scaffold`, builds the bootstrap from it with gcc, fetches the pinned suites by checksum, records the deflate fixture and installs binutils, the libc headers, make and tcl over the base.

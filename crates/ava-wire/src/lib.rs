@@ -96,6 +96,9 @@ pub struct Verdict {
     /// The rating the verifier measured, for a game grading against a field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<f64>,
+    /// What the verifier measured, by name, for a game grading by measurement.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub measurements: std::collections::BTreeMap<String, u64>,
 }
 
 impl Verdict {
@@ -106,6 +109,7 @@ impl Verdict {
             reason: None,
             defeated: Vec::new(),
             rating: None,
+            measurements: std::collections::BTreeMap::new(),
         }
     }
 
@@ -116,6 +120,7 @@ impl Verdict {
             reason: None,
             defeated,
             rating: None,
+            measurements: std::collections::BTreeMap::new(),
         }
     }
 
@@ -126,6 +131,7 @@ impl Verdict {
             reason: Some(reason.into()),
             defeated: Vec::new(),
             rating: None,
+            measurements: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -575,6 +581,22 @@ mod tests {
         assert!(attempt.verdict.passed);
         assert_eq!(attempt.verdict.reason, None);
         assert_eq!(attempt.verdict.rating, None);
+        assert!(attempt.verdict.measurements.is_empty());
+    }
+
+    #[test]
+    fn a_verdict_carries_its_measurements() {
+        let line = r#"{"seconds": 3, "passed": true, "measurements": {"zlib.optimized": 90000}}"#;
+        let attempt: super::Attempt = serde_json::from_str(line).unwrap();
+
+        assert_eq!(
+            attempt.verdict.measurements.get("zlib.optimized"),
+            Some(&90000)
+        );
+        assert_eq!(
+            serde_json::to_string(&attempt).unwrap(),
+            r#"{"seconds":3,"passed":true,"measurements":{"zlib.optimized":90000}}"#
+        );
     }
 
     #[test]

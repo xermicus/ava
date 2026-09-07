@@ -11,15 +11,18 @@ pub mod r2wars;
 #[path = "../sanity-check/scorer.rs"]
 pub mod sanity_check;
 pub mod scoring;
+#[path = "../tcc-opt/scorer.rs"]
+pub mod tcc_opt;
 
 /// Every game a benchmark run can play.
-pub const GAMES: [&dyn Game; 6] = [
+pub const GAMES: [&dyn Game; 7] = [
     &chess_vm::ChessVm,
     &crackme::Crackme,
     &fib_golf::FibGolf,
     &r2wars::GAMES[0],
     &r2wars::GAMES[1],
     &sanity_check::SanityCheck,
+    &tcc_opt::TccOpt,
 ];
 
 /// The architecture the tasks ask binaries for, whatever the host runs on.
@@ -55,6 +58,9 @@ pub(crate) fn binary_command(binary: &std::path::Path) -> std::process::Command 
 /// what makes runs of different games comparable. A game with nothing to rank
 /// beyond passing ranks nothing.
 pub const MAXIMUM_POINTS: u64 = 10_000;
+
+/// The seconds a verification may take unless the game says otherwise.
+pub const DEFAULT_SCORING_SECONDS: u64 = 90;
 
 /// The folder holding the task of a game with one turn.
 pub const TASK_FOLDER: &str = "task";
@@ -141,6 +147,12 @@ pub trait Game {
 
     fn prepare(&self) -> std::io::Result<()> {
         Ok(())
+    }
+
+    /// The seconds a verification may take before the scoring container gives
+    /// up on it, under the hour the proxy waits for a push to be answered.
+    fn scoring_seconds(&self) -> u64 {
+        DEFAULT_SCORING_SECONDS
     }
 
     /// Whether the contents of the `submission` directory do what the task of

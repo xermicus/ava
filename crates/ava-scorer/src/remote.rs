@@ -31,10 +31,9 @@ const SANDBOX_GID: u32 = 1000;
 const SOCKET_MODE: u32 = 0o666;
 
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
-const BACKEND_TIMEOUT_SECONDS: &str = "180";
 
-/// The same bound the receive hook puts on a scoring.
-const SCORE_TIMEOUT_SECONDS: &str = "90";
+/// What the backend gets beyond the scoring seconds of the game, for the push itself.
+const BACKEND_MARGIN_SECONDS: u64 = 90;
 
 /// How coreutils `timeout` reports an expired deadline.
 const TIMEOUT_STATUS: i32 = 124;
@@ -203,7 +202,7 @@ fn unpack_and_score(
 
     let mut verifier = std::process::Command::new("timeout");
     verifier
-        .arg(SCORE_TIMEOUT_SECONDS)
+        .arg(crate::score::find(game)?.scoring_seconds().to_string())
         .arg(std::env::current_exe()?)
         .args(["score", "--game", game, "--turn", turn]);
     if let Some(inputs) = inputs {
@@ -252,8 +251,9 @@ fn backend(request: &mut tiny_http::Request, root: &str) -> std::io::Result<Answ
         Err(answer) => return Ok(answer),
     };
 
+    let timeout = (scoring_seconds(root)? + BACKEND_MARGIN_SECONDS).to_string();
     let mut child = std::process::Command::new("timeout")
-        .args([BACKEND_TIMEOUT_SECONDS, "git", "http-backend"])
+        .args([timeout.as_str(), "git", "http-backend"])
         .env("GIT_PROJECT_ROOT", root)
         .env("GIT_HTTP_EXPORT_ALL", "1")
         .env("REQUEST_METHOD", method)
@@ -305,6 +305,14 @@ fn backend(request: &mut tiny_http::Request, root: &str) -> std::io::Result<Answ
     }
 
     Ok(relay(&stdout))
+}
+
+/// The seconds the game of the run gives a verification, the game read from
+/// the file next to the repository.
+fn scoring_seconds(root: &str) -> std::io::Result<u64> {
+    let game = std::fs::read_to_string(std::path::Path::new(root).join(GAME_FILE))?;
+
+    Ok(crate::score::find(game.trim())?.scoring_seconds())
 }
 
 /// The CGI output of the backend as a response, honoring its Status header.

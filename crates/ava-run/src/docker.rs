@@ -276,9 +276,10 @@ const HOLD_OPEN: &str = "sleep infinity";
 /// Without this, crashing submissions leave a core dump into the host journal.
 const NO_CORE_DUMPS: &str = "core=0";
 
-/// Longer than the scoring timeout of the server, so the drain probe outlives
-/// any scoring still in flight without hanging teardown on a dead server.
-const DRAIN_TIMEOUT_SECONDS: &str = "90";
+/// What the drain probe waits beyond the scoring seconds of the game, so it
+/// outlives any scoring still in flight without hanging teardown on a dead
+/// server.
+const DRAIN_MARGIN_SECONDS: u64 = 30;
 const DRAIN_PROBE_URL: &str = "http://git/task.git/info/refs?service=git-upload-pack";
 const SANDBOX_LOOPBACK: &str = "127.0.0.1";
 const STAGING_DIRECTORY: &str = "ava-agent-config";
@@ -874,10 +875,19 @@ fn start_score_server(
         arguments.push(input_mount(input)?);
     }
     let turn = turn.to_string();
+    let seconds = scoring_seconds(game).to_string();
     arguments.extend(
-        ["--entrypoint", BASH, image, SCORE_ENTRY, game, &turn]
-            .iter()
-            .map(|argument| argument.to_string()),
+        [
+            "--entrypoint",
+            BASH,
+            image,
+            SCORE_ENTRY,
+            game,
+            &turn,
+            &seconds,
+        ]
+        .iter()
+        .map(|argument| argument.to_string()),
     );
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
@@ -924,7 +934,8 @@ fn await_socket(container: &str, socket: &str) -> std::io::Result<()> {
 /// The scoring server answers requests one at a time, which makes one served
 /// probe the proof that the previous scoring finished. Failures are ignored,
 /// since a server that cannot answer has nothing in flight to wait for.
-fn drain_scorer(run: &str) {
+fn drain_scorer(run: &str, game: &str) {
+    let max_time = (scoring_seconds(game) + DRAIN_MARGIN_SECONDS).to_string();
     let _ = std::process::Command::new("docker")
         .args([
             "exec",
@@ -932,7 +943,7 @@ fn drain_scorer(run: &str) {
             "curl",
             "-sf",
             "--max-time",
-            DRAIN_TIMEOUT_SECONDS,
+            &max_time,
             "--unix-socket",
             SCORE_SOCKET_PATH,
             DRAIN_PROBE_URL,
@@ -1276,6 +1287,14 @@ pub fn scorer_image(game: &str) -> String {
     }
 }
 
+/// The seconds the named game gives a verification, the default for a game the
+/// build does not know.
+fn scoring_seconds(game: &str) -> u64 {
+    ava_game::find(game).map_or(ava_game::DEFAULT_SCORING_SECONDS, |game| {
+        game.scoring_seconds()
+    })
+}
+
 /// The folder whose Dockerfile the named game plays on, if it needs one.
 fn game_layer(game: &str) -> Option<&'static str> {
     ava_game::find(game).and_then(|game| game.image())
@@ -1517,7 +1536,7 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
         });
 
     let collected = collect_logs(run, &proxy_container(run), ACCESS_LOG, ERROR_LOG);
-    drain_scorer(run);
+    drain_scorer(run, &command.game);
     let attempts = collect_logs(run, &scorer_container(run), SCORE_LOG, SCORE_ERROR_LOG);
     let entries = collect_entries(run);
     remove_sidecars(run);
