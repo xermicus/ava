@@ -46,7 +46,7 @@ const NOTHING_REPORTED: &str = "nothing reported";
 const STATE_HEADERS: [&str; 7] = [
     "BACKEND", "SOURCE", "WINDOW", "USED", "LEFT", "STATUS", "RESETS",
 ];
-const RECORDED_HEADERS: [&str; 9] = [
+const RECORDED_HEADERS: [&str; 10] = [
     "BACKEND",
     "RUNS",
     "ANALYSES",
@@ -56,6 +56,7 @@ const RECORDED_HEADERS: [&str; 9] = [
     "CACHE READ",
     "CACHE WRITE",
     "COST",
+    "UNPRICED",
 ];
 
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -72,19 +73,25 @@ pub struct Recorded {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
-    pub gateway_cost: f64,
+    /// The dollars at the prices of the registry, over the runs and analyses on priced routes.
+    pub cost: f64,
+    /// The runs and analyses whose route has no price.
+    pub unpriced: u64,
     /// The limits the newest run captured, with the second it started.
     pub newest_limits: Option<(u64, String)>,
 }
 
 impl Recorded {
-    fn add(&mut self, metrics: &ava_wire::Metrics, started: u64) {
+    fn add(&mut self, metrics: &ava_wire::Metrics, started: u64, cost: Option<f64>) {
         self.requests += metrics.requests;
         self.input_tokens += metrics.input_tokens;
         self.output_tokens += metrics.output_tokens;
         self.cache_read_tokens += metrics.cache_read_tokens;
         self.cache_write_tokens += metrics.cache_write_tokens;
-        self.gateway_cost += metrics.gateway_cost;
+        match cost {
+            Some(cost) => self.cost += cost,
+            None => self.unpriced += 1,
+        }
 
         let older = self
             .newest_limits
@@ -106,10 +113,11 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
 
     for (directory, run) in crate::runs::all()? {
         if let Some(metrics) = &run.metrics {
+            let cost = registry.cost(&run.setup(), metrics);
             for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
                 if metrics.hosts.contains(&backend.host) {
                     usage.runs += 1;
-                    usage.add(metrics, run.started_seconds);
+                    usage.add(metrics, run.started_seconds, cost);
                 }
             }
         }
@@ -120,10 +128,14 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
         let Some(metrics) = &analysis.metrics else {
             continue;
         };
+        let cost = analysis
+            .analyst
+            .as_ref()
+            .and_then(|analyst| registry.cost(analyst, metrics));
         for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
             if metrics.hosts.contains(&backend.host) {
                 usage.analyses += 1;
-                usage.add(metrics, analysis.started_seconds);
+                usage.add(metrics, analysis.started_seconds, cost);
             }
         }
     }
@@ -533,7 +545,8 @@ fn recorded_row(name: &str, recorded: &Recorded) -> Vec<String> {
         recorded.output_tokens.to_string(),
         recorded.cache_read_tokens.to_string(),
         recorded.cache_write_tokens.to_string(),
-        money(recorded.gateway_cost),
+        money(recorded.cost),
+        recorded.unpriced.to_string(),
     ]
 }
 
@@ -647,7 +660,14 @@ pub fn utc_date(epoch: u64) -> String {
     )
 }
 
-/// A dollar amount with cents.
+/// The amount below which a dollar figure shows tenths of a cent.
+const SMALL_AMOUNT: f64 = 1.0;
+
+/// A dollar amount with cents, with tenths of a cent below a dollar.
 pub fn money(amount: f64) -> String {
-    format!("${amount:.2}")
+    if amount < SMALL_AMOUNT {
+        format!("${amount:.3}")
+    } else {
+        format!("${amount:.2}")
+    }
 }

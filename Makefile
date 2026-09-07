@@ -1,4 +1,4 @@
-.PHONY: book clippy doc fmt install serve test-book
+.PHONY: book clippy doc fmt install serve test test-book
 
 
 book: test-book
@@ -19,6 +19,9 @@ install:
 serve: install
 	ava image
 	ava serve
+
+test:
+	cargo test --workspace
 
 test-book:
 	cargo install mdbook --version 0.5.4 --locked

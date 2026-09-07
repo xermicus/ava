@@ -247,6 +247,43 @@ impl Backend {
     }
 }
 
+/// The tokens a price is quoted per.
+const PRICED_TOKENS: f64 = 1_000_000.0;
+
+/// The dollars per million tokens a route bills, by kind of token.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl Price {
+    /// The dollars `metrics` cost at this price, by kind of token.
+    pub fn parts(&self, metrics: &ava_wire::Metrics) -> [(&'static str, f64); 4] {
+        let priced = |tokens: u64, price: f64| tokens as f64 * price / PRICED_TOKENS;
+
+        [
+            ("input", priced(metrics.input_tokens, self.input)),
+            ("output", priced(metrics.output_tokens, self.output)),
+            (
+                "cache read",
+                priced(metrics.cache_read_tokens, self.cache_read),
+            ),
+            (
+                "cache write",
+                priced(metrics.cache_write_tokens, self.cache_write),
+            ),
+        ]
+    }
+
+    /// The dollars `metrics` cost at this price.
+    pub fn cost(&self, metrics: &ava_wire::Metrics) -> f64 {
+        self.parts(metrics).iter().map(|(_, cost)| cost).sum()
+    }
+}
+
 /// The id and limits a single backend uses for a model.
 #[derive(serde::Deserialize)]
 pub struct Route {
@@ -254,6 +291,9 @@ pub struct Route {
     pub backend: String,
     /// The model id that backend expects.
     pub id: String,
+    /// The price the backend bills the route at, none for a route without one.
+    #[serde(default)]
+    pub price: Option<Price>,
     /// The largest prompt the backend accepts, in tokens.
     pub context_window: u32,
     /// The largest completion the backend accepts, in tokens.
@@ -544,6 +584,25 @@ impl Registry {
                     self.backends.iter().map(|entry| entry.name.as_str()),
                 )
             })
+    }
+
+    /// The price of `model` on `backend`, on its first route without one, or
+    /// nothing for a model or a route the registry does not price.
+    pub fn price(&self, model: &str, backend: Option<&str>) -> Option<Price> {
+        let model = self.model(model).ok()?;
+        let route = match backend {
+            Some(backend) => model.routes.iter().find(|route| route.backend == backend)?,
+            None => model.routes.first()?,
+        };
+        route.price
+    }
+
+    /// The dollars `metrics` cost `setup`, or nothing when its route has no price.
+    pub fn cost(&self, setup: &ava_wire::Setup, metrics: &ava_wire::Metrics) -> Option<f64> {
+        Some(
+            self.price(&setup.agent.model, setup.backend.as_deref())?
+                .cost(metrics),
+        )
     }
 
     /// Every distinct host a registered backend is reached at, in registry
@@ -1176,7 +1235,8 @@ mod tests {
         ],
         "models": [
             {"name": "m", "routes": [
-                {"backend": "direct", "id": "m-direct", "context_window": 1, "max_output": 1},
+                {"backend": "direct", "id": "m-direct", "context_window": 1, "max_output": 1,
+                 "price": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5}},
                 {"backend": "gateway", "id": "m-gateway", "context_window": 1, "max_output": 1},
                 {"backend": "other", "id": "m-other", "context_window": 1, "max_output": 1}
             ]}
@@ -1205,6 +1265,31 @@ mod tests {
             "m-other"
         );
         assert!(registry.route("pi", "m", Some("direct")).is_err());
+    }
+
+    #[test]
+    fn a_price_costs_the_tokens_of_the_route_or_nothing_without_one() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+        let metrics = ava_wire::Metrics {
+            input_tokens: 1_000_000,
+            output_tokens: 100_000,
+            cache_read_tokens: 500_000,
+            cache_write_tokens: 200_000,
+            ..Default::default()
+        };
+        let setup = |backend: Option<&str>| ava_wire::Setup {
+            agent: ava_wire::Agent {
+                harness: "pi".to_string(),
+                model: "m".to_string(),
+            },
+            thinking: None,
+            backend: backend.map(str::to_string),
+        };
+
+        assert_eq!(registry.cost(&setup(None), &metrics), Some(3.6));
+        assert_eq!(registry.cost(&setup(Some("direct")), &metrics), Some(3.6));
+        assert_eq!(registry.cost(&setup(Some("gateway")), &metrics), None);
+        assert_eq!(registry.cost(&setup(Some("gone")), &metrics), None);
     }
 
     #[test]
@@ -1283,6 +1368,7 @@ mod tests {
         super::Route {
             backend: "gateway".to_string(),
             id: id.to_string(),
+            price: None,
             context_window: 1_000_000,
             max_output,
         }

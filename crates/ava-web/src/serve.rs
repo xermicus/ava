@@ -246,6 +246,7 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
             .chain(CREATE_FIELDS.iter())
             .chain(AGENT_FIELDS.iter())
             .chain(ALIAS_FIELDS.iter())
+            .chain(views::WEIGHT_FIELDS.iter())
             .map(|key| (key.to_string(), query_value(query, key)))
             .chain(AGENT_FIELDS.iter().map(|key| {
                 let key = format!("{ANALYST_PREFIX}{key}");

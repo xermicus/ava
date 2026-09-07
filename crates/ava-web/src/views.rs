@@ -108,7 +108,7 @@ const SCOREBOARD_TABLE: &str = "scoreboard";
 
 /// The scoreboard: every agent, its runs and its ratings over the tournaments.
 const SCOREBOARD_HEADING: &str = "scoreboard";
-const SCOREBOARD_HEADERS: [&str; 8] = [
+const SCOREBOARD_HEADERS: [&str; 11] = [
     "",
     "*agent",
     "#runs|the runs on disk that are over",
@@ -116,8 +116,15 @@ const SCOREBOARD_HEADERS: [&str; 8] = [
     "#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
      than lost is won",
     "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
-    "#elo|updated in match order, anchored at 1000",
-    "#bradley-terry|fitted over the whole history, anchored at 1000",
+    "#elo|updated in match order, anchored at 1000 and pulled back towards it by how few matches \
+     back it, the rating as rated behind the hover",
+    "#bradley-terry|fitted over the whole history, anchored at 1000 and pulled back towards it by \
+     how few matches back it, the rating as fitted behind the hover",
+    "#$ per run|the dollars of its priced runs over their count, at the prices of the registry, \
+     the total and the count behind the hover",
+    "#$ per pass|the same dollars over the runs of them that passed, what one passing run costs",
+    "#$ per round won|the same dollars over the rounds it won in tournaments, a draw counting \
+     half, which is the currency the ratings are made of",
 ];
 
 /// The column the scoreboard arrives sorted by, and the one a chosen game adds.
@@ -125,6 +132,21 @@ const SCOREBOARD_RATING_COLUMN: usize = 7;
 const SCOREBOARD_POINTS_HEADER: &str =
     "*points|the best entry of record of the game, on the 0 to 10000 scale it ranks in";
 const NO_SCOREBOARD_NOTE: &str = "nothing played yet";
+
+/// The weights of cost and speed, carried in the query so a link holds them.
+pub(crate) const WEIGHT_FIELDS: [&str; 2] = ["cost", "speed"];
+const WEIGHT_STEP: &str = "0.1";
+const COST_WEIGHT_TOOLTIP: &str = "the share of its points the dearest run of a round loses, \
+    every other run in proportion to its cost, 0 to 1";
+const SPEED_WEIGHT_TOOLTIP: &str = "the share of its points an entry banked as the budget ran out \
+    loses, an earlier one in proportion, 0 to 1";
+const WEIGHED_NOTE: &str = "the points of every entry are scaled by the cost and the speed of its \
+    run before the pairings are compared, a game ranking nothing ranks every entry at 10000 \
+    first, and pairings settled by a fight or by verdicts are not touched";
+const UNPRICED_NOTE: &str = "counted as free for want of a price";
+
+/// What separates the parts of a cost.
+const COST_PART_SEPARATOR: &str = " \u{00b7} ";
 
 /// The game filter of the scoreboard.
 const GAME_FIELD: &str = "game";
@@ -136,10 +158,11 @@ const FILTER_CHOSEN_CLASSES: &str =
     "rounded-md px-2.5 py-1 text-xs bg-neutral-800 text-neutral-100";
 
 /// The columns of the standings after the cross table of the seats.
-const STANDINGS_HEADERS: [&str; 3] = [
+const STANDINGS_HEADERS: [&str; 4] = [
     "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
      than lost is won",
     "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
+    "#cost|the dollars of every run the seat played in this tournament",
     "",
 ];
 
@@ -455,6 +478,7 @@ const SETTINGS_TITLE: &str = "settings";
 const PLACEHOLDER_CLASSES: &str = "text-sm font-normal text-neutral-500";
 const AFTER_THE_RUN: &str = "after the run";
 const NOT_RECORDED: &str = "not recorded";
+const UNPRICED: &str = "unpriced";
 const NO_ENTRY: &str = "no entry";
 
 /// A passing run from before entries were kept left no entry file.
@@ -511,6 +535,12 @@ impl Selection {
             .find(|(name, _)| name == field)
             .map(|(_, value)| value.as_str())
             .unwrap_or(default)
+    }
+
+    /// The carried weights, none without them.
+    fn weights(&self) -> ava_game::scoring::Weights {
+        let [cost, speed] = WEIGHT_FIELDS.map(|field| self.get(field, "").parse().unwrap_or(0.0));
+        ava_game::scoring::Weights::clamped(cost, speed)
     }
 
     /// The carried agent under `prefix`, or the `defaults`.
@@ -637,6 +667,31 @@ impl RunEntry {
     /// The points of the entry of record, nothing for a game ranking nothing.
     fn points(&self) -> Option<u64> {
         self.record.as_ref().and_then(|entry| entry.points)
+    }
+
+    /// The dollars of the run at the price of its route, nothing without metrics or a price.
+    fn cost(&self, registry: &registry::Registry) -> Option<f64> {
+        registry.cost(&self.run.setup(), self.metrics.as_ref()?)
+    }
+
+    /// The cost of the run by kind of token, as `input $0.01` and so on,
+    /// the kinds that cost nothing left out.
+    fn cost_parts(&self, registry: &registry::Registry) -> String {
+        let Some((metrics, price)) = self
+            .metrics
+            .as_ref()
+            .zip(registry.price(&self.run.model, self.run.setup().backend.as_deref()))
+        else {
+            return String::new();
+        };
+
+        price
+            .parts(metrics)
+            .iter()
+            .filter(|(_, cost)| *cost > 0.0)
+            .map(|(kind, cost)| format!("{kind} {}", usage::money(*cost)))
+            .collect::<Vec<_>>()
+            .join(COST_PART_SEPARATOR)
     }
 
     /// The agent cell of the runs table, leading to the run it played.
@@ -856,8 +911,11 @@ fn analysis_of(directory: &std::path::Path, analyzing: bool, due: bool) -> Analy
 }
 
 /// The analyst behind a record: who it was, its version, its turns, the
-/// seconds it took, the tokens it wrote and the cost the gateway reported.
-fn analyst_rows(record: &ava_wire::Analysis) -> Vec<(String, String)> {
+/// seconds it took, the tokens it wrote and their cost at the price of its route.
+fn analyst_rows(
+    record: &ava_wire::Analysis,
+    registry: &registry::Registry,
+) -> Vec<(String, String)> {
     let Some(analyst) = &record.analyst else {
         return Vec::new();
     };
@@ -885,8 +943,8 @@ fn analyst_rows(record: &ava_wire::Analysis) -> Vec<(String, String)> {
             "output tokens".to_string(),
             metrics.output_tokens.to_string(),
         ));
-        if metrics.gateway_cost > 0.0 {
-            rows.push(("cost".to_string(), usage::money(metrics.gateway_cost)));
+        if let Some(cost) = registry.cost(analyst, metrics) {
+            rows.push(("cost".to_string(), usage::money(cost)));
         }
     }
     rows
@@ -927,7 +985,11 @@ fn report_rows(report: &ava_wire::Report) -> Vec<(String, String)> {
 
 /// A report on the run page: the summary, then folded behind it the fields,
 /// the analysis and the analyst.
-fn report_card(record: &ava_wire::Analysis, report: &ava_wire::Report) -> String {
+fn report_card(
+    record: &ava_wire::Analysis,
+    report: &ava_wire::Report,
+    registry: &registry::Registry,
+) -> String {
     let block = |html: String| {
         if html.is_empty() {
             String::new()
@@ -954,7 +1016,7 @@ fn report_card(record: &ava_wire::Analysis, report: &ava_wire::Report) -> String
         ava_markdown::render(summary_body(&report.summary)),
         block(rows(report_rows(report))),
         block(analysis),
-        block(rows(analyst_rows(record)))
+        block(rows(analyst_rows(record, registry)))
     )
 }
 
@@ -1395,6 +1457,17 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             TILE_VALUE_CLASSES,
         ),
         tile(
+            "cost",
+            &match (entry.cost(&registry), &entry.metrics) {
+                (Some(cost), _) => usage::money(cost),
+                (None, Some(_)) => placeholder(UNPRICED),
+                (None, None) if entry.live => placeholder(AFTER_THE_RUN),
+                (None, None) => placeholder(NOT_RECORDED),
+            },
+            &joined(&[&entry.cost_parts(&registry), so_far]),
+            TILE_VALUE_CLASSES,
+        ),
+        tile(
             "compactions",
             &match entry.run.compactions {
                 Some(compactions) => compactions.to_string(),
@@ -1425,7 +1498,7 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             Some(record) => match (&record.error, record.report()) {
                 (None, Some(report)) => body.push_str(&format!(
                     "<details open data-fold=\"analysis\"><summary class=\"{COLLAPSIBLE_TITLE_CLASSES}\">{title}</summary>{}</details>",
-                    report_card(&record, &report)
+                    report_card(&record, &report, &registry)
                 )),
                 (error, _) => body.push_str(&format!(
                     "<p class=\"{TITLE_CLASSES}\">{title}</p>\
@@ -1546,8 +1619,19 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         passed: u64,
         /// The points of its best entry of record.
         best: Option<u64>,
+        /// The dollars of its priced runs, with their count and the ones of
+        /// them that passed, nothing without a priced run.
+        priced: Option<(f64, u64, u64)>,
     }
 
+    impl Played {
+        fn priced(&self) -> Option<(f64, u64, u64)> {
+            self.priced
+        }
+    }
+
+    let registry = registry::load()?;
+    let weights = selection.weights();
     let games = games()?;
     let chosen = games
         .iter()
@@ -1572,12 +1656,19 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         if entry.points() > seen.best {
             seen.best = entry.points();
         }
+        if let Some(cost) = entry.cost(&registry) {
+            let (total, runs, passed) = seen.priced.get_or_insert((0.0, 0, 0));
+            *total += cost;
+            *runs += 1;
+            *passed += u64::from(entry.passed());
+        }
     }
 
     // Every match of every finished round, of the chosen game alone when one
     // is chosen, and the agent behind every label the ratings key on.
     let mut labeled = Vec::new();
     let mut seated: Vec<(String, ava_wire::Agent)> = Vec::new();
+    let mut seats = Vec::new();
     for record in tournament::list()? {
         if chosen.is_some_and(|game| record.game != *game) {
             continue;
@@ -1591,9 +1682,10 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         for round in record.finished_rounds() {
             labeled.extend(label_pairings(
                 &labels,
-                &tournament::pairings(&record, round)?,
+                &tournament::pairings(&record, round, &registry, weights)?,
             ));
         }
+        seats.extend(record.seats.iter().cloned());
     }
     let standings = standings(&labeled);
 
@@ -1610,7 +1702,6 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
     unrated.sort_by_key(|(_, seen)| std::cmp::Reverse(seen.runs));
     ranked.extend(unrated.into_iter().map(|(agent, _)| agent.clone()));
 
-    let registry = registry::load()?;
     let rows = ranked
         .iter()
         .map(|agent| {
@@ -1635,10 +1726,21 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
                     .map(|score| format!("{score:.2}"))
                     .unwrap_or_default(),
                 standing
-                    .map(|standing| rating_label(standing.elo))
+                    .map(|standing| rating_cell(standing.elo, standing.matches()))
                     .unwrap_or_default(),
                 standing
-                    .map(|standing| rating_label(standing.bradley_terry))
+                    .map(|standing| rating_cell(standing.bradley_terry, standing.matches()))
+                    .unwrap_or_default(),
+                seen.and_then(|seen| seen.priced())
+                    .map(per_run)
+                    .unwrap_or_default(),
+                seen.and_then(|seen| seen.priced())
+                    .filter(|(_, _, passed)| *passed > 0)
+                    .map(|(cost, _, passed)| usage::money(cost / passed as f64))
+                    .unwrap_or_default(),
+                seen.and_then(|seen| seen.priced())
+                    .zip(standing.and_then(|standing| standing.rounds_won()))
+                    .map(|((cost, _, _), won)| usage::money(cost / won))
                     .unwrap_or_default(),
             ]);
             if chosen.is_some() {
@@ -1658,8 +1760,14 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
     }
 
     let body = format!(
-        "{}{}",
-        game_filter(&games, chosen),
+        "{}{}{}",
+        game_filter(&games, chosen, &weights_query(weights)),
+        weights_panel(
+            "/scoreboard",
+            weights,
+            &[(GAME_FIELD, chosen.map(String::as_str).unwrap_or_default())],
+            &unpriced(&registry, &seats),
+        ),
         sorted_table(
             SCOREBOARD_TABLE,
             Some(SCOREBOARD_RATING_COLUMN),
@@ -1672,15 +1780,16 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
     Ok(page(SCOREBOARD_HEADING, &body))
 }
 
-/// The games the scoreboard rates within, the chosen one marked.
-fn game_filter(games: &[String], chosen: Option<&String>) -> String {
+/// The games the scoreboard rates within, the chosen one marked, every link
+/// carrying the `weights` query.
+fn game_filter(games: &[String], chosen: Option<&String>, weights: &str) -> String {
     let link = |game: Option<&String>| {
         let (href, label) = match game {
             Some(game) => (
-                format!("/scoreboard?{GAME_FIELD}={}", escape(game)),
+                format!("/scoreboard?{GAME_FIELD}={}{weights}", escape(game)),
                 escape(game),
             ),
-            None => ("/scoreboard".to_string(), EVERY_GAME.to_string()),
+            None => (format!("/scoreboard?{weights}"), EVERY_GAME.to_string()),
         };
         let classes = if game == chosen {
             FILTER_CHOSEN_CLASSES
@@ -1698,6 +1807,95 @@ fn game_filter(games: &[String], chosen: Option<&String>) -> String {
             .map(|game| link(Some(game)))
             .collect::<String>()
     )
+}
+
+/// The dollars one run of `priced` cost, the total and the count of the runs
+/// it is the mean of behind the hover.
+fn per_run((cost, runs, _): (f64, u64, u64)) -> String {
+    explained(
+        &usage::money(cost / runs as f64),
+        &format!("{} over {runs} priced runs", usage::money(cost)),
+    )
+}
+
+/// The weights as query fields after a `&`, nothing without them.
+fn weights_query(weights: ava_game::scoring::Weights) -> String {
+    if weights.none() {
+        return String::new();
+    }
+
+    format!(
+        "&{}={}&{}={}",
+        WEIGHT_FIELDS[0], weights.cost, WEIGHT_FIELDS[1], weights.speed
+    )
+}
+
+/// The form choosing the weights of cost and speed for `action`, `hidden`
+/// carried along, and under it what the weights do while they are set, with
+/// the models of `unpriced` that they count as free.
+fn weights_panel(
+    action: &str,
+    weights: ava_game::scoring::Weights,
+    hidden: &[(&str, &str)],
+    unpriced: &[String],
+) -> String {
+    let hidden: String = hidden
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(name, value)| {
+            format!(
+                "<input type=\"hidden\" name=\"{name}\" value=\"{}\">",
+                escape(value)
+            )
+        })
+        .collect();
+    let field = |name: &str, tooltip: &str, value: f64| {
+        format!(
+            "<label class=\"w-28\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+             <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"{name}\" min=\"0\" max=\"1\" step=\"{WEIGHT_STEP}\" value=\"{value}\"></label>",
+            explained(name, tooltip)
+        )
+    };
+    let mut panel = format!(
+        "<form method=\"get\" action=\"{action}\" class=\"mt-4 mb-3 flex flex-wrap items-end gap-3\">{hidden}{}{}\
+         <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">weigh</button></form>",
+        field(WEIGHT_FIELDS[0], COST_WEIGHT_TOOLTIP, weights.cost),
+        field(WEIGHT_FIELDS[1], SPEED_WEIGHT_TOOLTIP, weights.speed),
+    );
+    if !weights.none() {
+        let unpriced = if unpriced.is_empty() {
+            String::new()
+        } else {
+            format!(", {} {UNPRICED_NOTE}", unpriced.join(", "))
+        };
+        panel.push_str(&format!(
+            "<p class=\"mb-3 {NOTE_CLASSES}\">{WEIGHED_NOTE}{unpriced}</p>"
+        ));
+    }
+
+    panel
+}
+
+/// The models of `seats` on a route the registry does not price, each once.
+fn unpriced(registry: &registry::Registry, seats: &[ava_wire::Setup]) -> Vec<String> {
+    let mut unpriced = Vec::new();
+    for seat in seats {
+        if registry
+            .price(&seat.agent.model, seat.backend.as_deref())
+            .is_some()
+        {
+            continue;
+        }
+        let label = match &seat.backend {
+            Some(backend) => format!("{} via {backend}", seat.agent.model),
+            None => seat.agent.model.clone(),
+        };
+        if !unpriced.contains(&label) {
+            unpriced.push(label);
+        }
+    }
+
+    unpriced.into_iter().map(|label| escape(&label)).collect()
 }
 
 /// Every game as a card: the name, its turns and the record on its face,
@@ -2131,16 +2329,18 @@ pub(crate) fn tournament_page(
     // the cross table being seats, the ratings blank until a round finished.
     let removable = !record.played() && !playing;
     let rated = record.finished_rounds().next().is_some();
+    let weights = selection.weights();
     let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
     let mut labeled = Vec::new();
     for round in record.finished_rounds() {
         labeled.extend(label_pairings(
             &labels,
-            &tournament::pairings(&record, round)?,
+            &tournament::pairings(&record, round, &registry, weights)?,
         ));
     }
     let standings = standings(&labeled);
-    let cells = pairing_cells(&record)?;
+    let cells = pairing_cells(&record, &registry, weights)?;
+    let costs = seat_costs(&runs, name, record.seats.len(), &registry);
     let mut seat_rows: Vec<(f64, Vec<String>)> = record
         .seats
         .iter()
@@ -2163,6 +2363,16 @@ pub(crate) fn tournament_page(
                     .map(|standing| tally_label(&standing.fights))
                     .unwrap_or_default(),
                 score.map(|score| format!("{score:.2}")).unwrap_or_default(),
+                match costs[seat] {
+                    Some((cost, runs)) => explained(
+                        &usage::money(cost),
+                        &format!(
+                            "{} a run over {runs} priced runs of this tournament",
+                            usage::money(cost / runs as f64)
+                        ),
+                    ),
+                    None => String::new(),
+                },
                 if removable {
                     format!(
                         "<form method=\"post\" action=\"/tournament/{}/unseat\"><input type=\"hidden\" name=\"seat\" value=\"{seat}\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
@@ -2209,6 +2419,14 @@ pub(crate) fn tournament_page(
             Some(NO_SEATS_NOTE)
         )
     ));
+    if rated {
+        body.push_str(&weights_panel(
+            &format!("/tournament/{}", escape(name)),
+            weights,
+            &[],
+            &unpriced(&registry, &record.seats),
+        ));
+    }
     if removable {
         body.push_str(&format!(
             "<form method=\"post\" action=\"/tournament/{}/seat\" class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
@@ -2619,6 +2837,38 @@ fn round_graph(
     format!("<div class=\"{CARD_CLASSES} p-4 overflow-x-auto\">{svg}</div>")
 }
 
+/// The dollars every seat of the named tournament spent, with the runs they
+/// were spent over, by seat: every run the seat played in any round and turn,
+/// nothing for a seat that played none and for one whose route has no price.
+fn seat_costs(
+    runs: &[RunEntry],
+    tournament: &str,
+    seats: usize,
+    registry: &registry::Registry,
+) -> Vec<Option<(f64, u64)>> {
+    let mut costs = vec![None; seats];
+
+    for entry in runs {
+        let Some(placement) = &entry.placement else {
+            continue;
+        };
+        let Some(spent) = costs.get_mut(placement.seat) else {
+            continue;
+        };
+        if placement.tournament != tournament {
+            continue;
+        }
+        let Some(cost) = entry.cost(registry) else {
+            continue;
+        };
+        let (total, runs) = spent.get_or_insert((0.0, 0));
+        *total += cost;
+        *runs += 1;
+    }
+
+    costs
+}
+
 /// The place of one agent on a leaderboard.
 struct Standing {
     agent: String,
@@ -2630,6 +2880,20 @@ struct Standing {
     rounds: ava_wire::Tally,
     elo: Option<f64>,
     bradley_terry: Option<f64>,
+}
+
+impl Standing {
+    /// The fights against another agent, which is what the ratings are over.
+    fn matches(&self) -> u64 {
+        self.fights.rounds()
+    }
+
+    /// The rounds it won, a draw counting half, or nothing when it won none.
+    fn rounds_won(&self) -> Option<f64> {
+        let won = self.rounds.won as f64 + self.rounds.drawn as f64 / 2.0;
+
+        (won > 0.0).then_some(won)
+    }
 }
 
 /// One pairing between the agents its seats hold, by their labels.
@@ -2728,9 +2992,13 @@ fn standings(labeled: &[Labeled]) -> Vec<Standing> {
         .collect();
 
     standings.sort_by(|left, right| {
-        right
-            .bradley_terry
-            .partial_cmp(&left.bradley_terry)
+        let settled = |standing: &Standing| {
+            standing
+                .bradley_terry
+                .map(|rating| ava_game::scoring::settled(rating, standing.matches()))
+        };
+        settled(right)
+            .partial_cmp(&settled(left))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.agent.cmp(&right.agent))
     });
@@ -2759,11 +3027,29 @@ fn rating_label(rating: Option<f64>) -> String {
         .unwrap_or_default()
 }
 
+/// A rating as it counts over `matches`, the rating itself and the matches
+/// behind the hover, since a rating over a handful of matches is mostly the
+/// anchor it started at.
+fn rating_cell(rating: Option<f64>, matches: u64) -> String {
+    let Some(rating) = rating else {
+        return String::new();
+    };
+
+    explained(
+        &rating_label(Some(ava_game::scoring::settled(rating, matches))),
+        &format!("{} over {matches} matches", rating_label(Some(rating))),
+    )
+}
+
 /// The cells of the standings, by seat row and seat column: the row's rounds
 /// against the column over the finished rounds, tinted by who came out ahead,
 /// `none` where nothing was counted, the rounds behind the hover with their
 /// reasons. A pairing recorded the other way round is read mirrored.
-fn pairing_cells(record: &ava_wire::Tournament) -> std::io::Result<Vec<Vec<String>>> {
+fn pairing_cells(
+    record: &ava_wire::Tournament,
+    registry: &registry::Registry,
+    weights: ava_game::scoring::Weights,
+) -> std::io::Result<Vec<Vec<String>>> {
     #[derive(Default)]
     struct Met {
         tally: ava_wire::Tally,
@@ -2778,7 +3064,7 @@ fn pairing_cells(record: &ava_wire::Tournament) -> std::io::Result<Vec<Vec<Strin
         if round.finished_seconds.is_none() {
             continue;
         }
-        for pairing in tournament::pairings(record, round)? {
+        for pairing in tournament::pairings(record, round, registry, weights)? {
             for (row, column, view) in [
                 (pairing.first, pairing.second, pairing.tally),
                 (pairing.second, pairing.first, mirrored(&pairing.tally)),
@@ -2942,6 +3228,15 @@ pub(crate) fn agent_page(
         .iter()
         .filter_map(|entry| entry.run.wall_seconds())
         .sum();
+    let mut priced = None;
+    for entry in &played {
+        if let Some(cost) = entry.cost(&registry) {
+            let (total, runs, passing) = priced.get_or_insert((0.0, 0u64, 0u64));
+            *total += cost;
+            *runs += 1;
+            *passing += u64::from(entry.passed());
+        }
+    }
     body.push_str(&tiles(&[
         tile("harness", &escape(&alias.harness), "", TILE_TEXT_CLASSES),
         tile(
@@ -2973,6 +3268,27 @@ pub(crate) fn agent_page(
         ),
         tile("output tokens", &tokens.to_string(), "", TILE_VALUE_CLASSES),
         tile("time played", &usage::span(spent), "", TILE_VALUE_CLASSES),
+        match priced {
+            Some((cost, runs, _)) => tile(
+                "cost",
+                &usage::money(cost),
+                &format!("over {runs} priced runs of {}", played.len()),
+                TILE_VALUE_CLASSES,
+            ),
+            None => tile("cost", &placeholder(UNPRICED), "", TILE_VALUE_CLASSES),
+        },
+        match priced {
+            Some((cost, runs, passing)) => tile(
+                "cost a run",
+                &usage::money(cost / runs as f64),
+                &match passing {
+                    0 => String::new(),
+                    passing => format!("{} a pass", usage::money(cost / passing as f64)),
+                },
+                TILE_VALUE_CLASSES,
+            ),
+            None => tile("cost a run", &placeholder(UNPRICED), "", TILE_VALUE_CLASSES),
+        },
     ]));
 
     if !played.is_empty() {
@@ -3063,7 +3379,12 @@ fn rivals(
     let mut met: Vec<Met> = Vec::new();
     for record in tournament::list()? {
         for round in record.finished_rounds() {
-            for pairing in tournament::pairings(&record, round)? {
+            for pairing in tournament::pairings(
+                &record,
+                round,
+                registry,
+                ava_game::scoring::Weights::default(),
+            )? {
                 let (Some(first), Some(second)) = (
                     record.seats.get(pairing.first),
                     record.seats.get(pairing.second),
@@ -3378,7 +3699,15 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             recorded.output_tokens.to_string(),
             recorded.cache_read_tokens.to_string(),
             recorded.cache_write_tokens.to_string(),
-            usage::money(recorded.gateway_cost),
+            match recorded.unpriced {
+                0 => usage::money(recorded.cost),
+                unpriced => explained(
+                    &usage::money(recorded.cost),
+                    &format!(
+                        "{unpriced} runs and analyses on a route without a price cost nothing here"
+                    ),
+                ),
+            },
         ]);
 
         limit_rows.extend(limit_rows_of(&backend.name, &usage.limits));
@@ -3400,6 +3729,13 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         }
     }
 
+    let price = |route: &registry::Route, value: fn(&registry::Price) -> f64| {
+        route
+            .price
+            .as_ref()
+            .map(|price| value(price).to_string())
+            .unwrap_or_default()
+    };
     let mut model_rows = Vec::new();
     for model in &registry.models {
         for route in &model.routes {
@@ -3412,6 +3748,10 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
                 ),
                 route.context_window.to_string(),
                 route.max_output.to_string(),
+                price(route, |price| price.input),
+                price(route, |price| price.output),
+                price(route, |price| price.cache_read),
+                price(route, |price| price.cache_write),
             ]);
         }
     }
@@ -3453,7 +3793,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
             "#output",
             "#cache read",
             "#cache write",
-            "#cost",
+            "#cost|the dollars at the prices of the registry",
         ],
         backend_rows,
         None,
@@ -3485,7 +3825,17 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
     }
     body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">models</p>"));
     body.push_str(&table(
-        &["model", "backend", "*id", "#context", "#max output"],
+        &[
+            "model",
+            "backend",
+            "*id",
+            "#context",
+            "#max output",
+            "#$ input|dollars per million input tokens not read from the cache",
+            "#$ output|dollars per million output tokens",
+            "#$ cache read|dollars per million input tokens read from the cache",
+            "#$ cache write|dollars per million input tokens written to the cache",
+        ],
         model_rows,
         None,
     ));

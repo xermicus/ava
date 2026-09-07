@@ -7,6 +7,12 @@ const K_FACTOR: f64 = 32.0;
 const VIRTUAL_DRAW: f64 = 0.5;
 const FIT_ITERATIONS: u32 = 100;
 
+/// The matches a rating needs behind it before it counts in full.
+///
+/// A rating over a handful of matches is mostly the anchor it started at, and
+/// an agent that won its only fight is not the best agent there is.
+const SETTLED_MATCHES: f64 = 10.0;
+
 /// A played match between two agents.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Match {
@@ -23,6 +29,51 @@ pub struct Rating {
     pub agent: String,
     /// The rating on an Elo like scale anchored at 1000.
     pub rating: f64,
+}
+
+/// The most either weight can be: the whole of the points.
+const MAXIMUM_WEIGHT: f64 = 1.0;
+
+/// The shares of its points an entry loses for the cost and the speed of the
+/// run that kept it, both nothing for the points as the game ranks them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Weights {
+    /// The share the dearest run of a round loses, every other run in proportion to its cost.
+    pub cost: f64,
+    /// The share an entry banked as the budget ran out loses, an earlier one in proportion.
+    pub speed: f64,
+}
+
+impl Weights {
+    /// The weights clamped between nothing and the whole of the points.
+    pub fn clamped(cost: f64, speed: f64) -> Self {
+        Self {
+            cost: cost.clamp(0.0, MAXIMUM_WEIGHT),
+            speed: speed.clamp(0.0, MAXIMUM_WEIGHT),
+        }
+    }
+
+    /// Whether the weights leave the points alone.
+    pub fn none(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `points` less their shares: `cost` out of `dearest`, the dollars of the
+    /// dearest run of the round, and `seconds` out of `limit`, the budget of the run.
+    pub fn weighed(&self, points: u64, cost: f64, dearest: f64, seconds: u64, limit: u64) -> u64 {
+        let dear = if dearest > 0.0 {
+            (cost / dearest).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let slow = if limit > 0 {
+            (seconds as f64 / limit as f64).min(1.0)
+        } else {
+            0.0
+        };
+
+        (points as f64 * (1.0 - self.cost * dear) * (1.0 - self.speed * slow)).round() as u64
+    }
 }
 
 /// A rating system turning played matches into a leaderboard.
@@ -168,6 +219,15 @@ impl Scoring for Elo {
     }
 }
 
+/// `rating` pulled back towards the anchor by how few `matches` back it: one
+/// match keeps a tenth of the distance, ten matches half, and it fades from
+/// there.
+pub fn settled(rating: f64, matches: u64) -> f64 {
+    let matches = matches as f64;
+
+    ANCHOR_RATING + (rating - ANCHOR_RATING) * matches / (matches + SETTLED_MATCHES)
+}
+
 /// Every agent appearing in `matches`, in order of appearance.
 pub fn participants(matches: &[Match]) -> Vec<String> {
     let mut agents: Vec<String> = Vec::new();
@@ -223,6 +283,24 @@ mod tests {
     }
 
     #[test]
+    fn weights_take_their_shares_and_nothing_without_them() {
+        let none = super::Weights::default();
+        assert_eq!(none.weighed(10_000, 5.0, 5.0, 600, 600), 10_000);
+
+        let both = super::Weights::clamped(0.5, 2.0);
+        assert_eq!(
+            both,
+            super::Weights {
+                cost: 0.5,
+                speed: 1.0
+            }
+        );
+        assert_eq!(both.weighed(10_000, 5.0, 5.0, 300, 600), 2_500);
+        assert_eq!(both.weighed(10_000, 1.0, 5.0, 900, 600), 0);
+        assert_eq!(both.weighed(10_000, 0.0, 0.0, 0, 0), 10_000);
+    }
+
+    #[test]
     fn round_robin_pairs_every_seat_once() {
         assert_eq!(super::round_robin(1), Vec::<(usize, usize)>::new());
         assert_eq!(super::round_robin(3), vec![(0, 1), (0, 2), (1, 2)]);
@@ -246,6 +324,14 @@ mod tests {
                 .collect();
             assert_eq!(order, ["a", "b", "c"]);
         }
+    }
+
+    #[test]
+    fn a_rating_settles_as_its_matches_pile_up() {
+        assert_eq!(super::settled(1200.0, 0), super::ANCHOR_RATING);
+        assert_eq!(super::settled(1200.0, 10), 1100.0);
+        assert!(super::settled(1200.0, 1000) > 1198.0);
+        assert!(super::settled(800.0, 10) < super::ANCHOR_RATING);
     }
 
     #[test]

@@ -87,10 +87,20 @@ __AVA_BODY__
 </div>
 <script>
 /* Keep the marked regions current without reloading, so forms keep their
- * state and the folds stay the way the reader left them. The query is
- * dropped from the address after the first swap, which lets an action notice
- * show once and then retire. */
+ * state and the folds stay the way the reader left them. The notice is
+ * dropped from the address after the first swap, which lets it show once and
+ * then retire, while the rest of the query stays. */
 const REFRESH_MILLISECONDS = 5000;
+const NOTICE_FIELDS = ["started", "refused"];
+
+/* The address without the notice. */
+function retired() {
+    const address = new URL(location);
+    for (const field of NOTICE_FIELDS) {
+        address.searchParams.delete(field);
+    }
+    return address.pathname + address.search;
+}
 
 /* The open state of every named fold in `region`, by its name. */
 function folds(region) {
@@ -107,7 +117,8 @@ async function refresh() {
         return;
     }
 
-    const response = await fetch(location.pathname);
+    const address = retired();
+    const response = await fetch(address);
     if (!response.ok) {
         return;
     }
@@ -129,7 +140,7 @@ async function refresh() {
 
     restoreSorts();
     drawChat();
-    history.replaceState(null, "", location.pathname);
+    history.replaceState(null, "", address);
 }
 
 setInterval(() => refresh().catch(() => {}), REFRESH_MILLISECONDS);
@@ -188,7 +199,8 @@ function sortTable(table) {
     const numeric = headers[column].dataset.sort === NUMERIC;
     const body = table.tBodies[0];
     const rows = [...body.rows].filter((row) => row.cells.length === headers.length);
-    const key = (row) => row.cells[column].textContent.trim();
+    /* A dollar figure is a number with a sign in front of it. */
+    const key = (row) => row.cells[column].textContent.trim().replace(/[$,]/g, "");
 
     rows.sort((left, right) => {
         const first = key(left);
