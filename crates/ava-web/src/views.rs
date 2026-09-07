@@ -140,10 +140,6 @@ const COST_WEIGHT_TOOLTIP: &str = "the share of its points the dearest run of a 
     every other run in proportion to its cost, 0 to 1";
 const SPEED_WEIGHT_TOOLTIP: &str = "the share of its points an entry banked as the budget ran out \
     loses, an earlier one in proportion, 0 to 1";
-const WEIGHED_NOTE: &str = "the points of every entry are scaled by the cost and the speed of its \
-    run before the pairings are compared, a game ranking nothing ranks every entry at 10000 \
-    first, and pairings settled by a fight or by verdicts are not touched";
-const UNPRICED_NOTE: &str = "counted as free for want of a price";
 
 /// What separates the parts of a cost.
 const COST_PART_SEPARATOR: &str = " \u{00b7} ";
@@ -1687,7 +1683,6 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
     // is chosen, and the agent behind every label the ratings key on.
     let mut labeled = Vec::new();
     let mut seated: Vec<(String, Competitor)> = Vec::new();
-    let mut seats = Vec::new();
     for record in tournament::list()? {
         if chosen.is_some_and(|game| record.game != *game) {
             continue;
@@ -1706,10 +1701,11 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         for round in record.finished_rounds() {
             labeled.extend(label_pairings(
                 &labels,
-                &tournament::pairings(&record, round, &registry, weights)?,
+                &tournament::pairings(&record, round)?,
+                weights,
+                &tournament::spends(&record, round, &registry)?,
             ));
         }
-        seats.extend(record.seats.iter().cloned());
     }
     let standings = standings(&labeled);
 
@@ -1795,7 +1791,6 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
             "/scoreboard",
             weights,
             &[(GAME_FIELD, chosen.map(String::as_str).unwrap_or_default())],
-            &unpriced(&registry, &seats),
         ),
         sorted_table(
             SCOREBOARD_TABLE,
@@ -1860,13 +1855,11 @@ fn weights_query(weights: ava_game::scoring::Weights) -> String {
 }
 
 /// The form choosing the weights of cost and speed for `action`, `hidden`
-/// carried along, and under it what the weights do while they are set, with
-/// the models of `unpriced` that they count as free.
+/// carried along.
 fn weights_panel(
     action: &str,
     weights: ava_game::scoring::Weights,
     hidden: &[(&str, &str)],
-    unpriced: &[String],
 ) -> String {
     let hidden: String = hidden
         .iter()
@@ -1885,46 +1878,12 @@ fn weights_panel(
             explained(name, tooltip)
         )
     };
-    let mut panel = format!(
+    format!(
         "<form method=\"get\" action=\"{action}\" class=\"mt-4 mb-3 flex flex-wrap items-end gap-3\">{hidden}{}{}\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">weigh</button></form>",
         field(WEIGHT_FIELDS[0], COST_WEIGHT_TOOLTIP, weights.cost),
         field(WEIGHT_FIELDS[1], SPEED_WEIGHT_TOOLTIP, weights.speed),
-    );
-    if !weights.none() {
-        let unpriced = if unpriced.is_empty() {
-            String::new()
-        } else {
-            format!(", {} {UNPRICED_NOTE}", unpriced.join(", "))
-        };
-        panel.push_str(&format!(
-            "<p class=\"mb-3 {NOTE_CLASSES}\">{WEIGHED_NOTE}{unpriced}</p>"
-        ));
-    }
-
-    panel
-}
-
-/// The models of `seats` on a route the registry does not price, each once.
-fn unpriced(registry: &registry::Registry, seats: &[ava_wire::Setup]) -> Vec<String> {
-    let mut unpriced = Vec::new();
-    for seat in seats {
-        if registry
-            .price(&seat.agent.model, seat.backend.as_deref())
-            .is_some()
-        {
-            continue;
-        }
-        let label = match &seat.backend {
-            Some(backend) => format!("{} via {backend}", seat.agent.model),
-            None => seat.agent.model.clone(),
-        };
-        if !unpriced.contains(&label) {
-            unpriced.push(label);
-        }
-    }
-
-    unpriced.into_iter().map(|label| escape(&label)).collect()
+    )
 }
 
 /// Every game as a card: the name, its turns and the record on its face,
@@ -2364,11 +2323,13 @@ pub(crate) fn tournament_page(
     for round in record.finished_rounds() {
         labeled.extend(label_pairings(
             &labels,
-            &tournament::pairings(&record, round, &registry, weights)?,
+            &tournament::pairings(&record, round)?,
+            weights,
+            &tournament::spends(&record, round, &registry)?,
         ));
     }
     let standings = standings(&labeled);
-    let cells = pairing_cells(&record, &registry, weights)?;
+    let cells = pairing_cells(&record)?;
     let costs = seat_costs(&runs, name, record.seats.len(), &registry);
     let mut seat_rows: Vec<(f64, Vec<String>)> = record
         .seats
@@ -2453,7 +2414,6 @@ pub(crate) fn tournament_page(
             &format!("/tournament/{}", escape(name)),
             weights,
             &[],
-            &unpriced(&registry, &record.seats),
         ));
     }
     if removable {
@@ -2932,10 +2892,22 @@ struct Labeled {
     /// The second it was fought at, the order Elo walks.
     seconds: u64,
     tally: ava_wire::Tally,
+    /// The score of the first side the ratings are fed: the score of the
+    /// tally, moved by what the two runs spent once the weights are set.
+    score: Option<f64>,
 }
 
-/// `pairings` between the seats `labels` name, in the order given.
-fn label_pairings(labels: &[String], pairings: &[ava_wire::Pairing]) -> Vec<Labeled> {
+/// `pairings` between the seats `labels` name, in the order given, every
+/// score moved by what its two runs `spent`, which does nothing while the
+/// weights are zero.
+fn label_pairings(
+    labels: &[String],
+    pairings: &[ava_wire::Pairing],
+    weights: ava_game::scoring::Weights,
+    spent: &[Option<ava_game::scoring::Spend>],
+) -> Vec<Labeled> {
+    let spend = |seat: usize| spent.get(seat).copied().flatten();
+
     pairings
         .iter()
         .filter_map(|pairing| {
@@ -2944,6 +2916,12 @@ fn label_pairings(labels: &[String], pairings: &[ava_wire::Pairing]) -> Vec<Labe
                 second: labels.get(pairing.second)?.clone(),
                 seconds: pairing.seconds,
                 tally: pairing.tally,
+                score: pairing.tally.score().map(|score| {
+                    match spend(pairing.first).zip(spend(pairing.second)) {
+                        Some((first, second)) => weights.weighed_score(score, first, second),
+                        None => score,
+                    }
+                }),
             })
         })
         .collect()
@@ -2962,7 +2940,7 @@ fn standings(labeled: &[Labeled]) -> Vec<Standing> {
             Some(ava_game::scoring::Match {
                 first: pairing.first.clone(),
                 second: pairing.second.clone(),
-                score: pairing.tally.score()?,
+                score: pairing.score?,
             })
         })
         .collect();
@@ -3074,11 +3052,7 @@ fn rating_cell(rating: Option<f64>, matches: u64) -> String {
 /// against the column over the finished rounds, tinted by who came out ahead,
 /// `none` where nothing was counted, the rounds behind the hover with their
 /// reasons. A pairing recorded the other way round is read mirrored.
-fn pairing_cells(
-    record: &ava_wire::Tournament,
-    registry: &registry::Registry,
-    weights: ava_game::scoring::Weights,
-) -> std::io::Result<Vec<Vec<String>>> {
+fn pairing_cells(record: &ava_wire::Tournament) -> std::io::Result<Vec<Vec<String>>> {
     #[derive(Default)]
     struct Met {
         tally: ava_wire::Tally,
@@ -3093,7 +3067,7 @@ fn pairing_cells(
         if round.finished_seconds.is_none() {
             continue;
         }
-        for pairing in tournament::pairings(record, round, registry, weights)? {
+        for pairing in tournament::pairings(record, round)? {
             for (row, column, view) in [
                 (pairing.first, pairing.second, pairing.tally),
                 (pairing.second, pairing.first, mirrored(&pairing.tally)),
@@ -3434,12 +3408,7 @@ fn rivals(
     let mut met: Vec<Met> = Vec::new();
     for record in tournament::list()? {
         for round in record.finished_rounds() {
-            for pairing in tournament::pairings(
-                &record,
-                round,
-                registry,
-                ava_game::scoring::Weights::default(),
-            )? {
+            for pairing in tournament::pairings(&record, round)? {
                 let (Some(first), Some(second)) = (
                     record.seats.get(pairing.first),
                     record.seats.get(pairing.second),

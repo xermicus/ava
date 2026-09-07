@@ -11,6 +11,19 @@
    "service": "openapi",
    "host": "llm.substrate.dev",
    "key": "LLM_SUBSTRATE_DEV_KEY"
+  },
+  {
+   "name": "substrate-hosted",
+   "service": "openapi",
+   "host": "llm.substrate.dev",
+   "key": "LLM_SUBSTRATE_DEV_KEY"
+  },
+  {
+   "name": "ollama",
+   "service": "openapi",
+   "host": "ollama",
+   "upstream": "http://host.docker.internal:11434",
+   "key": "OLLAMA_KEY"
   }
  ],
  "models": [
@@ -217,17 +230,29 @@
       "cache_read": 0.017556,
       "cache_write": 0.08778
      }
+    },
+    {
+     "backend": "substrate-hosted",
+     "id": "deepseek-flash-parity",
+     "context_window": 1048576,
+     "max_output": 384000,
+     "price": {
+      "input": 0.0,
+      "output": 0.0,
+      "cache_read": 0.0,
+      "cache_write": 0.0
+     }
     }
    ]
   },
   {
-   "name": "deepseek-v4-flash-hosted",
+   "name": "qwen3.8-27b",
    "routes": [
     {
-     "backend": "substrate",
-     "id": "deepseek-flash-parity",
-     "context_window": 1048576,
-     "max_output": 384000,
+     "backend": "ollama",
+     "id": "qwen3.8:27b-mlx",
+     "context_window": 131072,
+     "max_output": 32768,
      "price": {
       "input": 0.0,
       "output": 0.0,

@@ -31,8 +31,34 @@ pub struct Rating {
     pub rating: f64,
 }
 
-/// The most either weight can be: the whole of the points.
+/// The most either weight can be: the whole of the score of a match.
 const MAXIMUM_WEIGHT: f64 = 1.0;
+
+/// The share of a match a weight of one moves, so a win under the worst gap
+/// there is comes out a draw and never a loss.
+const MOVED_SHARE: f64 = 0.5;
+
+/// What the run behind one side of a pairing spent.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Spend {
+    /// The dollars of the run, at the price of its route.
+    pub cost: f64,
+    /// The second its entry of record was banked at, on the scoring clock.
+    pub seconds: u64,
+    /// The seconds the run was given.
+    pub limit: u64,
+}
+
+impl Spend {
+    /// The share of its budget the run spent before it banked what counts.
+    pub fn slowness(&self) -> f64 {
+        if self.limit == 0 {
+            return 0.0;
+        }
+
+        (self.seconds as f64 / self.limit as f64).min(1.0)
+    }
+}
 
 /// The shares of its points an entry loses for the cost and the speed of the
 /// run that kept it, both nothing for the points as the game ranks them.
@@ -58,21 +84,26 @@ impl Weights {
         *self == Self::default()
     }
 
-    /// `points` less their shares: `cost` out of `dearest`, the dollars of the
-    /// dearest run of the round, and `seconds` out of `limit`, the budget of the run.
-    pub fn weighed(&self, points: u64, cost: f64, dearest: f64, seconds: u64, limit: u64) -> u64 {
-        let dear = if dearest > 0.0 {
-            (cost / dearest).clamp(0.0, 1.0)
-        } else {
-            0.0
+    /// The `score` of the first side of a pairing, in `[0, 1]`, moved by what
+    /// the two sides spent: the dearer side hands over the cost weight's
+    /// share of how far apart the two bills are, and the slower side the
+    /// speed weight's share of how far apart the two entries were banked in
+    /// the budget. A weight of one moves half a match at most, so the widest
+    /// gap there is turns a win into a draw and never into a loss.
+    pub fn weighed_score(&self, score: f64, first: Spend, second: Spend) -> f64 {
+        let apart = |first: f64, second: f64| {
+            let sum = first + second;
+            if sum > 0.0 {
+                (first - second) / sum
+            } else {
+                0.0
+            }
         };
-        let slow = if limit > 0 {
-            (seconds as f64 / limit as f64).min(1.0)
-        } else {
-            0.0
-        };
+        let moved = MOVED_SHARE
+            * (self.cost * apart(first.cost, second.cost)
+                + self.speed * apart(first.slowness(), second.slowness()));
 
-        (points as f64 * (1.0 - self.cost * dear) * (1.0 - self.speed * slow)).round() as u64
+        (score - moved).clamp(0.0, 1.0)
     }
 }
 
@@ -283,21 +314,34 @@ mod tests {
     }
 
     #[test]
-    fn weights_take_their_shares_and_nothing_without_them() {
-        let none = super::Weights::default();
-        assert_eq!(none.weighed(10_000, 5.0, 5.0, 600, 600), 10_000);
+    fn weights_move_a_match_by_what_the_sides_spent() {
+        let dear = super::Spend {
+            cost: 4.0,
+            seconds: 600,
+            limit: 600,
+        };
+        let cheap = super::Spend {
+            cost: 0.0,
+            seconds: 0,
+            limit: 600,
+        };
 
-        let both = super::Weights::clamped(0.5, 2.0);
-        assert_eq!(
-            both,
-            super::Weights {
-                cost: 0.5,
-                speed: 1.0
-            }
-        );
-        assert_eq!(both.weighed(10_000, 5.0, 5.0, 300, 600), 2_500);
-        assert_eq!(both.weighed(10_000, 1.0, 5.0, 900, 600), 0);
-        assert_eq!(both.weighed(10_000, 0.0, 0.0, 0, 0), 10_000);
+        let none = super::Weights::default();
+        assert_eq!(none.weighed_score(1.0, dear, cheap), 1.0);
+
+        let cost = super::Weights::clamped(1.0, 0.0);
+        assert_eq!(cost.weighed_score(1.0, dear, cheap), 0.5);
+        assert_eq!(cost.weighed_score(1.0, cheap, dear), 1.0);
+        assert_eq!(cost.weighed_score(0.0, dear, cheap), 0.0);
+
+        // Twice the bill of the other side is a third of the gap.
+        let twice = super::Spend { cost: 2.0, ..cheap };
+        let once = super::Spend { cost: 1.0, ..cheap };
+        assert!((cost.weighed_score(1.0, twice, once) - 5.0 / 6.0).abs() < 1e-12);
+
+        let both = super::Weights::clamped(0.5, 0.5);
+        assert_eq!(both.weighed_score(0.5, dear, cheap), 0.0);
+        assert_eq!(both.weighed_score(0.5, cheap, cheap), 0.5);
     }
 
     #[test]

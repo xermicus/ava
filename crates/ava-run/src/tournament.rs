@@ -431,15 +431,10 @@ pub fn placements() -> std::io::Result<std::collections::HashMap<String, Placeme
 pub fn pairings(
     record: &ava_wire::Tournament,
     round: &ava_wire::Round,
-    registry: &crate::registry::Registry,
-    weights: ava_game::scoring::Weights,
 ) -> std::io::Result<Vec<ava_wire::Pairing>> {
     let game = find(&record.game)?;
     let seats = record.seats.len();
-    let mut played = played_round(game, round, seats)?;
-    if !weights.none() {
-        weigh(game, round, &mut played, registry, weights)?;
-    }
+    let played = played_round(game, round, seats)?;
     let seconds = round.finished_seconds.unwrap_or(round.started_seconds);
 
     let mut pairings = Vec::new();
@@ -473,57 +468,41 @@ pub fn pairings(
     Ok(pairings)
 }
 
-/// Scale the points of the entries of the last turn by `weights`: the cost of
-/// the run that kept each against the dearest of the round, and the second it
-/// was banked against the budget. A game ranking nothing ranks every entry at
-/// the maximum first, so the weights alone tell them apart.
-fn weigh(
-    game: &dyn ava_game::Game,
+/// What the run of every seat spent on the last turn of `round`, by seat,
+/// which is what the weights of a rating weigh. A seat that banked no entry
+/// spent nothing that counts and is not weighed at all, since it forfeits
+/// the pairing and its opponent is not the dearer side of a fight that never
+/// happened.
+pub fn spends(
+    record: &ava_wire::Tournament,
     round: &ava_wire::Round,
-    played: &mut [Vec<ava_game::Played>],
     registry: &crate::registry::Registry,
-    weights: ava_game::scoring::Weights,
-) -> std::io::Result<()> {
-    let last = game.turns().len() - 1;
-    let mut priced: Vec<Option<(f64, u64, u64)>> = Vec::new();
-    for (seat, turns) in played.iter().enumerate() {
+) -> std::io::Result<Vec<Option<ava_game::scoring::Spend>>> {
+    let last = find(&record.game)?.turns().len() - 1;
+    let mut spends = Vec::new();
+
+    for seat in 0..record.seats.len() {
         let entry = round
             .entries
             .iter()
-            .find(|entry| entry.seat == seat && entry.turn == last)
-            .filter(|_| turns.get(last).is_some_and(|turn| turn.entry.is_some()));
-        let Some(entry) = entry else {
-            priced.push(None);
+            .find(|entry| entry.seat == seat && entry.turn == last);
+        let Some((entry, banked)) = entry.and_then(|entry| Some((entry, entry.attempt?))) else {
+            spends.push(None);
             continue;
         };
         let run = crate::runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(&entry.run))?;
-        let cost = run
-            .metrics
-            .as_ref()
-            .and_then(|metrics| registry.cost(&run.setup(), metrics))
-            .unwrap_or_default();
-        priced.push(Some((
-            cost,
-            entry.attempt.unwrap_or_default(),
-            run.limit_seconds,
-        )));
-    }
-    let dearest = priced
-        .iter()
-        .flatten()
-        .map(|(cost, _, _)| *cost)
-        .fold(0.0, f64::max);
-
-    for (turns, priced) in played.iter_mut().zip(priced) {
-        let kept = turns.get_mut(last).and_then(|turn| turn.entry.as_mut());
-        let (Some(kept), Some((cost, seconds, limit))) = (kept, priced) else {
-            continue;
-        };
-        let points = kept.points.unwrap_or(ava_game::MAXIMUM_POINTS);
-        kept.points = Some(weights.weighed(points, cost, dearest, seconds, limit));
+        spends.push(Some(ava_game::scoring::Spend {
+            cost: run
+                .metrics
+                .as_ref()
+                .and_then(|metrics| registry.cost(&run.setup(), metrics))
+                .unwrap_or_default(),
+            seconds: banked,
+            limit: run.limit_seconds,
+        }));
     }
 
-    Ok(())
+    Ok(spends)
 }
 
 /// The turns of `round` as every seat played them, by seat.
