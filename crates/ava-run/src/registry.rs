@@ -23,6 +23,10 @@ const INVALID: std::io::ErrorKind = std::io::ErrorKind::InvalidInput;
 /// pinned to loopback onto the proxy socket.
 const PROXY_PORT: u16 = 8080;
 
+/// The schemes the proxy connects onward with.
+const TLS_SCHEME: &str = "https";
+const PLAIN_SCHEME: &str = "http";
+
 const CLAUDE_HARNESS: &str = "claude";
 const PI_HARNESS: &str = "pi";
 const OPENCODE_HARNESS: &str = "opencode";
@@ -227,14 +231,57 @@ pub struct Backend {
     pub host: String,
     /// The environment variable holding the credential of the backend.
     pub key: String,
+    /// Where the proxy connects instead of dialling the host over TLS, as
+    /// `scheme://address`, none for a backend served at its own host name.
+    #[serde(default)]
+    pub upstream: Option<String>,
+}
+
+/// Where the proxy connects for a backend, and under which name.
+pub struct Endpoint {
+    /// The host name the sandbox asks for.
+    pub host: String,
+    /// The scheme the proxy connects with.
+    pub scheme: String,
+    /// The address the proxy connects to, and the Host header it sends there.
+    pub address: String,
 }
 
 impl Backend {
+    /// Where the proxy connects for this backend.
+    pub fn endpoint(&self) -> std::io::Result<Endpoint> {
+        let Some(upstream) = &self.upstream else {
+            return Ok(Endpoint {
+                host: self.host.clone(),
+                scheme: TLS_SCHEME.to_string(),
+                address: self.host.clone(),
+            });
+        };
+
+        let invalid = || {
+            std::io::Error::new(
+                INVALID,
+                format!("`{upstream}` is not a {TLS_SCHEME} or {PLAIN_SCHEME} address"),
+            )
+        };
+        let (scheme, address) = upstream.split_once("://").ok_or_else(invalid)?;
+        if !matches!(scheme, TLS_SCHEME | PLAIN_SCHEME) || address.is_empty() {
+            return Err(invalid());
+        }
+
+        Ok(Endpoint {
+            host: self.host.clone(),
+            scheme: scheme.to_string(),
+            address: address.to_string(),
+        })
+    }
+
     /// The endpoint a harness is pointed at.
     ///
     /// Every backend is reached in plain HTTP through the proxy, which
-    /// terminates the request and connects onward with TLS. Nothing a sandbox
-    /// sends leaves it as ciphertext, so every request stays inspectable.
+    /// terminates the request and connects onward as its endpoint says. Nothing
+    /// a sandbox sends leaves it as ciphertext, so every request stays
+    /// inspectable.
     fn url(&self) -> String {
         format!("http://{}:{PROXY_PORT}", self.host)
     }
@@ -621,6 +668,21 @@ impl Registry {
 
         hosts
     }
+
+    /// Where the proxy connects for every registered backend, one entry per
+    /// distinct host, in registry order.
+    pub fn endpoints(&self) -> std::io::Result<Vec<Endpoint>> {
+        let mut endpoints: Vec<Endpoint> = Vec::new();
+
+        for backend in &self.backends {
+            if endpoints.iter().any(|held| held.host == backend.host) {
+                continue;
+            }
+            endpoints.push(backend.endpoint()?);
+        }
+
+        Ok(endpoints)
+    }
 }
 
 /// Load the registry from `registry.json` in the working directory, with the
@@ -660,6 +722,12 @@ fn check(registry: &Registry) -> std::io::Result<()> {
     let invalid = |subject: &str, error: std::io::Error| {
         std::io::Error::new(INVALID, format!("{subject}: {error}"))
     };
+
+    for backend in &registry.backends {
+        backend
+            .endpoint()
+            .map_err(|error| invalid(&backend.name, error))?;
+    }
 
     for model in &registry.models {
         for route in &model.routes {

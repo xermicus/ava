@@ -113,9 +113,10 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
 
     for (directory, run) in crate::runs::all()? {
         if let Some(metrics) = &run.metrics {
-            let cost = registry.cost(&run.setup(), metrics);
+            let setup = run.setup();
+            let cost = registry.cost(&setup, metrics);
             for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
-                if metrics.hosts.contains(&backend.host) {
+                if served(backend, Some(&setup), metrics) {
                     usage.runs += 1;
                     usage.add(metrics, run.started_seconds, cost);
                 }
@@ -133,7 +134,7 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
             .as_ref()
             .and_then(|analyst| registry.cost(analyst, metrics));
         for (backend, usage) in registry.backends.iter().zip(recorded.iter_mut()) {
-            if metrics.hosts.contains(&backend.host) {
+            if served(backend, analysis.analyst.as_ref(), metrics) {
                 usage.analyses += 1;
                 usage.add(metrics, analysis.started_seconds, cost);
             }
@@ -141,6 +142,16 @@ pub fn recorded(registry: &Registry) -> std::io::Result<Vec<Recorded>> {
     }
 
     Ok(recorded)
+}
+
+/// Whether `backend` served the run `setup` describes, which is the backend it
+/// names. A record naming none is attributed by the host its metrics reached,
+/// so two backends sharing a host both count it.
+fn served(backend: &Backend, setup: Option<&ava_wire::Setup>, metrics: &ava_wire::Metrics) -> bool {
+    match setup.and_then(|setup| setup.backend.as_deref()) {
+        Some(name) => name == backend.name,
+        None => metrics.hosts.contains(&backend.host),
+    }
 }
 
 /// Ask `backend` for its limits, as the `name=value` pairs the proxy captures.

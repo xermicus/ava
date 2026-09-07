@@ -163,10 +163,12 @@ pub struct Analyze {
 
 const NETWORK_EGRESS: &str = "ava-egress";
 
+/// The docker format printing the gateway of a network.
+const GATEWAY_FORMAT: &str = "{{range .IPAM.Config}}{{.Gateway}}{{end}}";
+
 /// Where a running web interface leaves its process and the port it answers on.
 const BUS_FILE: &str = ".ava-bus";
 const ANNOUNCEMENT_SEPARATOR: char = ' ';
-const BUS_HOST: &str = "host.docker.internal";
 const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
 const BUS_VARIABLE: &str = "AVA_BUS";
 const SOCKET_VOLUME_PREFIX: &str = "ava-sockets-";
@@ -738,8 +740,26 @@ fn bus(run: &str) -> String {
     let Some((_, port)) = announced() else {
         return String::new();
     };
+    let Ok(gateway) = egress_gateway() else {
+        return String::new();
+    };
 
-    format!("http://{BUS_HOST}:{port}/run/{run}/chat")
+    format!("http://{gateway}:{port}/run/{run}/chat")
+}
+
+/// The address the host answers at from inside the egress network, which the
+/// nginx resolver of the publisher cannot look up by name.
+fn egress_gateway() -> std::io::Result<String> {
+    process::run_and_assume_success(
+        "docker",
+        &[
+            "network",
+            "inspect",
+            "--format",
+            GATEWAY_FORMAT,
+            NETWORK_EGRESS,
+        ],
+    )
 }
 
 /// Announce the interface on `port` as the bus the proxies publish to.
@@ -1352,7 +1372,10 @@ pub fn prepare(command: &Agent) -> std::io::Result<Launch> {
     };
     let identity = image_id(&played)?;
 
-    std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
+    std::fs::write(
+        PROXY_HOSTS,
+        crate::upstreams::nginx_map(&registry.endpoints()?),
+    )?;
     build_image(PROXY_IMAGE, PROXY_CONTEXT, force)?;
     ensure_egress_network()?;
 
@@ -2375,7 +2398,10 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
         &format!("{AGENT_CONTEXT}/{}", setup.agent.harness),
         false,
     )?;
-    std::fs::write(PROXY_HOSTS, crate::upstreams::nginx_map(&registry.hosts()))?;
+    std::fs::write(
+        PROXY_HOSTS,
+        crate::upstreams::nginx_map(&registry.endpoints()?),
+    )?;
     build_image(PROXY_IMAGE, PROXY_CONTEXT, false)?;
     ensure_egress_network()?;
 
