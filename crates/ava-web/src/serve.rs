@@ -114,6 +114,9 @@ static PENDING: std::sync::Mutex<Vec<(u64, views::Pending)>> = std::sync::Mutex:
 /// Tickets telling the pending starts apart.
 static PENDING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The runs, analyses and rounds in flight, waited for at shutdown so they tear down.
+static WORK: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
+
 /// One buffered answer, the shape of every response but the chat stream.
 type Answer = tiny_http::Response<std::io::Cursor<Vec<u8>>>;
 
@@ -133,6 +136,17 @@ pub fn run(command: &Serve) -> std::io::Result<i32> {
     loop {
         if ava_run::interrupt::interrupted() {
             docker::withdraw_bus();
+            let work = std::mem::take(
+                &mut *WORK
+                    .lock()
+                    .expect("no thread panics while holding the work"),
+            );
+            if !work.is_empty() {
+                log::info!("waiting for {} runs to tear down", work.len());
+            }
+            for handle in work {
+                let _ = handle.join();
+            }
             return Ok(0);
         }
 
@@ -527,7 +541,7 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
         ));
 
     let note = format!("starting {} on {}", command.name, command.model);
-    std::thread::spawn(move || {
+    work(move || {
         let outcome = docker::run_agent(&command);
         PENDING
             .lock()
@@ -628,7 +642,7 @@ fn analyze_run(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     );
     log::info!("{note}");
 
-    std::thread::spawn(move || match docker::analyze(&command) {
+    work(move || match docker::analyze(&command) {
         Ok(code) => log::info!("the analysis of {} finished with code {code}", command.run),
         Err(error) => log::error!("the analysis of {} failed: {error}", command.run),
     });
@@ -801,7 +815,7 @@ fn play_round(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     let note = format!("playing round {round} of {name}");
     log::info!("{note}");
 
-    std::thread::spawn(
+    work(
         move || match tournament::play_round(&name, false, parallel) {
             Ok(code) => log::info!("round {round} of {name} finished with code {code}"),
             Err(error) => log::error!("round {round} of {name} failed: {error}"),
@@ -809,6 +823,13 @@ fn play_round(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     );
 
     Ok(Done::note(note))
+}
+
+/// Run `task` on a thread of its own, kept for the shutdown to wait on.
+fn work(task: impl FnOnce() + Send + 'static) {
+    WORK.lock()
+        .expect("no thread panics while holding the work")
+        .push(std::thread::spawn(task));
 }
 
 /// The submitted form fields, urldecoded.
