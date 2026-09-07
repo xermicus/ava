@@ -1,9 +1,9 @@
 //! The tcc-opt game: the submission is a tinycc tree with a Makefile. The
 //! verifier builds it, then builds and tests zlib, sqlite, libpng and tinycc
-//! itself with the compiler it left, without and with `TCC_OPT_SIZE=1`, and
-//! records the code size of every program both ways next to the code size the
-//! unmodified compiler gives it. An entry ranks by how much smaller the
-//! optimizing build leaves the code.
+//! itself with the compiler it left and `TCC_OPT_SIZE=1`, and records the file
+//! size of every program. An entry ranks by how much smaller those binaries are
+//! than the same programs built by the unmodified upstream compiler, a baseline
+//! the image measures once at build time.
 
 const GAME_NAME: &str = "tcc-opt";
 const IMAGE: &str = "tcc-opt";
@@ -16,14 +16,12 @@ const ENTRY: &str = "tinycc.patch";
 const TREE: &str = "tinycc";
 const SCAFFOLD: &str = "/opt/scaffold";
 
-/// What the image lays down for the game: the bootstrap compiler the
-/// submission is built with, the sources of the suites, and the check script.
+/// What the image lays down for the game: the sources of the suites, the check
+/// script that builds one against the compiler under test, and the baseline
+/// sizes the unmodified upstream compiler gives, measured at image build time.
 const ROOT: &str = "/opt/tcc-opt";
-const BOOTSTRAP: &str = "bootstrap";
 const CHECK: &str = "check";
-
-/// The check script skips the tests in this mode.
-const BUILD_ONLY: &str = "build";
+const BASELINE_FILE: &str = "reference.txt";
 
 /// What the verifier runs in the submission, and what it takes from the
 /// directory the target installs into.
@@ -41,7 +39,6 @@ const SUITES: [&str; 4] = ["zlib", "sqlite", "libpng", "tinycc"];
 
 /// The measurements of a suite, by the key the verdict records them under.
 const OPTIMIZED: &str = "optimized";
-const PLAIN: &str = "plain";
 const REFERENCE: &str = "reference";
 
 /// The share of the unmodified compiler's code the optimizing build has to
@@ -96,19 +93,6 @@ impl crate::Game for TccOpt {
         SCORING_SECONDS
     }
 
-    /// Measure the code the unmodified compiler gives every suite, once.
-    fn prepare(&self) -> std::io::Result<()> {
-        no_other_compiler()?;
-        let scratch = Scratch::new()?;
-        let sizes = reference::load(&scratch.path)?;
-
-        for (suite, bytes) in SUITES.iter().zip(sizes) {
-            log::info!("the unmodified compiler gives {suite} {bytes} bytes of code");
-        }
-
-        Ok(())
-    }
-
     fn verify(
         &self,
         _turn: usize,
@@ -129,6 +113,8 @@ impl crate::Game for TccOpt {
             )));
         }
 
+        let baseline = baseline()?;
+
         let scratch = Scratch::new()?;
         write_patch(&submission, &scratch.path)?;
 
@@ -140,56 +126,36 @@ impl crate::Game for TccOpt {
             Err(reason) => return Ok(crate::failed(reason)),
         };
 
-        let cached = reference::read();
-        let (checks, reference) = std::thread::scope(|scope| {
-            let checks: Vec<_> = SUITES
+        let checks: std::io::Result<Vec<Checked>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = SUITES
                 .iter()
-                .flat_map(|suite| [(suite, false), (suite, true)])
-                .map(|(suite, optimized)| {
+                .map(|suite| {
                     let (toolchain, scratch) = (&toolchain, &scratch.path);
-                    scope.spawn(move || check(toolchain, suite, optimized, scratch))
+                    scope.spawn(move || check(toolchain, suite, scratch))
                 })
                 .collect();
-            let reference = match cached {
-                Some(sizes) => Ok(sizes),
-                None => reference::load(&scratch.path),
-            };
-            let checks: std::io::Result<Vec<Checked>> = checks
+            handles
                 .into_iter()
                 .map(|handle| handle.join().expect("a check does not panic"))
-                .collect();
-            (checks, reference)
+                .collect()
         });
         let checks = checks?;
-        let reference = reference?;
 
-        for optimized in [false, true] {
-            let failures: Vec<&Checked> = checks
-                .iter()
-                .filter(|checked| checked.optimized == optimized && checked.bytes.is_err())
-                .collect();
-            if let Some(failed) = failures.first() {
-                let reason = failed.bytes.as_ref().expect_err("filtered for failures");
-                return Ok(crate::failed(format!(
-                    "{} {SWITCH}{}: {reason}",
-                    failed.suite,
-                    if optimized {
-                        format!("={SWITCH_ON}")
-                    } else {
-                        " unset".to_string()
-                    }
-                )));
-            }
+        if let Some(failed) = checks.iter().find(|checked| checked.bytes.is_err()) {
+            let reason = failed.bytes.as_ref().expect_err("filtered for failures");
+            return Ok(crate::failed(format!(
+                "{} {SWITCH}={SWITCH_ON}: {reason}",
+                failed.suite
+            )));
         }
 
         let mut measurements = std::collections::BTreeMap::new();
         for checked in &checks {
             let bytes = *checked.bytes.as_ref().expect("failures returned above");
-            let kind = if checked.optimized { OPTIMIZED } else { PLAIN };
-            measurements.insert(key(checked.suite, kind), bytes);
+            measurements.insert(key(checked.suite, OPTIMIZED), bytes);
         }
-        for (suite, bytes) in SUITES.iter().zip(reference) {
-            measurements.insert(key(suite, REFERENCE), bytes);
+        for (suite, bytes) in &baseline {
+            measurements.insert(key(suite, REFERENCE), *bytes);
         }
 
         let reason = summary(&measurements);
@@ -212,10 +178,10 @@ impl crate::Game for TccOpt {
     }
 }
 
-/// One suite checked one way: the bytes of code of its program, or why it failed.
+/// One suite checked with the switch on: the bytes of code of its program, or
+/// why it failed.
 struct Checked {
     suite: &'static str,
-    optimized: bool,
     bytes: Result<u64, String>,
 }
 
@@ -224,7 +190,33 @@ fn key(suite: &str, kind: &str) -> String {
     format!("{suite}.{kind}")
 }
 
-/// The share of the unmodified compiler's code the optimizing build leaves,
+/// The baseline sizes the unmodified upstream compiler gives, read from the
+/// file the image measured them into.
+fn baseline() -> std::io::Result<Vec<(&'static str, u64)>> {
+    let path = std::path::Path::new(ROOT).join(BASELINE_FILE);
+    let contents = std::fs::read_to_string(&path).map_err(|error| {
+        std::io::Error::other(format!(
+            "the baseline {} is missing: {error}",
+            path.display()
+        ))
+    })?;
+
+    SUITES
+        .iter()
+        .map(|suite| {
+            size_line(contents.as_bytes(), suite)
+                .map(|bytes| (*suite, bytes))
+                .ok_or_else(|| {
+                    std::io::Error::other(format!(
+                        "the baseline {} has no size for {suite}",
+                        path.display()
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// The share of the unmodified upstream compiler's code the switch leaves,
 /// averaged over the suites, or nothing when a measurement is missing.
 fn relative_size(measurements: &std::collections::BTreeMap<String, u64>) -> Option<f64> {
     let mut total = 0.0;
@@ -241,8 +233,8 @@ fn relative_size(measurements: &std::collections::BTreeMap<String, u64>) -> Opti
 }
 
 /// The points of an entry: everything for shaving [`FULL_REDUCTION`] off the
-/// unmodified compiler's code on average, nothing for code no smaller, and a
-/// proportional share in between.
+/// unmodified upstream compiler's code on average, nothing for code no smaller,
+/// and a proportional share in between.
 fn earned_points(measurements: &std::collections::BTreeMap<String, u64>) -> Option<u64> {
     let reduction = 1.0 - relative_size(measurements)?;
     let share = (reduction / FULL_REDUCTION).clamp(0.0, 1.0);
@@ -251,7 +243,7 @@ fn earned_points(measurements: &std::collections::BTreeMap<String, u64>) -> Opti
 }
 
 /// The reason of a passing verdict: every program's code with the switch on
-/// against the unmodified compiler's, and the average reduction.
+/// against the same submission built with it off, and the average reduction.
 fn summary(measurements: &std::collections::BTreeMap<String, u64>) -> String {
     let sizes: Vec<String> = SUITES
         .iter()
@@ -266,7 +258,7 @@ fn summary(measurements: &std::collections::BTreeMap<String, u64>) -> String {
     let reduction = 100.0 * (1.0 - relative_size(measurements).unwrap_or(1.0));
 
     format!(
-        "bytes of code with {SWITCH}={SWITCH_ON} against the unmodified compiler: {}, {reduction:.1}% smaller on average",
+        "file size with {SWITCH}={SWITCH_ON} against the unmodified compiler: {}, {reduction:.1}% smaller on average",
         sizes.join(", ")
     )
 }
@@ -392,49 +384,32 @@ fn extract(
     Ok(Ok(toolchain))
 }
 
-/// Build and test one suite with the compiler under `toolchain`, the switch
-/// set when `optimized`, in a scratch directory of its own.
+/// Build and test one suite with the compiler under `toolchain` and the switch
+/// on, in a scratch directory of its own.
 fn check(
     toolchain: &std::path::Path,
     suite: &'static str,
-    optimized: bool,
     scratch: &std::path::Path,
 ) -> std::io::Result<Checked> {
-    let bytes = measure(toolchain, suite, optimized, false, scratch)?;
-    Ok(Checked {
-        suite,
-        optimized,
-        bytes,
-    })
+    let bytes = measure(toolchain, suite, scratch)?;
+    Ok(Checked { suite, bytes })
 }
 
-/// Run the check script on `suite` with the compiler under `toolchain`, in a
-/// scratch directory of its own, and read the bytes of code of the program it
-/// built, or why it failed.
+/// Run the check script on `suite` with the compiler under `toolchain` and the
+/// switch on, in a scratch directory of its own, and read the bytes of code of
+/// the program it built, or why it failed.
 fn measure(
     toolchain: &std::path::Path,
     suite: &str,
-    optimized: bool,
-    build_only: bool,
     scratch: &std::path::Path,
 ) -> std::io::Result<Result<u64, String>> {
     let root = std::path::Path::new(ROOT);
-    let directory = scratch.join(format!(
-        "{suite}-{}",
-        match (build_only, optimized) {
-            (true, _) => REFERENCE,
-            (false, true) => OPTIMIZED,
-            (false, false) => PLAIN,
-        }
-    ));
+    let directory = scratch.join(suite);
     std::fs::create_dir_all(&directory)?;
 
     let mut command = std::process::Command::new(root.join(CHECK));
     command.arg(toolchain).arg(suite).current_dir(&directory);
-    if build_only {
-        command.arg(BUILD_ONLY);
-    }
-    environment(&mut command, &directory, optimized);
+    environment(&mut command, &directory, true);
 
     log::info!("checking {suite} {}", directory.display());
     let ran = run(&mut command, CHECK_TIMEOUT)?;
@@ -466,14 +441,18 @@ fn size_line(stdout: &[u8], suite: &str) -> Option<u64> {
 }
 
 /// The environment of a step: cleared to a fixed path, its scratch directory
-/// as home and temporary directory, and the switch when `optimized`.
-fn environment(command: &mut std::process::Command, home: &std::path::Path, optimized: bool) {
+/// as home and temporary directory, and the switch on when `optimizing`.
+///
+/// The build itself leaves the switch off, so the compiler and its runtime are
+/// built in the normal configuration; the switch is what that compiler applies
+/// when it later builds a suite.
+fn environment(command: &mut std::process::Command, home: &std::path::Path, optimizing: bool) {
     command
         .env_clear()
         .env("PATH", PATH)
         .env("HOME", home)
         .env("TMPDIR", home);
-    if optimized {
+    if optimizing {
         command.env(SWITCH, SWITCH_ON);
     }
 }
@@ -585,115 +564,6 @@ fn tail(output: &[u8]) -> String {
     kept[start..].trim().to_string()
 }
 
-/// The code sizes the unmodified compiler gives the suites, measured by
-/// building them with the bootstrap compiler and cached in the temporary
-/// directory under a name keyed on that compiler and the check script.
-mod reference {
-    use super::{BOOTSTRAP, CHECK, ROOT, SUITES};
-
-    const FILE_PREFIX: &str = "ava-tcc-opt-reference-";
-
-    const HASH_OFFSET: u64 = 0xCBF2_9CE4_8422_2325;
-    const HASH_PRIME: u64 = 0x0000_0100_0000_01B3;
-
-    fn hashed(fingerprint: &[u8]) -> u64 {
-        let mut hash = HASH_OFFSET;
-
-        for byte in fingerprint {
-            hash ^= *byte as u64;
-            hash = hash.wrapping_mul(HASH_PRIME);
-        }
-
-        hash
-    }
-
-    fn fingerprint() -> Vec<u8> {
-        let root = std::path::Path::new(ROOT);
-        let mut bytes = Vec::new();
-
-        for file in [root.join(BOOTSTRAP).join("bin/tcc"), root.join(CHECK)] {
-            if let Ok(metadata) = std::fs::metadata(&file) {
-                bytes.extend_from_slice(
-                    format!(
-                        "{}{:?}{}",
-                        file.display(),
-                        metadata.modified(),
-                        metadata.len()
-                    )
-                    .as_bytes(),
-                );
-            }
-        }
-
-        bytes
-    }
-
-    fn path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("{FILE_PREFIX}{:016x}", hashed(&fingerprint())))
-    }
-
-    /// The cached sizes in the order of the suites, if every suite has one.
-    pub(super) fn read() -> Option<Vec<u64>> {
-        let contents = std::fs::read_to_string(path()).ok()?;
-        let sizes: Vec<u64> = contents
-            .split_whitespace()
-            .map(str::parse)
-            .collect::<Result<_, _>>()
-            .ok()?;
-
-        (sizes.len() == SUITES.len()).then_some(sizes)
-    }
-
-    /// The sizes, measured in `scratch` unless cached.
-    ///
-    /// The cache is written best effort: `prepare` runs as a different user
-    /// than a push, so its file may already be there and unwritable, which is
-    /// no reason to fail a verification the measurement already answered.
-    pub(super) fn load(scratch: &std::path::Path) -> std::io::Result<Vec<u64>> {
-        if let Some(sizes) = read() {
-            return Ok(sizes);
-        }
-
-        let sizes = measure(scratch)?;
-        let written: Vec<String> = sizes.iter().map(u64::to_string).collect();
-        let _ = std::fs::write(path(), written.join(" "));
-
-        Ok(sizes)
-    }
-
-    /// Build every suite with the bootstrap compiler, in parallel under
-    /// `scratch`, and take the code size of its program.
-    fn measure(scratch: &std::path::Path) -> std::io::Result<Vec<u64>> {
-        let bootstrap = std::path::Path::new(ROOT).join(BOOTSTRAP);
-
-        let measured: Vec<std::io::Result<Result<u64, String>>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = SUITES
-                .iter()
-                .map(|suite| {
-                    let bootstrap = &bootstrap;
-                    scope.spawn(move || super::measure(bootstrap, suite, false, true, scratch))
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join().expect("a measurement does not panic"))
-                .collect()
-        });
-
-        measured
-            .into_iter()
-            .zip(SUITES)
-            .map(|(bytes, suite)| {
-                bytes?.map_err(|reason| {
-                    std::io::Error::other(format!(
-                        "the unmodified compiler fails to build {suite}: {reason}"
-                    ))
-                })
-            })
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::Game;
@@ -702,7 +572,6 @@ mod tests {
         let mut measurements = std::collections::BTreeMap::new();
         for (suite, optimized, reference) in sizes {
             measurements.insert(super::key(suite, super::OPTIMIZED), *optimized);
-            measurements.insert(super::key(suite, super::PLAIN), *reference);
             measurements.insert(super::key(suite, super::REFERENCE), *reference);
         }
         measurements

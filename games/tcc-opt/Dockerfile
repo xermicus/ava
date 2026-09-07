@@ -46,7 +46,7 @@ RUN mkdir -p /opt/tcc-opt/suites && \
 	rm -f zlib.tar.gz sqlite.zip libpng.tar.gz && \
 	cp -r /opt/scaffold/tinycc tinycc
 
-COPY --chmod=755 tcc-opt/check tcc-opt/textsize /opt/tcc-opt/
+COPY --chmod=755 tcc-opt/check /opt/tcc-opt/
 COPY tcc-opt/deflate-fixture.c /opt/tcc-opt/
 
 RUN mkdir /opt/tcc-opt/suites/corpus && \
@@ -67,4 +67,11 @@ RUN apt update && \
 	apt install -y --no-install-recommends binutils libc6-dev make tcl tcl-dev && \
 	apt clean && \
 	rm -rf /var/lib/apt/lists/*
+
+# The baseline the game scores against: the code size the unmodified bootstrap
+# compiler gives each suite, measured once here so no push has to.
+RUN for suite in zlib sqlite libpng tinycc; do \
+		/opt/tcc-opt/check /opt/tcc-opt/bootstrap "$suite" build; \
+	done > /opt/tcc-opt/reference.txt && cat /opt/tcc-opt/reference.txt
+
 USER agent

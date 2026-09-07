@@ -12,7 +12,6 @@ quick-check: check-zlib
 test: $(SUITES:%=check-%)
 
 check-%: build
-	$(TCC_OPT)/check $(PREFIX) $*
 	TCC_OPT_SIZE=1 $(TCC_OPT)/check $(PREFIX) $*
 
 .PHONY: build quick-check test

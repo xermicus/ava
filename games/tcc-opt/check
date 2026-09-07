@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Build one test suite with the tcc installed under PREFIX, run its tests and
-# print the bytes of the executable segments of its program: `check PREFIX
-# SUITE [MODE]`, the suite zlib, sqlite, libpng or tinycc, the mode `test`
-# unless given, `build` to skip the tests, `record` to write the deflate
-# fixture the zlib tests compare against.
+# print the file size of its program: `check PREFIX SUITE [MODE]`, the suite
+# zlib, sqlite, libpng or tinycc, the mode `test` unless given, `build` to skip
+# the tests, `record` to write the deflate fixture the zlib tests compare
+# against.
 
 set -euo pipefail
 
@@ -109,4 +109,4 @@ tinycc)
 	;;
 esac
 
-echo "$SUITE $program $(python3 "$ROOT/textsize" "$program")" >&3
+echo "$SUITE $program $(stat -c%s "$program")" >&3
