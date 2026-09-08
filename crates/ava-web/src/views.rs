@@ -2384,15 +2384,14 @@ pub(crate) fn tournament_page(
     // the cross table being seats, the ratings blank until a round finished.
     let removable = !record.played() && !playing;
     let rated = record.finished_rounds().next().is_some();
-    let weights = selection.weights();
     let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
     let mut labeled = Vec::new();
     for round in record.finished_rounds() {
         labeled.extend(label_pairings(
             &labels,
             &tournament::pairings(&record, round)?,
-            weights,
-            &tournament::spends(&record, round, &registry)?,
+            ava_game::scoring::Weights::default(),
+            &[],
         ));
     }
     let standings = standings(&labeled);
@@ -2481,13 +2480,6 @@ pub(crate) fn tournament_page(
             Some(NO_SEATS_NOTE)
         )
     ));
-    if rated {
-        body.push_str(&weights_panel(
-            &format!("/tournament/{}", escape(name)),
-            weights,
-            &[],
-        ));
-    }
     if removable {
         body.push_str(&format!(
             "<form method=\"post\" action=\"/tournament/{}/seat\" data-submit class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
