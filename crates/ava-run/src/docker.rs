@@ -267,6 +267,9 @@ const MAX_FILE_BYTES: &str = "fsize=2147483648";
 /// The size of the scratch space, which no restart carries over.
 const SCRATCH_SIZE: &str = "size=2g";
 
+/// The host cores the containers of one run get.
+const CONTAINER_CPUS: &str = "8";
+
 /// The owner of everything under the agent home.
 const SANDBOX_OWNER: &str = "1000:1000";
 
@@ -484,116 +487,9 @@ fn holder_container(run: &str) -> String {
     format!("{HOLDER_CONTAINER_PREFIX}{run}")
 }
 
-/// Pinning each run's containers to a block of host cores, so runs started in
-/// parallel share the machine in fixed slices instead of every one parking on
-/// every core. A run takes a block on start and returns it on teardown, and at
-/// most `parallel` runs hold a block at once, so the blocks stay disjoint.
-mod cores {
-    use std::sync::{Mutex, OnceLock};
-
-    struct Pool {
-        ranges: Vec<String>,
-        free: Vec<bool>,
-        held: std::collections::HashMap<String, usize>,
-    }
-
-    static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
-
-    /// The `cpus` host cores split into `slots` contiguous ranges of at least
-    /// one core each, wrapping when there are fewer cores than slots.
-    fn ranges(slots: usize, cpus: usize) -> Vec<String> {
-        let cpus = cpus.max(1);
-        let per = (cpus / slots).max(1);
-
-        (0..slots)
-            .map(|slot| {
-                let start = (slot * per) % cpus;
-                if per == 1 {
-                    start.to_string()
-                } else {
-                    format!("{start}-{}", start + per - 1)
-                }
-            })
-            .collect()
-    }
-
-    fn pool(parallel: u64) -> &'static Mutex<Pool> {
-        POOL.get_or_init(|| {
-            let cpus = std::thread::available_parallelism()
-                .map(|count| count.get())
-                .unwrap_or(1);
-            let ranges = ranges(parallel.max(1) as usize, cpus);
-            let free = vec![true; ranges.len()];
-            Mutex::new(Pool {
-                ranges,
-                free,
-                held: std::collections::HashMap::new(),
-            })
-        })
-    }
-
-    /// Give `run` a free block. A lone run is not pinned, since the whole
-    /// machine is already its own.
-    pub(super) fn acquire(run: &str, parallel: u64) {
-        if parallel <= 1 {
-            return;
-        }
-
-        let mut pool = pool(parallel)
-            .lock()
-            .expect("the core pool is not poisoned");
-        if let Some(slot) = pool.free.iter().position(|&free| free) {
-            pool.free[slot] = false;
-            pool.held.insert(run.to_string(), slot);
-        }
-    }
-
-    /// The `--cpuset-cpus` flag for `run`, empty when it holds no block.
-    pub(super) fn pin(run: &str) -> Vec<String> {
-        let Some(pool) = POOL.get() else {
-            return Vec::new();
-        };
-        let pool = pool.lock().expect("the core pool is not poisoned");
-
-        match pool.held.get(run) {
-            Some(&slot) => vec!["--cpuset-cpus".to_string(), pool.ranges[slot].clone()],
-            None => Vec::new(),
-        }
-    }
-
-    /// Return `run`'s block to the pool.
-    pub(super) fn release(run: &str) {
-        let Some(pool) = POOL.get() else {
-            return;
-        };
-        let mut pool = pool.lock().expect("the core pool is not poisoned");
-        if let Some(slot) = pool.held.remove(run) {
-            pool.free[slot] = true;
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        #[test]
-        fn cores_split_into_disjoint_blocks() {
-            assert_eq!(super::ranges(4, 24), ["0-5", "6-11", "12-17", "18-23"]);
-            assert_eq!(
-                super::ranges(6, 24),
-                ["0-3", "4-7", "8-11", "12-15", "16-19", "20-23"]
-            );
-        }
-
-        #[test]
-        fn an_uneven_split_leaves_a_remainder_and_wraps_when_oversubscribed() {
-            // 24 / 5 = 4 cores each, the last four cores go unused.
-            assert_eq!(
-                super::ranges(5, 24),
-                ["0-3", "4-7", "8-11", "12-15", "16-19"]
-            );
-            // More runs than cores: one core each, wrapping so they share.
-            assert_eq!(super::ranges(3, 2), ["0", "1", "0"]);
-        }
-    }
+/// The `--cpus` flag every container of a run is started with.
+fn cpu_limit() -> [&'static str; 2] {
+    ["--cpus", CONTAINER_CPUS]
 }
 
 /// The prompt one turn of the loop is started on.
@@ -664,11 +560,8 @@ fn prepare_agent_home(run: &str, image: &str) -> std::io::Result<()> {
         )?;
     }
 
-    let pinning = cores::pin(run);
-    let pin: Vec<&str> = pinning.iter().map(String::as_str).collect();
-
     let mut holder_arguments = vec!["run"];
-    holder_arguments.extend(&pin);
+    holder_arguments.extend(cpu_limit());
     holder_arguments.extend([
         "--detach",
         "--name",
@@ -691,7 +584,7 @@ fn prepare_agent_home(run: &str, image: &str) -> std::io::Result<()> {
     log::info!("seeding the home of {run} from {image}");
     let seed = seed_home_command();
     let mut seed_arguments = vec!["run"];
-    seed_arguments.extend(&pin);
+    seed_arguments.extend(cpu_limit());
     seed_arguments.extend([
         "--rm",
         "--network",
@@ -756,7 +649,7 @@ fn last_chance(run: &str, image: &str) {
 
     let output = std::process::Command::new("docker")
         .arg("run")
-        .args(cores::pin(run))
+        .args(cpu_limit())
         .args([
             "--rm",
             "--network",
@@ -827,12 +720,11 @@ fn start_proxy(run: &str) -> std::io::Result<()> {
     let container = proxy_container(run);
     log::info!("starting the proxy sidecar {container}");
 
-    let pinning = cores::pin(run);
     let bus = format!("{BUS_VARIABLE}={}", bus(run));
     let socket = format!("{}:{SOCKET_DIRECTORY}", socket_volume(run));
 
     let mut arguments = vec!["run"];
-    arguments.extend(pinning.iter().map(String::as_str));
+    arguments.extend(cpu_limit());
     arguments.extend([
         "--detach",
         "--name",
@@ -968,7 +860,7 @@ fn start_score_server(
     )?;
 
     let mut arguments: Vec<String> = vec!["run".to_string()];
-    arguments.extend(cores::pin(run));
+    arguments.extend(cpu_limit().map(String::from));
     arguments.extend(
         [
             "--detach",
@@ -1620,7 +1512,6 @@ pub fn run_agent(command: &Agent) -> std::io::Result<i32> {
 /// run, its access log describes that run alone.
 pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
     let command = &launch.command;
-    cores::acquire(run, command.parallel);
     let staging = std::env::temp_dir().join(STAGING_DIRECTORY).join(run);
     let image = pin_image(&launch.identity, &launch.setup.agent.harness, run)?;
 
@@ -1661,7 +1552,6 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
     let attempts = collect_logs(run, &scorer_container(run), SCORE_LOG, SCORE_ERROR_LOG);
     let entries = collect_entries(run);
     remove_sidecars(run);
-    cores::release(run);
 
     let completed = match (&status, &collected, &attempts) {
         (Ok(_), Ok(()), Ok(())) => complete_run(run),
@@ -2067,7 +1957,7 @@ fn start_sandbox(
 
     let mut docker = std::process::Command::new("docker");
     docker.arg("run");
-    docker.args(cores::pin(&sandbox.name));
+    docker.args(cpu_limit());
     docker.args([
         "--rm",
         "--name",
