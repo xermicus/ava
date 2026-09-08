@@ -652,7 +652,7 @@ pub fn play_round(
                 model,
                 game: record.game.clone(),
                 limit: record.limit_seconds,
-                parallel: 1,
+                parallel: parallel as u64,
                 thinking: setup.thinking.clone(),
                 force_build_images,
                 analyst: None,

@@ -267,6 +267,9 @@ const MAX_FILE_BYTES: &str = "fsize=2147483648";
 /// The size of the scratch space, which no restart carries over.
 const SCRATCH_SIZE: &str = "size=2g";
 
+/// The host cores the containers of one run get.
+const CONTAINER_CPUS: &str = "8";
+
 /// The owner of everything under the agent home.
 const SANDBOX_OWNER: &str = "1000:1000";
 
@@ -276,9 +279,10 @@ const HOLD_OPEN: &str = "sleep infinity";
 /// Without this, crashing submissions leave a core dump into the host journal.
 const NO_CORE_DUMPS: &str = "core=0";
 
-/// Longer than the scoring timeout of the server, so the drain probe outlives
-/// any scoring still in flight without hanging teardown on a dead server.
-const DRAIN_TIMEOUT_SECONDS: &str = "90";
+/// What the drain probe waits beyond the scoring seconds of the game, so it
+/// outlives any scoring still in flight without hanging teardown on a dead
+/// server.
+const DRAIN_MARGIN_SECONDS: u64 = 30;
 const DRAIN_PROBE_URL: &str = "http://git/task.git/info/refs?service=git-upload-pack";
 const SANDBOX_LOOPBACK: &str = "127.0.0.1";
 const STAGING_DIRECTORY: &str = "ava-agent-config";
@@ -483,6 +487,11 @@ fn holder_container(run: &str) -> String {
     format!("{HOLDER_CONTAINER_PREFIX}{run}")
 }
 
+/// The `--cpus` flag every container of a run is started with.
+fn cpu_limit() -> [&'static str; 2] {
+    ["--cpus", CONTAINER_CPUS]
+}
+
 /// The prompt one turn of the loop is started on.
 ///
 /// Every harness gets this same text, because the loop is `ava` starting the
@@ -551,49 +560,48 @@ fn prepare_agent_home(run: &str, image: &str) -> std::io::Result<()> {
         )?;
     }
 
-    process::run_and_assume_success(
-        "docker",
-        &[
-            "run",
-            "--detach",
-            "--name",
-            &holder,
-            "--network",
-            "none",
-            "--read-only",
-            "--volume",
-            &home,
-            "--volume",
-            &workspace,
-            "--entrypoint",
-            BASH,
-            image,
-            "-c",
-            HOLD_OPEN,
-        ],
-    )?;
+    let mut holder_arguments = vec!["run"];
+    holder_arguments.extend(cpu_limit());
+    holder_arguments.extend([
+        "--detach",
+        "--name",
+        &holder,
+        "--network",
+        "none",
+        "--read-only",
+        "--volume",
+        &home,
+        "--volume",
+        &workspace,
+        "--entrypoint",
+        BASH,
+        image,
+        "-c",
+        HOLD_OPEN,
+    ]);
+    process::run_and_assume_success("docker", &holder_arguments)?;
 
     log::info!("seeding the home of {run} from {image}");
-    process::run_and_assume_success(
-        "docker",
-        &[
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--user",
-            ROOT_USER,
-            "--volume",
-            &home,
-            "--volume",
-            &workspace,
-            "--entrypoint",
-            BASH,
-            image,
-            "-c",
-            &seed_home_command(),
-        ],
-    )?;
+    let seed = seed_home_command();
+    let mut seed_arguments = vec!["run"];
+    seed_arguments.extend(cpu_limit());
+    seed_arguments.extend([
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        ROOT_USER,
+        "--volume",
+        &home,
+        "--volume",
+        &workspace,
+        "--entrypoint",
+        BASH,
+        image,
+        "-c",
+        &seed,
+    ]);
+    process::run_and_assume_success("docker", &seed_arguments)?;
 
     Ok(())
 }
@@ -640,8 +648,9 @@ fn last_chance(run: &str, image: &str) {
     log::info!("{run}: submitting what the agent left, on its behalf");
 
     let output = std::process::Command::new("docker")
+        .arg("run")
+        .args(cpu_limit())
         .args([
-            "run",
             "--rm",
             "--network",
             "none",
@@ -711,26 +720,28 @@ fn start_proxy(run: &str) -> std::io::Result<()> {
     let container = proxy_container(run);
     log::info!("starting the proxy sidecar {container}");
 
-    process::run_and_assume_success(
-        "docker",
-        &[
-            "run",
-            "--detach",
-            "--name",
-            &container,
-            "--network",
-            NETWORK_EGRESS,
-            "--add-host",
-            HOST_GATEWAY,
-            "--env",
-            &format!("{BUS_VARIABLE}={}", bus(run)),
-            "--volume",
-            &format!("{}:{SOCKET_DIRECTORY}", socket_volume(run)),
-            "--volume",
-            &hosts,
-            PROXY_IMAGE,
-        ],
-    )?;
+    let bus = format!("{BUS_VARIABLE}={}", bus(run));
+    let socket = format!("{}:{SOCKET_DIRECTORY}", socket_volume(run));
+
+    let mut arguments = vec!["run"];
+    arguments.extend(cpu_limit());
+    arguments.extend([
+        "--detach",
+        "--name",
+        &container,
+        "--network",
+        NETWORK_EGRESS,
+        "--add-host",
+        HOST_GATEWAY,
+        "--env",
+        &bus,
+        "--volume",
+        &socket,
+        "--volume",
+        &hosts,
+        PROXY_IMAGE,
+    ]);
+    process::run_and_assume_success("docker", &arguments)?;
 
     await_socket(&container, SOCKET_PATH)
 }
@@ -848,36 +859,47 @@ fn start_score_server(
         README_MOUNT,
     )?;
 
-    let mut arguments: Vec<String> = [
-        "run",
-        "--detach",
-        "--name",
-        &container,
-        "--network",
-        "none",
-        "--ulimit",
-        NO_CORE_DUMPS,
-        "--user",
-        ROOT_USER,
-        "--volume",
-        &format!("{}:{SOCKET_DIRECTORY}", socket_volume(run)),
-        "--volume",
-        &task,
-        "--volume",
-        &readme,
-    ]
-    .iter()
-    .map(|argument| argument.to_string())
-    .collect();
+    let mut arguments: Vec<String> = vec!["run".to_string()];
+    arguments.extend(cpu_limit().map(String::from));
+    arguments.extend(
+        [
+            "--detach",
+            "--name",
+            &container,
+            "--network",
+            "none",
+            "--ulimit",
+            NO_CORE_DUMPS,
+            "--user",
+            ROOT_USER,
+            "--volume",
+            &format!("{}:{SOCKET_DIRECTORY}", socket_volume(run)),
+            "--volume",
+            &task,
+            "--volume",
+            &readme,
+        ]
+        .iter()
+        .map(|argument| argument.to_string()),
+    );
     for input in inputs {
         arguments.push("--volume".to_string());
         arguments.push(input_mount(input)?);
     }
     let turn = turn.to_string();
+    let seconds = scoring_seconds(game).to_string();
     arguments.extend(
-        ["--entrypoint", BASH, image, SCORE_ENTRY, game, &turn]
-            .iter()
-            .map(|argument| argument.to_string()),
+        [
+            "--entrypoint",
+            BASH,
+            image,
+            SCORE_ENTRY,
+            game,
+            &turn,
+            &seconds,
+        ]
+        .iter()
+        .map(|argument| argument.to_string()),
     );
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
@@ -924,7 +946,8 @@ fn await_socket(container: &str, socket: &str) -> std::io::Result<()> {
 /// The scoring server answers requests one at a time, which makes one served
 /// probe the proof that the previous scoring finished. Failures are ignored,
 /// since a server that cannot answer has nothing in flight to wait for.
-fn drain_scorer(run: &str) {
+fn drain_scorer(run: &str, game: &str) {
+    let max_time = (scoring_seconds(game) + DRAIN_MARGIN_SECONDS).to_string();
     let _ = std::process::Command::new("docker")
         .args([
             "exec",
@@ -932,7 +955,7 @@ fn drain_scorer(run: &str) {
             "curl",
             "-sf",
             "--max-time",
-            DRAIN_TIMEOUT_SECONDS,
+            &max_time,
             "--unix-socket",
             SCORE_SOCKET_PATH,
             DRAIN_PROBE_URL,
@@ -1276,6 +1299,14 @@ pub fn scorer_image(game: &str) -> String {
     }
 }
 
+/// The seconds the named game gives a verification, the default for a game the
+/// build does not know.
+fn scoring_seconds(game: &str) -> u64 {
+    ava_game::find(game).map_or(ava_game::DEFAULT_SCORING_SECONDS, |game| {
+        game.scoring_seconds()
+    })
+}
+
 /// The folder whose Dockerfile the named game plays on, if it needs one.
 fn game_layer(game: &str) -> Option<&'static str> {
     ava_game::find(game).and_then(|game| game.image())
@@ -1517,7 +1548,7 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
         });
 
     let collected = collect_logs(run, &proxy_container(run), ACCESS_LOG, ERROR_LOG);
-    drain_scorer(run);
+    drain_scorer(run, &command.game);
     let attempts = collect_logs(run, &scorer_container(run), SCORE_LOG, SCORE_ERROR_LOG);
     let entries = collect_entries(run);
     remove_sidecars(run);
@@ -1925,8 +1956,9 @@ fn start_sandbox(
     let container = sandbox.container();
 
     let mut docker = std::process::Command::new("docker");
+    docker.arg("run");
+    docker.args(cpu_limit());
     docker.args([
-        "run",
         "--rm",
         "--name",
         &container,

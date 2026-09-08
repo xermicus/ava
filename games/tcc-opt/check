@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# Build one test suite with the tcc installed under PREFIX, run its tests and
+# print the file size of its program: `check PREFIX SUITE [MODE]`, the suite
+# zlib, sqlite, libpng or tinycc, the mode `test` unless given, `build` to skip
+# the tests, `record` to write the deflate fixture the zlib tests compare
+# against.
+
+set -euo pipefail
+
+PREFIX=$(realpath "$1")
+SUITE=$2
+MODE=${3:-test}
+ROOT=${TCC_OPT_ROOT:-/opt/tcc-opt}
+SUITES=$ROOT/suites
+TCC="$PREFIX/bin/tcc -B$PREFIX/lib/tcc"
+CFLAGS=-O2
+# The shell options of sqlite's main.mk, which its tests drive the shell with.
+SQLITE_SHELL_DEFINES="-DSQLITE_DQS=0 -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_EXPLAIN_COMMENTS -DSQLITE_ENABLE_UNKNOWN_SQL_FUNCTION -DSQLITE_ENABLE_STMTVTAB -DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_ENABLE_DBSTAT_VTAB -DSQLITE_ENABLE_BYTECODE_VTAB -DSQLITE_ENABLE_OFFSET_SQL_FUNC -DSQLITE_STRICT_SUBTYPE=1"
+DEFLATE_FIXTURE=$SUITES/deflate.sha256
+DEFLATE_CORPORA="text short repeat random"
+DEFLATE_LEVELS="0 1 6 9"
+DEFLATE_WINDOWS="15 -15 31"
+DEFLATE_STRATEGIES="1 2 3 4"
+
+SCRATCH=$(mktemp -d)
+trap 'rm -rf "$SCRATCH"' EXIT
+export TMPDIR=$SCRATCH
+
+# Only the size line goes to the caller, the build and test output to stderr.
+exec 3>&1
+exec 1>&2
+
+testing() {
+	[ "$MODE" = test ]
+}
+
+build_zlib() {
+	mkdir "$SCRATCH/zlib"
+	cd "$SCRATCH/zlib"
+	CC="$TCC" CFLAGS="$CFLAGS" "$SUITES/zlib/configure" --static
+	make -s
+}
+
+deflate_hashes() {
+	$TCC $CFLAGS -I"$SUITES/zlib" -I. -o deflate-fixture "$ROOT/deflate-fixture.c" libz.a
+	for corpus in $DEFLATE_CORPORA; do
+		for level in $DEFLATE_LEVELS; do
+			for window in $DEFLATE_WINDOWS; do
+				deflate_hash "$corpus" "$level" "$window" 0
+			done
+		done
+		for strategy in $DEFLATE_STRATEGIES; do
+			deflate_hash "$corpus" 6 15 "$strategy"
+		done
+	done
+}
+
+deflate_hash() {
+	echo "$1 $2 $3 $4 $(./deflate-fixture "$2" "$3" "$4" < "$SUITES/corpus/$1" | sha256sum | cut -d ' ' -f 1)"
+}
+
+case $SUITE in
+zlib)
+	build_zlib
+	if [ "$MODE" = record ]; then
+		deflate_hashes > "$DEFLATE_FIXTURE"
+	elif testing; then
+		make -s test
+		deflate_hashes | diff "$DEFLATE_FIXTURE" -
+	fi
+	program=minigzip
+	;;
+libpng)
+	build_zlib
+	mkdir "$SCRATCH/libpng"
+	cd "$SCRATCH/libpng"
+	CC="$TCC" CFLAGS="$CFLAGS" CPPFLAGS="-I$SUITES/zlib -I$SCRATCH/zlib" LDFLAGS="-L$SCRATCH/zlib" "$SUITES/libpng/configure" --disable-shared
+	make -s
+	if testing; then
+		make -s check
+	fi
+	program=pngtest
+	;;
+sqlite)
+	mkdir "$SCRATCH/sqlite"
+	cd "$SCRATCH/sqlite"
+	CC="$TCC" CC_FOR_BUILD="$TCC" CFLAGS="$CFLAGS -D_LARGEFILE64_SOURCE=1" "$SUITES/sqlite/configure" --disable-readline --with-tcl="$(dirname "$(find /usr/lib -name tclConfig.sh | head -1)")"
+	make -s testfixture sqlite3.c shell.c
+	$TCC $CFLAGS $SQLITE_SHELL_DEFINES -o sqlite3 shell.c sqlite3.c -lm -lpthread -ldl
+	if testing; then
+		./testfixture "$SUITES/sqlite/test/veryquick.test"
+	fi
+	program=sqlite3
+	;;
+tinycc)
+	cp -r "$SUITES/tinycc" "$SCRATCH/tinycc"
+	cd "$SCRATCH/tinycc"
+	./configure --cc="$TCC" --extra-cflags="$CFLAGS"
+	make -s
+	if testing; then
+		make -s test
+	fi
+	program=tcc
+	;;
+*)
+	echo "unknown suite $SUITE, the suites are zlib, sqlite, libpng and tinycc"
+	exit 2
+	;;
+esac
+
+echo "$SUITE $program $(stat -c%s "$program")" >&3

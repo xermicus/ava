@@ -204,6 +204,7 @@ fn passing_verdict(report: &field::Report, field: &field::Field) -> ava_wire::Ve
         )),
         defeated: Vec::new(),
         rating: Some(report.rating),
+        measurements: std::collections::BTreeMap::new(),
     }
 }
 
