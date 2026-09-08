@@ -83,14 +83,13 @@ pub(crate) const ALIAS_FIELDS: [&str; 4] = ["name", "harness", "model", "analyst
 pub(crate) const ANALYST_PREFIX: &str = "analyst_";
 
 /// The start fields carried back to the form, so a submission does not reset it.
-const START_FIELDS: [&str; 10] = [
+const START_FIELDS: [&str; 9] = [
     "agent",
     "thinking",
     "game",
     "limit",
     "parallel",
     "analyze",
-    "force",
     "analyst_agent",
     "analyst_thinking",
     "analyst_seconds",
@@ -506,7 +505,7 @@ fn start_run(form: &[(String, String)]) -> Result<Done, Refusal> {
         limit,
         parallel,
         thinking: setup.thinking,
-        force_build_images: value(form, "force") == "on",
+        force_build_images: false,
         analyst,
         turn: 0,
         inputs: Vec::new(),

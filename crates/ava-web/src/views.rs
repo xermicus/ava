@@ -1171,28 +1171,30 @@ fn start_panel(selection: &Selection) -> std::io::Result<String> {
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
          <label class=\"w-20\"><span class=\"{LABEL_CLASSES}\">parallel</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" value=\"{parallel}\" min=\"1\"></label>\
-         <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
-         <input type=\"checkbox\" name=\"force\" class=\"h-4 w-4 rounded accent-indigo-500\"{force}>\
-         <span class=\"{NOTE_CLASSES}\">rebuild images</span></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">start</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
-         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
-         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyzer</label>\
-         <div class=\"hidden peer-checked:contents\">{}{}</div>\
+         {}{}\
+         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"ml-auto h-4 w-4 rounded accent-indigo-500 mb-3.5\"{analyze}>\
+         <label for=\"analyze\" class=\"-ml-2 h-4 flex items-center leading-none {NOTE_CLASSES} mb-3.5\">active</label>\
          </div>\
          </form>",
-        agent_fields(&registry, "", selection.agent("", ["", DEFAULT_THINKING])),
+        agent_fields(
+            &registry,
+            "",
+            "agent",
+            selection.agent("", ["", DEFAULT_THINKING])
+        ),
         select("game", "game", &games, selection.get("game", DEFAULT_GAME)),
         agent_fields(
             &registry,
             crate::serve::ANALYST_PREFIX,
+            "analyzer",
             selection.agent(
                 crate::serve::ANALYST_PREFIX,
                 [default_analyst(&registry), DEFAULT_ANALYST_THINKING]
             )
         ),
         analyst_seconds_field(selection, crate::serve::ANALYST_PREFIX),
-        force = checked(selection.get("force", "") == "on"),
         analyze = checked(selection.get("analyze", "") == "on"),
     ))
 }
@@ -1213,6 +1215,7 @@ fn analysis_panel(name: &str) -> std::io::Result<String> {
         agent_fields(
             &registry,
             "",
+            "analyzer",
             [default_analyst(&registry), DEFAULT_ANALYST_THINKING]
         ),
         analyst_seconds_field(&Selection::default(), ""),
@@ -1259,8 +1262,13 @@ fn default_analyst(registry: &registry::Registry) -> &str {
 
 /// The dropdowns choosing an agent, the way one is chosen everywhere: the
 /// agent by its name in the registry and the thinking level, named under
-/// `prefix` in the form, with `selected` marked.
-fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 2]) -> String {
+/// `prefix` in the form, the agent shown under `label`, with `selected` marked.
+fn agent_fields(
+    registry: &registry::Registry,
+    prefix: &str,
+    label: &str,
+    selected: [&str; 2],
+) -> String {
     let [agent_field, thinking_field] = crate::serve::AGENT_FIELDS;
     let [agent, thinking] = selected;
 
@@ -1298,7 +1306,7 @@ fn agent_fields(registry: &registry::Registry, prefix: &str, selected: [&str; 2]
                 })
                 .collect();
             format!(
-                "<span class=\"{PICKER_CLASSES}\"><span class=\"{LABEL_CLASSES}\">{agent_field}</span>\
+                "<span class=\"{PICKER_CLASSES}\"><span class=\"{LABEL_CLASSES}\">{label}</span>\
                  <details data-picker><summary class=\"{FIELD_CLASSES} {CONTROL_HEIGHT} {PICKER_FACE_CLASSES}\"><span data-chosen class=\"flex items-center gap-2 min-w-0 grow\">{}</span>{}</summary>\
                  <div class=\"{PICKER_LIST_CLASSES}\">\
                  <input data-filter type=\"text\" autocomplete=\"off\" placeholder=\"{PICKER_FILTER_NOTE}\" class=\"{PICKER_FILTER_CLASSES}\">\
@@ -2225,9 +2233,9 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"combats\" value=\"{combats}\" min=\"1\"></label>\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">open</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
-         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"peer h-4 w-4 rounded accent-indigo-500 mb-2.5\"{analyze}>\
-         <label for=\"analyze\" class=\"{NOTE_CLASSES} mb-2\">analyzer</label>\
-         <div class=\"hidden peer-checked:contents\">{}{}</div>\
+         {}{}\
+         <input type=\"checkbox\" id=\"analyze\" name=\"analyze\" class=\"ml-auto h-4 w-4 rounded accent-indigo-500 mb-3.5\"{analyze}>\
+         <label for=\"analyze\" class=\"-ml-2 h-4 flex items-center leading-none {NOTE_CLASSES} mb-3.5\">active</label>\
          </div>\
          </form>",
         escape(selection.get("name", "")),
@@ -2248,6 +2256,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         agent_fields(
             &registry,
             crate::serve::ANALYST_PREFIX,
+            "analyzer",
             selection.agent(
                 crate::serve::ANALYST_PREFIX,
                 [default_analyst(&registry), DEFAULT_ANALYST_THINKING]
@@ -2485,7 +2494,7 @@ pub(crate) fn tournament_page(
             "<form method=\"post\" action=\"/tournament/{}/seat\" data-submit class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
              {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
             escape(name),
-            agent_fields(&registry, "", selection.agent("", ["", DEFAULT_THINKING])),
+            agent_fields(&registry, "", "agent", selection.agent("", ["", DEFAULT_THINKING])),
         ));
     }
 
@@ -3781,10 +3790,7 @@ fn alias_panel(
             &routes
         ),
         checked(analyst == "on"),
-        explained(
-            "analyst",
-            "the agent analyzing runs unless another is chosen, one at most; marking this one unmarks the other"
-        ),
+        explained("analyst", "set as default anlyzer agent"),
     )
 }
 
