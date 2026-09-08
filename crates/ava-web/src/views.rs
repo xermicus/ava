@@ -55,7 +55,9 @@ const ROUND_LOG_SUFFIX: &str = ".log";
 const CONSOLE_TAIL_BYTES: usize = 16 * 1024;
 
 const LAYOUT_TEMPLATE: &str = include_str!("../assets/web-layout.html");
-const HEADING_PLACEHOLDER: &str = "__AVA_HEADING__";
+const TRAIL_PLACEHOLDER: &str = "__AVA_TRAIL__";
+const TITLE_PLACEHOLDER: &str = "__AVA_TITLE__";
+const SECTION_PLACEHOLDER: &str = "__AVA_SECTION__";
 const BODY_PLACEHOLDER: &str = "__AVA_BODY__";
 
 /// A `#` prefix on a header right-aligns that column for numbers.
@@ -111,7 +113,6 @@ const RIVALS_TABLE: &str = "rivals";
 const SCOREBOARD_TABLE: &str = "scoreboard";
 
 /// The scoreboard: every agent, its runs and its ratings over the tournaments.
-const SCOREBOARD_HEADING: &str = "scoreboard";
 const SCOREBOARD_HEADERS: [&str; 11] = [
     "",
     "*agent",
@@ -249,6 +250,9 @@ const TITLE_CLASSES: &str = "text-sm font-semibold text-neutral-100 mt-8 mb-3";
 /// The first title of a page rests on the padding of the layout.
 const FIRST_TITLE_CLASSES: &str = "text-sm font-semibold text-neutral-100 mb-3";
 const NOTE_CLASSES: &str = "text-neutral-400";
+/// The side bearing of the last glyph, so the note lands on the hairline the
+/// cards of the page end on rather than a few pixels inside it.
+const TRAIL_OPTICAL_NUDGE: &str = "-mr-[0.07em]";
 const MUTED_CLASSES: &str = "text-neutral-500";
 const MONO_CLASSES: &str = "font-mono";
 const LINK_CLASSES: &str = "font-mono text-indigo-300 hover:text-indigo-200 transition-colors";
@@ -386,26 +390,40 @@ const TURN_PILL: &str = "bg-neutral-800 text-neutral-400";
 
 /// The graph of a round: nodes of one size on a grid of turns and seats,
 /// edges bending between the columns, text set in the font size of the page.
-const GRAPH_NODE_WIDTH: f64 = 260.0;
-const GRAPH_NODE_HEIGHT: f64 = 54.0;
+const GRAPH_NODE_WIDTH: f64 = 340.0;
+const GRAPH_NODE_HEIGHT: f64 = 60.0;
+const GRAPH_NODE_RADIUS: f64 = 6.0;
 const GRAPH_COLUMN_GAP: f64 = 88.0;
 const GRAPH_ROW_GAP: f64 = 12.0;
 const GRAPH_HEADER_HEIGHT: f64 = 28.0;
 const GRAPH_PADDING: f64 = 2.0;
 const GRAPH_TEXT_INSET: f64 = 12.0;
-const GRAPH_LINE_ONE: f64 = 21.0;
-const GRAPH_LINE_TWO: f64 = 41.0;
+const GRAPH_LINE_ONE: f64 = 22.0;
+const GRAPH_LINE_TWO: f64 = 44.0;
 const GRAPH_DOT_LIFT: f64 = 4.0;
+/// The avatar of the seat is the left of the node, as tall as it is and
+/// sharing its corners on that side.
+const GRAPH_AVATAR_SIDE: f64 = GRAPH_NODE_HEIGHT;
+const GRAPH_LABEL_INSET: f64 = GRAPH_AVATAR_SIDE + GRAPH_TEXT_INSET;
+const GRAPH_TEXT_WIDTH: f64 = GRAPH_NODE_WIDTH - GRAPH_LABEL_INSET - GRAPH_TEXT_INSET;
+const GRAPH_AVATAR_CLASSES: &str = "[clip-path:inset(0_round_6px_0_0_6px)]";
 /// The dot sits before the state word, whose width is estimated per character.
 const GRAPH_CHARACTER_WIDTH: f64 = 6.6;
 const GRAPH_DOT_GAP: f64 = 9.0;
+const GRAPH_DOT_RADIUS: f64 = 3.0;
 const GRAPH_FONT_SIZE: u32 = 12;
-const GRAPH_LABEL_CHARS: usize = 34;
+/// Between the name and the run beside it.
+const GRAPH_NAME_GAP: f64 = 10.0;
+/// A round still playing fills the top edge of the card of its graph with how
+/// far it is through the seconds every seat is given.
+const ROUND_EDGE_CLASSES: &str = "absolute inset-x-0 top-0 h-0.5 rounded-t-lg overflow-hidden";
+const ROUND_EDGE_FILL: &str = "bg-emerald-600/70";
 const GRAPH_CLASSES: &str = "font-sans";
 const GRAPH_HEADER_TEXT_CLASSES: &str = "fill-neutral-500 font-mono";
 const GRAPH_NODE_CLASSES: &str =
     "fill-neutral-950 stroke-neutral-800 hover:stroke-neutral-600 transition-colors";
-const GRAPH_LABEL_CLASSES: &str = "fill-neutral-300";
+const GRAPH_LABEL_CLASSES: &str = "fill-neutral-100 font-mono font-semibold";
+const GRAPH_PAIRING_CLASSES: &str = "fill-neutral-500";
 const GRAPH_POINTS_CLASSES: &str = "fill-amber-400 font-mono";
 const GRAPH_RUN_CLASSES: &str = "fill-indigo-300 font-mono";
 const GRAPH_STATE_CLASSES: &str = "font-medium";
@@ -464,12 +482,20 @@ const RING_NUMBER_CLASSES: &str = "fill-neutral-200 font-mono";
 const RING_DOT_CLASSES: &str = "fill-neutral-300";
 const FACT_TEXT_CLASSES: &str = "flex items-center gap-2 whitespace-nowrap";
 const NO_ANALYST: &str = "none";
-/// The header of every page is its section, the run or the tournament being
-/// the title of the body. The settings card holds what was fixed when the
-/// tournament opened.
-const RUNS_HEADING: &str = "runs";
-const TOURNAMENTS_HEADING: &str = "tournaments";
-const AGENTS_HEADING: &str = "agents";
+/// The header of every page is the trail leading to it.
+const RUNS_SECTION: (&str, &str) = ("runs", "/");
+const TOURNAMENTS_SECTION: (&str, &str) = ("tournaments", "/tournaments");
+const SCOREBOARD_SECTION: (&str, &str) = ("scoreboard", "/scoreboard");
+const AGENTS_SECTION: (&str, &str) = ("agents", "/agents");
+const GAMES_SECTION: (&str, &str) = ("games", "/games");
+const SETUP_SECTION: (&str, &str) = ("setup", "/setup");
+/// A page under no section of the navigation.
+const ERROR_SECTION: (&str, &str) = ("error", "");
+const TRAIL_SEPARATOR: &str = "\u{203a}";
+const TRAIL_STEP_CLASSES: &str = "text-neutral-400 hover:text-neutral-100 transition-colors";
+const TRAIL_SEPARATOR_CLASSES: &str = "mx-2 text-neutral-600";
+
+/// The settings card holds what was fixed when the tournament opened.
 const SETTINGS_TITLE: &str = "settings";
 
 /// A tile with nothing to show says why, quietly.
@@ -814,21 +840,22 @@ impl RunEntry {
     /// It counts from the start of the run, so the last call restart does not
     /// send it back to zero.
     fn elapsed(&self) -> u64 {
-        match &self.monitor {
-            Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
-            None => usage::epoch_now().saturating_sub(self.run.started_seconds),
+        elapsed_seconds(self.monitor.as_ref(), &self.run)
+    }
+
+    /// The seconds of its budget the run has behind it, nothing for one that broke.
+    fn spent(&self) -> Option<u64> {
+        if self.live {
+            return Some(self.elapsed());
         }
-        .min(self.run.limit_seconds)
+
+        self.run.wall_seconds()
     }
 
     /// The time cell of the runs table: the same meter against the budget for
     /// every run, spent while live, taken once over, nothing for a run that broke.
     fn time_cell(&self) -> String {
-        let spent = if self.live {
-            self.elapsed()
-        } else if let Some(wall) = self.run.wall_seconds() {
-            wall
-        } else {
+        let Some(spent) = self.spent() else {
             return String::new();
         };
         let limit = self.run.limit_seconds;
@@ -880,6 +907,16 @@ impl RunEntry {
             self.stop_form(),
         ]
     }
+}
+
+/// The seconds the live `run` has used of its budget, from the `heartbeat` of
+/// its run loop when there is one and from the clock without it.
+fn elapsed_seconds(heartbeat: Option<&serde_json::Value>, run: &ava_wire::Run) -> u64 {
+    match heartbeat {
+        Some(heartbeat) => number(heartbeat, "elapsed_seconds"),
+        None => usage::epoch_now().saturating_sub(run.started_seconds),
+    }
+    .min(run.limit_seconds)
 }
 
 /// What became of the analysis of a run.
@@ -1102,7 +1139,7 @@ pub(crate) fn runs_page(
     ));
     body.push_str("</div>");
 
-    Ok(page("runs", &body))
+    Ok(page(&[RUNS_SECTION], &body))
 }
 
 /// The panel starting a run, offering what the registry and the games folder
@@ -1320,10 +1357,9 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
 
     let mut body = format!(
         "<div data-refresh=\"run\"><div class=\"flex items-center gap-3\">\
-         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}{}{}</div>",
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span>{}{}</div>",
         escape(name),
         entry.state(),
-        entry.analysis_pill(),
         entry.stop_form()
     );
     body.push_str(&notice.render());
@@ -1492,7 +1528,10 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     }
 
     if !entry.live {
-        let title = "analysis";
+        let title = match entry.analysis_pill() {
+            pill if pill.is_empty() => "analysis".to_string(),
+            pill => format!("analysis {pill}"),
+        };
         let record = runs::analysis(&directory)?;
         if entry.analyzing() {
             body.push_str(&format!("<p class=\"{TITLE_CLASSES}\">{title}</p>"));
@@ -1610,7 +1649,22 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
     ));
     body.push_str("</div>");
 
-    Ok(page(RUNS_HEADING, &body))
+    let played_in = entry.placement.as_ref().map(|placement| {
+        (
+            &placement.tournament,
+            format!("/tournament/{}", placement.tournament),
+        )
+    });
+    let trail = match &played_in {
+        Some((tournament, address)) => vec![
+            TOURNAMENTS_SECTION,
+            (tournament.as_str(), address.as_str()),
+            (name, ""),
+        ],
+        None => vec![RUNS_SECTION, (name, "")],
+    };
+
+    Ok(page(&trail, &body))
 }
 
 /// The agents over the tournaments: the runs of each and its ratings over the
@@ -1813,7 +1867,7 @@ pub(crate) fn scoreboard_page(selection: &Selection) -> std::io::Result<String> 
         )
     );
 
-    Ok(page(SCOREBOARD_HEADING, &body))
+    Ok(page(&[SCOREBOARD_SECTION], &body))
 }
 
 /// The games the scoreboard rates within, the chosen one marked, every link
@@ -1925,7 +1979,7 @@ pub(crate) fn games_page() -> std::io::Result<String> {
         ));
     }
 
-    Ok(page("games", &body))
+    Ok(page(&[GAMES_SECTION], &body))
 }
 
 /// The card of one game over the finished runs that `played` it, folding
@@ -2237,7 +2291,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
     ));
     body.push_str("</div>");
 
-    Ok(page("tournaments", &body))
+    Ok(page(&[TOURNAMENTS_SECTION], &body))
 }
 
 /// The state of a tournament as a pill: playing, open, or how far it got.
@@ -2448,23 +2502,27 @@ pub(crate) fn tournament_page(
     // The rounds, newest first.
     for (index, round) in record.rounds.iter().enumerate().rev() {
         let number = index + 1;
-        let state = if round.finished_seconds.is_some() {
-            format!(
-                "finished {} ago",
-                usage::age(round.finished_seconds.unwrap_or_default())
-            )
-        } else if playing && index + 1 == record.rounds.len() {
-            "playing".to_string()
-        } else {
-            "broke off".to_string()
+        let live = playing && index + 1 == record.rounds.len();
+        let turns = game.map_or(1, |game| game.turns().len());
+        let became = match (round.finished_seconds, live) {
+            (Some(finished), _) => usage::span(finished.saturating_sub(round.started_seconds)),
+            (None, true) => String::new(),
+            (None, false) => "broke off".to_string(),
         };
         body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES}\">round {number} <span class=\"{NOTE_CLASSES} font-normal\">started {} ago, {state}</span></p>",
-            usage::age(round.started_seconds)
+            "<p class=\"{TITLE_CLASSES} flex items-baseline justify-between\">\
+             <span>round {number}</span><span class=\"{NOTE_CLASSES} font-normal {TRAIL_OPTICAL_NUDGE}\">{}</span></p>",
+            escape(&became)
         ));
 
-        let live = playing && index + 1 == record.rounds.len();
-        body.push_str(&round_graph(&record, round, game, &running, live));
+        let budget = record.limit_seconds * turns as u64;
+        let progress = live.then(|| {
+            let spent = round_seconds(&runs, name, index, turns, record.limit_seconds);
+            (spent.min(budget) * 100).checked_div(budget).unwrap_or(0)
+        });
+        body.push_str(&round_graph(
+            &record, round, game, &registry, &running, live, progress,
+        ));
     }
 
     body.push_str(&format!(
@@ -2481,7 +2539,7 @@ pub(crate) fn tournament_page(
     ));
     body.push_str("</div>");
 
-    Ok(page(TOURNAMENTS_HEADING, &body))
+    Ok(page(&[TOURNAMENTS_SECTION, (name, "")], &body))
 }
 
 /// The tournament in the shape of a game card: the numbered seats on a ring
@@ -2574,8 +2632,10 @@ fn round_graph(
     record: &ava_wire::Tournament,
     round: &ava_wire::Round,
     game: Option<&dyn ava_game::Game>,
+    registry: &registry::Registry,
     running: &[String],
     live: bool,
+    progress: Option<u64>,
 ) -> String {
     /// An edge the game will ask for once a turn starts, by seat and turn.
     struct Planned {
@@ -2591,6 +2651,10 @@ fn round_graph(
         run: String,
         record: Option<ava_wire::Run>,
         points: Option<u64>,
+        /// The second the entry of record landed at.
+        attempt: Option<u64>,
+        /// The seconds of the budget the run has behind it.
+        spent: Option<u64>,
         x: f64,
         y: f64,
     }
@@ -2603,6 +2667,16 @@ fn round_graph(
         }
         let directory = std::path::Path::new(docker::RUN_DIRECTORY).join(run);
         let record = runs::read(&directory).ok();
+        let spent = record.as_ref().and_then(|recorded| {
+            recorded.wall_seconds().or_else(|| {
+                running.contains(&docker::scorer_container(run)).then(|| {
+                    elapsed_seconds(
+                        read_json(&directory.join(docker::MONITOR_FILE)).as_ref(),
+                        recorded,
+                    )
+                })
+            })
+        });
         let points = match (game, attempt) {
             (Some(game), Some(attempt)) => {
                 runs::entries(game, &directory, runs::turn_entry(game, turn))
@@ -2618,6 +2692,8 @@ fn round_graph(
             run: run.to_string(),
             record,
             points,
+            attempt,
+            spent,
             x: 0.0,
             y: 0.0,
         });
@@ -2653,6 +2729,8 @@ fn round_graph(
                 run: String::new(),
                 record: None,
                 points: None,
+                attempt: None,
+                spent: None,
                 x: 0.0,
                 y: 0.0,
             });
@@ -2681,10 +2759,11 @@ fn round_graph(
             rows[node.seat] = rows[node.seat].max(*count);
         }
     }
+    let header = if turns > 1 { GRAPH_HEADER_HEIGHT } else { 0.0 };
     let row_height =
         |stack: usize| stack as f64 * GRAPH_NODE_HEIGHT + (stack as f64 - 1.0) * GRAPH_ROW_GAP;
     let mut row_top = Vec::with_capacity(seats);
-    let mut y = GRAPH_HEADER_HEIGHT;
+    let mut y = header;
     for stack in &rows {
         row_top.push(y);
         y += row_height(*stack) + GRAPH_ROW_GAP;
@@ -2697,10 +2776,7 @@ fn round_graph(
     for node in &mut nodes {
         let slot = filled.entry((node.seat, node.turn)).or_default();
         node.x = node.turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
-        node.y = row_top
-            .get(node.seat)
-            .copied()
-            .unwrap_or(GRAPH_HEADER_HEIGHT)
+        node.y = row_top.get(node.seat).copied().unwrap_or(header)
             + *slot as f64 * (GRAPH_NODE_HEIGHT + GRAPH_ROW_GAP);
         *slot += 1;
     }
@@ -2731,17 +2807,19 @@ fn round_graph(
         "<svg class=\"block w-full {GRAPH_CLASSES}\" style=\"max-width:{width}px\" viewBox=\"0 0 {width} {height}\" font-size=\"{GRAPH_FONT_SIZE}\">"
     );
 
-    for turn in 0..turns {
-        let task = game
-            .and_then(|game| game.turns().get(turn))
-            .map(|turn| turn.task.to_string())
-            .unwrap_or_else(|| format!("turn {}", turn + 1));
-        svg.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" class=\"{GRAPH_HEADER_TEXT_CLASSES}\">{}</text>",
-            turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP),
-            GRAPH_HEADER_HEIGHT - GRAPH_ROW_GAP,
-            escape(&task)
-        ));
+    if turns > 1 {
+        for turn in 0..turns {
+            let task = game
+                .and_then(|game| game.turns().get(turn))
+                .map(|turn| turn.task.to_string())
+                .unwrap_or_else(|| format!("turn {}", turn + 1));
+            svg.push_str(&format!(
+                "<text x=\"{}\" y=\"{}\" class=\"{GRAPH_HEADER_TEXT_CLASSES}\">{}</text>",
+                turn as f64 * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP),
+                header - GRAPH_ROW_GAP,
+                escape(&task)
+            ));
+        }
     }
 
     for node in &nodes {
@@ -2781,23 +2859,17 @@ fn round_graph(
             (None, false) if live => ("queued", STARTING_PILL, true),
             (None, false) => ("missing", BROKEN_PILL, false),
         };
-        let agent = record
-            .seats
-            .get(node.seat)
-            .map(|seat| seat.agent.label())
-            .unwrap_or_default();
-        let label = format!("{} \u{00b7} {agent}", node.seat + 1);
-        let shown = if label.chars().count() > GRAPH_LABEL_CHARS {
-            format!(
-                "{}\u{2026}",
-                label
-                    .chars()
-                    .take(GRAPH_LABEL_CHARS - 1)
-                    .collect::<String>()
-            )
-        } else {
-            label.clone()
+        let seat = record.seats.get(node.seat);
+        let pairing = seat.map(|seat| seat.agent.label()).unwrap_or_default();
+        let named =
+            seat.and_then(|seat| recorded_name(registry, &seat.agent, seat.name.as_deref()));
+        let (identity, detail) = match named {
+            Some(name) => (name, pairing),
+            None => (pairing, String::new()),
         };
+        let face = seat
+            .map(|seat| graph_avatar(&seat.agent, node.x, node.y))
+            .unwrap_or_default();
         let points = node
             .points
             .map(|points| {
@@ -2808,19 +2880,37 @@ fn round_graph(
                 )
             })
             .unwrap_or_default();
+        let beside =
+            |taken: f64| graph_chars(GRAPH_TEXT_WIDTH - taken - GRAPH_NAME_GAP - GRAPH_TEXT_INSET);
+        let name = graph_text(
+            &identity,
+            beside(node.run.chars().count() as f64 * GRAPH_CHARACTER_WIDTH),
+        );
         let dot_class = if pulsing { "animate-pulse" } else { "" };
         let body = format!(
             "<title>{title}</title>\
-             <rect x=\"{x}\" y=\"{y}\" width=\"{GRAPH_NODE_WIDTH}\" height=\"{GRAPH_NODE_HEIGHT}\" rx=\"6\" class=\"{GRAPH_NODE_CLASSES}\"/>\
-             <text x=\"{text_x}\" y=\"{line_one}\" class=\"{GRAPH_LABEL_CLASSES}\">{shown}</text>{points}\
-             <text x=\"{text_x}\" y=\"{line_two}\" class=\"{GRAPH_RUN_CLASSES}\">{run}</text>\
-             <circle cx=\"{dot_x}\" cy=\"{dot_y}\" r=\"3\" fill=\"currentColor\" class=\"{tint} {dot_class}\"/>\
+             <rect x=\"{x}\" y=\"{y}\" width=\"{GRAPH_NODE_WIDTH}\" height=\"{GRAPH_NODE_HEIGHT}\" rx=\"{GRAPH_NODE_RADIUS}\" class=\"{GRAPH_NODE_CLASSES}\"/>{face}\
+             <text x=\"{text_x}\" y=\"{line_one}\" class=\"{GRAPH_LABEL_CLASSES}\">{}<tspan dx=\"{GRAPH_NAME_GAP}\" class=\"{GRAPH_RUN_CLASSES}\">{run}</tspan></text>{points}\
+             <text x=\"{text_x}\" y=\"{line_two}\" class=\"{GRAPH_PAIRING_CLASSES}\">{}</text>\
+             <circle cx=\"{dot_x}\" cy=\"{dot_y}\" r=\"{GRAPH_DOT_RADIUS}\" fill=\"currentColor\" class=\"{tint} {dot_class}\"/>\
              <text x=\"{state_x}\" y=\"{line_two}\" text-anchor=\"end\" fill=\"currentColor\" class=\"{GRAPH_STATE_CLASSES} {tint}\">{state}</text>",
+            escape(&name),
+            escape(&graph_text(
+                &detail,
+                beside(state.len() as f64 * GRAPH_CHARACTER_WIDTH + GRAPH_DOT_GAP)
+            )),
             run = escape(&node.run),
-            title = escape(&format!("{label}, {state}")),
+            title = escape(&graph_hover(
+                &format!("seat {}, {identity}", node.seat + 1),
+                &detail,
+                state,
+                node.spent,
+                node.attempt,
+                record.limit_seconds
+            )),
             x = node.x,
             y = node.y,
-            text_x = node.x + GRAPH_TEXT_INSET,
+            text_x = node.x + GRAPH_LABEL_INSET,
             line_one = node.y + GRAPH_LINE_ONE,
             line_two = node.y + GRAPH_LINE_TWO,
             dot_x = node.x + GRAPH_NODE_WIDTH
@@ -2841,7 +2931,90 @@ fn round_graph(
     }
 
     svg.push_str("</svg>");
-    format!("<div class=\"{CARD_CLASSES} p-4 overflow-x-auto\">{svg}</div>")
+    format!(
+        "<div class=\"{CARD_CLASSES} relative\">{}<div class=\"p-4 overflow-x-auto\">{svg}</div></div>",
+        round_edge(progress)
+    )
+}
+
+/// The edge of the card of a round, filled to `progress` of a hundred while it
+/// plays and nothing once it is over.
+fn round_edge(progress: Option<u64>) -> String {
+    let Some(percent) = progress else {
+        return String::new();
+    };
+
+    format!(
+        "<span class=\"{ROUND_EDGE_CLASSES}\"><span class=\"block h-full {ROUND_EDGE_FILL}\" style=\"width:{percent}%\"></span></span>"
+    )
+}
+
+/// How far the round is through those seconds: a turn is as far as its
+/// furthest run, since its seats play at once.
+fn round_seconds(
+    runs: &[RunEntry],
+    tournament: &str,
+    round: usize,
+    turns: usize,
+    limit: u64,
+) -> u64 {
+    (0..turns)
+        .map(|turn| {
+            runs.iter()
+                .filter(|entry| {
+                    entry.placement.as_ref().is_some_and(|placement| {
+                        placement.tournament == tournament
+                            && placement.round == round
+                            && placement.turn == turn
+                    })
+                })
+                .filter_map(RunEntry::spent)
+                .max()
+                .unwrap_or_default()
+                .min(limit)
+        })
+        .sum()
+}
+
+/// The characters of the graph text that fit in `room`.
+fn graph_chars(room: f64) -> usize {
+    (room.max(GRAPH_CHARACTER_WIDTH) / GRAPH_CHARACTER_WIDTH) as usize
+}
+
+/// `text` cut to `chars`, with an ellipsis where it was cut.
+fn graph_text(text: &str, chars: usize) -> String {
+    if text.chars().count() <= chars {
+        return text.to_string();
+    }
+
+    format!(
+        "{}\u{2026}",
+        text.chars().take(chars - 1).collect::<String>()
+    )
+}
+
+/// What a node says behind the hover: what it is, its state and its seconds.
+fn graph_hover(
+    identity: &str,
+    detail: &str,
+    state: &str,
+    spent: Option<u64>,
+    entry: Option<u64>,
+    budget: u64,
+) -> String {
+    let mut words = vec![identity.to_string()];
+    if !detail.is_empty() {
+        words.push(detail.to_string());
+    }
+    words.push(state.to_string());
+    if let Some(seconds) = spent {
+        words.push(format!("{seconds}s of {budget}s"));
+    }
+    if let Some(seconds) = entry {
+        words.push(format!("entry at {seconds}s"));
+    }
+
+    words.join(", ")
 }
 
 /// The dollars every seat of the named tournament spent, with the runs they
@@ -3196,7 +3369,7 @@ pub(crate) fn agents_page(notice: &Notice, selection: &Selection) -> std::io::Re
         Some(NO_AGENTS_ROW_NOTE),
     ));
 
-    Ok(page(AGENTS_HEADING, &body))
+    Ok(page(&[AGENTS_SECTION], &body))
 }
 
 /// The page of one agent: what it pairs, how its runs went, who it met in the
@@ -3344,7 +3517,8 @@ pub(crate) fn agent_page(
         .map(|entry| entry.row(&registry)[AGENT_CELLS..].to_vec())
         .collect();
     body.push_str(&format!(
-        "<p class=\"{TITLE_CLASSES}\">{RUNS_HEADING}</p>{}",
+        "<p class=\"{TITLE_CLASSES}\">{}</p>{}",
+        RUNS_SECTION.0,
         table(&RUN_HEADERS[AGENT_CELLS..], rows, Some(NO_AGENT_RUNS_NOTE))
     ));
     body.push_str("</div>");
@@ -3356,7 +3530,7 @@ pub(crate) fn agent_page(
         alias_panel(&registry, selection, Some(&alias))
     ));
 
-    Ok(page(AGENTS_HEADING, &body))
+    Ok(page(&[AGENTS_SECTION, (name, "")], &body))
 }
 
 /// The last runs as one square each, oldest first, tinted by outcome and
@@ -3690,8 +3864,19 @@ fn agent_name(registry: &registry::Registry, agent: &ava_wire::Agent) -> String 
 /// harness and model, mirrored left to right, in a hue the hash picks. The
 /// same agent has the same avatar everywhere, whatever it is named.
 fn avatar(agent: &ava_wire::Agent, classes: &str) -> String {
+    let (hue, cells) = avatar_grid(agent);
+
+    format!(
+        "<svg class=\"{classes}\" viewBox=\"0 0 {AVATAR_SIDE} {AVATAR_SIDE}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"{}\">\
+         <rect width=\"{AVATAR_SIDE}\" height=\"{AVATAR_SIDE}\" class=\"{AVATAR_GROUND_CLASSES}\"/>\
+         <g fill=\"hsl({hue} 60% 55%)\">{cells}</g></svg>",
+        escape(&agent.label())
+    )
+}
+
+/// The hue and the lit cells of the avatar of `agent`, on its own grid.
+fn avatar_grid(agent: &ava_wire::Agent) -> (u64, String) {
     let hash = fnv1a(&[agent.harness.as_bytes(), &[0], agent.model.as_bytes()].concat());
-    let hue = (hash >> (AVATAR_SIDE * AVATAR_COLUMNS)) % AVATAR_HUES;
     let mut cells = String::new();
     for row in 0..AVATAR_SIDE {
         for column in 0..AVATAR_COLUMNS {
@@ -3706,11 +3891,21 @@ fn avatar(agent: &ava_wire::Agent, classes: &str) -> String {
         }
     }
 
+    (
+        (hash >> (AVATAR_SIDE * AVATAR_COLUMNS)) % AVATAR_HUES,
+        cells,
+    )
+}
+
+/// The avatar of `agent` scaled onto the gutter of a node at `x` and `y`.
+fn graph_avatar(agent: &ava_wire::Agent, x: f64, y: f64) -> String {
+    let (hue, cells) = avatar_grid(agent);
+    let scale = GRAPH_AVATAR_SIDE / AVATAR_SIDE as f64;
+
     format!(
-        "<svg class=\"{classes}\" viewBox=\"0 0 {AVATAR_SIDE} {AVATAR_SIDE}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"{}\">\
-         <rect width=\"{AVATAR_SIDE}\" height=\"{AVATAR_SIDE}\" class=\"{AVATAR_GROUND_CLASSES}\"/>\
-         <g fill=\"hsl({hue} 60% 55%)\">{cells}</g></svg>",
-        escape(&agent.label())
+        "<g transform=\"translate({x} {y})\"><g class=\"{GRAPH_AVATAR_CLASSES}\" shape-rendering=\"crispEdges\">\
+         <rect width=\"{GRAPH_AVATAR_SIDE}\" height=\"{GRAPH_AVATAR_SIDE}\" class=\"{AVATAR_GROUND_CLASSES}\"/>\
+         <g transform=\"scale({scale})\" fill=\"hsl({hue} 60% 55%)\">{cells}</g></g></g>"
     )
 }
 
@@ -3912,7 +4107,7 @@ pub(crate) fn setup_page() -> std::io::Result<String> {
         body.push_str(&table(&["image", "tag", "size", "created"], rows, None));
     }
 
-    Ok(page("setup", &body))
+    Ok(page(&[SETUP_SECTION], &body))
 }
 
 /// The images of ava as table rows, or nothing when docker does not answer.
@@ -3941,7 +4136,7 @@ pub(crate) fn error_page(message: &str) -> String {
         escape(message)
     );
 
-    page("error", &body)
+    page(&[ERROR_SECTION], &body)
 }
 
 /// The known game folders, sorted.
@@ -4660,10 +4855,33 @@ fn render_table(
     html
 }
 
-/// The layout around one rendered `body`, headed by `heading`.
-fn page(heading: &str, body: &str) -> String {
+/// The layout around one rendered `body`, headed by the `trail` leading to it.
+/// Every step but the last links to where it names.
+fn page(trail: &[(&str, &str)], body: &str) -> String {
+    let steps: String = trail
+        .iter()
+        .enumerate()
+        .map(|(step, (label, address))| {
+            let face = if step == 0 { "" } else { MONO_CLASSES };
+            if step + 1 == trail.len() {
+                return format!("<span class=\"{face}\">{}</span>", escape(label));
+            }
+
+            format!(
+                "<a class=\"{face} {TRAIL_STEP_CLASSES}\" href=\"{}\">{}</a>\
+                 <span class=\"{TRAIL_SEPARATOR_CLASSES}\">{TRAIL_SEPARATOR}</span>",
+                escape(address),
+                escape(label)
+            )
+        })
+        .collect();
+    let (title, _) = trail.last().copied().unwrap_or_default();
+    let (_, section) = trail.first().copied().unwrap_or_default();
+
     LAYOUT_TEMPLATE
-        .replace(HEADING_PLACEHOLDER, &escape(heading))
+        .replace(TRAIL_PLACEHOLDER, &steps)
+        .replace(TITLE_PLACEHOLDER, &escape(title))
+        .replace(SECTION_PLACEHOLDER, &escape(section))
         .replace(BODY_PLACEHOLDER, body)
 }
 

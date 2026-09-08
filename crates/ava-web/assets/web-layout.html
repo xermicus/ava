@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__AVA_HEADING__ · AvA</title>
+<title>__AVA_TITLE__ · AvA</title>
 <style>
 @font-face {
     font-family: "Geist Mono";
@@ -56,29 +56,29 @@ tailwind = {
 <span class="text-base font-semibold tracking-tight text-neutral-100">AvA</span>
 </a>
 <nav class="flex flex-col gap-1 p-3">
-<a href="/" data-page="runs" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<a href="/" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></svg>
 runs</a>
-<a href="/tournaments" data-page="tournaments" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<a href="/tournaments" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4"/><path d="M12 13v4M9 20h6M10 17h4"/></svg>
 tournaments</a>
-<a href="/scoreboard" data-page="scoreboard" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<a href="/scoreboard" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V4M16 20v-7M3 20h18"/></svg>
 scoreboard</a>
-<a href="/agents" data-page="agents" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<a href="/agents" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M3 19a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5A4.5 4.5 0 0 1 21 19"/></svg>
 agents</a>
-<a href="/games" data-page="games" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<a href="/games" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
 games</a>
-<a href="/setup" data-page="setup" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
+<a href="/setup" class="flex items-center gap-2.5 rounded-md px-3 py-2 text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800/60 transition-colors">
 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
 setup</a>
 </nav>
 </aside>
 <div class="flex-1 min-w-0 flex flex-col">
-<header class="h-14 flex items-center px-6 border-b border-neutral-800">
-<h1 class="text-base font-semibold text-neutral-100">__AVA_HEADING__</h1>
+<header class="h-14 flex items-center px-6 border-b border-neutral-800" data-section="__AVA_SECTION__">
+<h1 class="text-base font-semibold text-neutral-100 truncate">__AVA_TRAIL__</h1>
 </header>
 <main class="w-full px-6 py-6">
 __AVA_BODY__
@@ -348,20 +348,10 @@ for (const form of document.querySelectorAll("form")) {
     followHarness(form);
 }
 
-/* Mark the section the page belongs to in the navigation. */
-const SECTIONS = {
-    "": "runs",
-    run: "runs",
-    scoreboard: "scoreboard",
-    agents: "agents",
-    agent: "agents",
-    games: "games",
-    tournaments: "tournaments",
-    tournament: "tournaments",
-    setup: "setup",
-};
+/* Mark the section the page belongs to in the navigation, which is where the
+ * first step of the trail in the header leads. */
 const active = document.querySelector(
-    `nav a[data-page="${SECTIONS[location.pathname.split("/")[1]]}"]`,
+    `nav a[href="${document.querySelector("header").dataset.section}"]`,
 );
 if (active) {
     active.classList.remove("text-neutral-400");
