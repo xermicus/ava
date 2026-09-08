@@ -2217,7 +2217,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         "<p class=\"{FIRST_TITLE_CLASSES}\">new tournament</p>\
          <form method=\"post\" action=\"/tournaments/create\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">name</span>\
-         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"name\" value=\"{}\" required></label>\
+         <input placeholder=\"Artificial-General-Intelligence\" class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"name\" value=\"{}\" required></label>\
          {}\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
@@ -3760,7 +3760,7 @@ fn alias_panel(
     format!(
         "<form method=\"post\" action=\"{action}\" class=\"{CARD_CLASSES} p-4 flex flex-wrap items-end gap-4\">\
          <label class=\"grow basis-44\"><span class=\"{LABEL_CLASSES}\">{}</span>\
-         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" required></label>\
+         <input placeholder=\"clanker\" class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"text\" name=\"{name_field}\" value=\"{}\" required></label>\
          {}{}\
          <label class=\"{CONTROL_HEIGHT} flex items-center gap-2\">\
          <input type=\"checkbox\" name=\"{analyst_field}\" class=\"h-4 w-4 rounded accent-indigo-500\"{}>\
