@@ -94,6 +94,10 @@ impl crate::Game for ChessVm {
         None
     }
 
+    fn forfeited_rounds(&self, combats: u64) -> u64 {
+        combats * FIGHT_GAMES_PER_COMBAT
+    }
+
     fn fight(
         &self,
         first: &std::path::Path,

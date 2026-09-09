@@ -22,6 +22,9 @@ const CRACKME: &str = "crackme";
 /// The keygen, an ELF started with a number as its only argument, printing the key.
 const KEYGEN: &str = "keygen";
 
+/// The rounds a pairing is worth: one per direction of attack.
+const PAIRING_ROUNDS: u64 = 2;
+
 /// How many random numbers a verification runs through a keygen.
 const SAMPLE: usize = 16;
 
@@ -122,9 +125,9 @@ impl crate::Game for Crackme {
         }
     }
 
-    /// Two rounds, one per direction of attack: a seat wins the round it
-    /// attacks in when a push of its attack cracked the other's crackme, and
-    /// by forfeit when the other left none.
+    /// [`PAIRING_ROUNDS`] rounds, one per direction of attack: a seat wins the
+    /// round it attacks in when a push of its attack cracked the other's
+    /// crackme, and by forfeit when the other left none.
     fn outcome(
         &self,
         first: (usize, &[crate::Played]),
@@ -133,7 +136,13 @@ impl crate::Game for Crackme {
         let defended =
             |played: &[crate::Played]| played.get(DEFEND).is_some_and(|turn| turn.entry.is_some());
         if !defended(first.1) && !defended(second.1) {
-            return Some(crate::forfeit(first.0, false, second.0, false));
+            return Some(crate::forfeit(
+                first.0,
+                false,
+                second.0,
+                false,
+                PAIRING_ROUNDS,
+            ));
         }
 
         let mut tally = ava_wire::Tally::default();

@@ -212,7 +212,19 @@ pub trait Game {
             self.name()
         )))
     }
+
+    /// The rounds a pairing of this game is worth to the seat that left an
+    /// entry when the other left none, over the `combats` the tournament
+    /// fixed: what a fight the other seat swept would have tallied, so a
+    /// walkover weighs what a win weighs.
+    fn forfeited_rounds(&self, combats: u64) -> u64 {
+        let _ = combats;
+        SETTLED_ROUNDS
+    }
 }
+
+/// The rounds a pairing settled from the records is worth: the one comparison.
+pub const SETTLED_ROUNDS: u64 = 1;
 
 /// The outcome of comparing the entries of two seats by their points, either
 /// of which may be missing. The points themselves are nothing for a game
@@ -240,6 +252,7 @@ pub fn compared(
             first_points.is_some(),
             second,
             second_points.is_some(),
+            SETTLED_ROUNDS,
         ),
     }
 }
@@ -247,12 +260,18 @@ pub fn compared(
 /// The reason of a pairing neither seat left an entry for.
 const NEITHER_ENTRY: &str = "neither seat left a passing entry";
 
-/// The outcome of a pairing at least one seat left no entry for: one round
-/// to the seat that did, or no round at all.
-pub fn forfeit(first: usize, first_present: bool, second: usize, second_present: bool) -> Outcome {
+/// The outcome of a pairing at least one seat left no entry for: the `rounds`
+/// the pairing is worth to the seat that did, or no round at all.
+pub fn forfeit(
+    first: usize,
+    first_present: bool,
+    second: usize,
+    second_present: bool,
+    rounds: u64,
+) -> Outcome {
     let (tally, reason) = match (first_present, second_present) {
-        (true, false) => (ava_wire::Tally::FIRST_WON, no_entry(second)),
-        (false, true) => (ava_wire::Tally::SECOND_WON, no_entry(first)),
+        (true, false) => (ava_wire::Tally::first_won(rounds), no_entry(second)),
+        (false, true) => (ava_wire::Tally::second_won(rounds), no_entry(first)),
         _ => (ava_wire::Tally::default(), NEITHER_ENTRY.to_string()),
     };
 
@@ -296,21 +315,45 @@ mod tests {
     #[test]
     fn points_compare_and_missing_entries_forfeit() {
         let won = super::compared(0, Some(Some(10)), 1, Some(Some(5)));
-        assert_eq!(won.tally, ava_wire::Tally::FIRST_WON);
+        assert_eq!(won.tally, ava_wire::Tally::first_won(super::SETTLED_ROUNDS));
         assert_eq!(won.reason, None);
 
         let drawn = super::compared(0, Some(None), 1, Some(None));
         assert_eq!(drawn.tally.drawn, 1);
 
         let forfeited = super::compared(0, None, 1, Some(Some(5)));
-        assert_eq!(forfeited.tally, ava_wire::Tally::SECOND_WON);
+        assert_eq!(
+            forfeited.tally,
+            ava_wire::Tally::second_won(super::SETTLED_ROUNDS)
+        );
         assert_eq!(
             forfeited.reason.as_deref(),
             Some("seat 1 left no passing entry")
         );
 
-        let neither = super::forfeit(0, false, 1, false);
+        let neither = super::forfeit(0, false, 1, false, super::SETTLED_ROUNDS);
         assert_eq!(neither.tally.rounds(), 0);
+    }
+
+    #[test]
+    fn a_forfeited_fight_is_worth_what_a_sweep_tallies() {
+        use crate::Game;
+
+        let combats = 5;
+        let swept = super::forfeit(
+            0,
+            true,
+            1,
+            false,
+            super::r2wars::GAMES[0].forfeited_rounds(combats),
+        );
+        assert_eq!(swept.tally, ava_wire::Tally::first_won(10));
+
+        assert_eq!(super::chess_vm::ChessVm.forfeited_rounds(combats), 10);
+        assert_eq!(
+            super::fib_golf::FibGolf.forfeited_rounds(combats),
+            super::SETTLED_ROUNDS
+        );
     }
 
     #[test]

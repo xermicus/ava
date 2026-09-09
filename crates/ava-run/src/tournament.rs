@@ -15,6 +15,9 @@ pub const TOURNAMENT_DIRECTORY: &str = "tournaments";
 /// The record of a tournament in its folder.
 pub const RECORD_FILE: &str = "tournament.json";
 
+/// The name a record is staged under before it replaces the record.
+const RECORD_STAGING_FILE: &str = "tournament.json.tmp";
+
 /// The console of the fights of one round, `round-<number>.log` in the folder.
 const ROUND_LOG_PREFIX: &str = "round-";
 const ROUND_LOG_SUFFIX: &str = ".log";
@@ -405,26 +408,68 @@ pub fn add_seat(name: &str, setup: &ava_wire::Setup) -> std::io::Result<()> {
     })
 }
 
-/// Remove the seat at `seat` from the named tournament, which no round has fixed yet.
+/// Whether a round of `record` holds the seat at `seat`, which is what fixes
+/// it in the lobby: the rounds reference a seat by its number, so one a round
+/// recorded cannot leave without rewriting what the round says.
+pub fn seat_is_held(record: &ava_wire::Tournament, seat: usize) -> bool {
+    record.rounds.iter().any(|round| {
+        round.entries.iter().any(|entry| entry.seat == seat)
+            || round
+                .pairings
+                .iter()
+                .any(|pairing| pairing.first == seat || pairing.second == seat)
+    })
+}
+
+/// Remove the seat at `seat` from the named tournament, which no round holds yet.
 pub fn remove_seat(name: &str, seat: usize) -> std::io::Result<()> {
     modify(name, |record| {
         if playing(name) {
             return Err(std::io::Error::other(format!("{name} is playing a round")));
         }
-        if record.played() {
-            return Err(std::io::Error::other(format!(
-                "{name} played a round, its seats are fixed"
-            )));
-        }
-        if seat >= record.seats.len() {
-            return Err(std::io::Error::other(format!(
-                "{name} has no seat {}",
-                seat + 1
-            )));
-        }
-        record.seats.remove(seat);
+        unseat(record, seat)?;
+        log::info!("{name}: seat {} left", seat + 1);
         Ok(())
     })
+}
+
+/// Take the seat at `seat` out of `record` and renumber the seats behind it.
+fn unseat(record: &mut ava_wire::Tournament, seat: usize) -> std::io::Result<()> {
+    if seat >= record.seats.len() {
+        return Err(std::io::Error::other(format!(
+            "{} has no seat {}",
+            record.name,
+            seat + 1
+        )));
+    }
+    if seat_is_held(record, seat) {
+        return Err(std::io::Error::other(format!(
+            "{}: seat {} played a round, it is fixed there",
+            record.name,
+            seat + 1
+        )));
+    }
+
+    record.seats.remove(seat);
+    // A round names its seats by number, so every seat behind the one that
+    // left moves up one wherever a round holds it.
+    for round in &mut record.rounds {
+        for entry in &mut round.entries {
+            if entry.seat > seat {
+                entry.seat -= 1;
+            }
+        }
+        for pairing in &mut round.pairings {
+            if pairing.first > seat {
+                pairing.first -= 1;
+            }
+            if pairing.second > seat {
+                pairing.second -= 1;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// The record of the named tournament.
@@ -673,15 +718,21 @@ fn find(game: &str) -> std::io::Result<&'static dyn ava_game::Game> {
     })
 }
 
-/// Write `record` as the record of its tournament.
+/// Write `record` as the record of its tournament, staged and renamed over
+/// the record so a reader outside the records lock, the interface rendering a
+/// page while a round settles its pairings, never reads a truncated file.
 fn write(record: &ava_wire::Tournament) -> std::io::Result<()> {
+    let folder = directory(&record.name);
+    let staging = folder.join(RECORD_STAGING_FILE);
     std::fs::write(
-        directory(&record.name).join(RECORD_FILE),
+        &staging,
         format!(
             "{}\n",
             serde_json::to_string_pretty(record).map_err(std::io::Error::other)?
         ),
-    )
+    )?;
+
+    std::fs::rename(staging, folder.join(RECORD_FILE))
 }
 
 /// Change the record of the named tournament under the records lock.
@@ -1347,8 +1398,13 @@ fn settle(
                 }
             }
             (kept_first, kept_second) => {
-                let forfeited =
-                    ava_game::forfeit(first, kept_first.is_some(), second, kept_second.is_some());
+                let forfeited = ava_game::forfeit(
+                    first,
+                    kept_first.is_some(),
+                    second,
+                    kept_second.is_some(),
+                    game.forfeited_rounds(record.combats),
+                );
                 (forfeited.tally, forfeited.reason)
             }
         };
@@ -1623,6 +1679,42 @@ mod tests {
         assert_eq!(super::marked_rounds("4711 2"), vec![2]);
         assert!(super::marked_rounds("4711").is_empty());
         assert!(super::marked_rounds("").is_empty());
+    }
+
+    #[test]
+    fn a_seat_no_round_holds_leaves_and_renumbers_the_seats_behind_it() {
+        let mut joined = tournament(4, &[(&[0, 1, 3], true)]);
+        joined.rounds[0].pairings = vec![ava_wire::Pairing {
+            first: 1,
+            second: 3,
+            seconds: 1,
+            tally: ava_wire::Tally::first_won(1),
+            reason: None,
+            run: None,
+        }];
+
+        assert!(!super::seat_is_held(&joined, 2));
+        super::unseat(&mut joined, 2).unwrap();
+
+        assert_eq!(joined.seats.len(), 3);
+        assert_eq!(super::seats_of(&joined.rounds[0]), vec![0, 1, 2]);
+        assert_eq!(
+            (
+                joined.rounds[0].pairings[0].first,
+                joined.rounds[0].pairings[0].second
+            ),
+            (1, 2)
+        );
+    }
+
+    #[test]
+    fn a_seat_a_round_holds_stays() {
+        let mut played = tournament(3, &[(&[0, 1, 2], true)]);
+
+        assert!(super::seat_is_held(&played, 1));
+        assert!(super::unseat(&mut played, 1).is_err());
+        assert!(super::unseat(&mut played, 3).is_err());
+        assert_eq!(played.seats.len(), 3);
     }
 
     #[test]

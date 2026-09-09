@@ -156,20 +156,24 @@ pub struct Tally {
 }
 
 impl Tally {
-    /// One round to the first seat: the second forfeited, or a pairing decided
-    /// by a single verdict went to the first.
-    pub const FIRST_WON: Self = Self {
-        won: 1,
-        drawn: 0,
-        lost: 0,
-    };
+    /// The `rounds` of a pairing to the first seat: the second forfeited, or a
+    /// pairing decided by a single verdict went to the first.
+    pub const fn first_won(rounds: u64) -> Self {
+        Self {
+            won: rounds,
+            drawn: 0,
+            lost: 0,
+        }
+    }
 
-    /// One round to the second seat.
-    pub const SECOND_WON: Self = Self {
-        won: 0,
-        drawn: 0,
-        lost: 1,
-    };
+    /// The `rounds` of a pairing to the second seat.
+    pub const fn second_won(rounds: u64) -> Self {
+        Self {
+            won: 0,
+            drawn: 0,
+            lost: rounds,
+        }
+    }
 
     /// The rounds played.
     pub fn rounds(&self) -> u64 {

@@ -2449,7 +2449,6 @@ pub(crate) fn tournament_page(
 
     // The seats with their standings: one table in seat order, the columns of
     // the cross table being seats, the ratings blank until a round finished.
-    let removable = !record.played() && !playing;
     let joinable =
         !playing && (!record.played() || game.is_some_and(|game| game.turns().len() == 1));
     let rated = record.finished_rounds().next().is_some();
@@ -2512,7 +2511,7 @@ pub(crate) fn tournament_page(
                     Some((peak, _)) => peak.to_string(),
                     None => String::new(),
                 },
-                if removable {
+                if !playing && !tournament::seat_is_held(&record, seat) {
                     format!(
                         "<form method=\"post\" action=\"/tournament/{}/unseat\"><input type=\"hidden\" name=\"seat\" value=\"{seat}\"><button class=\"{STOP_CLASSES}\">remove</button></form>",
                         escape(name)

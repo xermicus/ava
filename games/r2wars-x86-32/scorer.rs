@@ -7,6 +7,10 @@ const ASSEMBLER: &str = "rasm2";
 const FIGHTER: &str = "r2wars";
 const FIGHT_OPTION: &str = "--fight";
 
+/// The rounds a warrior takes a combat in when it sweeps the best of three,
+/// which is what a combat the other warrior forfeited is worth.
+const SWEEP_ROUNDS: u64 = 2;
+
 /// The most bytes r2wars loads a warrior at.
 const WARRIOR_LIMIT: usize = 512;
 
@@ -127,6 +131,10 @@ impl crate::Game for R2wars {
         _second: (usize, &[crate::Played]),
     ) -> Option<crate::Outcome> {
         None
+    }
+
+    fn forfeited_rounds(&self, combats: u64) -> u64 {
+        combats * SWEEP_ROUNDS
     }
 
     fn fight(
