@@ -2305,21 +2305,33 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
 
 /// The state of a tournament as a pill: playing, open, or how far it got.
 fn tournament_state(record: &ava_wire::Tournament) -> String {
+    // A backfill leaves the rounds it plays unfinished for as long as it runs,
+    // so the rounds in flight are the unfinished ones and not just the last.
+    let unfinished: Vec<String> = record
+        .rounds
+        .iter()
+        .enumerate()
+        .filter(|(_, round)| round.finished_seconds.is_none())
+        .map(|(index, _)| (index + 1).to_string())
+        .collect();
+    let rounds = || match unfinished.len() {
+        1 => format!("round {}", unfinished[0]),
+        _ => format!("rounds {}", unfinished.join(", ")),
+    };
+
     if tournament::playing(&record.name) {
-        return pill(
-            LIVE_PILL,
-            true,
-            &format!("playing round {}", record.rounds.len()),
-        );
+        let playing = match unfinished.is_empty() {
+            true => "playing".to_string(),
+            false => format!("playing {}", rounds()),
+        };
+        return pill(LIVE_PILL, true, &playing);
     }
 
     match record.rounds.last() {
         None => pill(NEUTRAL_PILL, false, "open"),
-        Some(round) if round.finished_seconds.is_none() => pill(
-            BROKEN_PILL,
-            false,
-            &format!("round {} broke off", record.rounds.len()),
-        ),
+        Some(_) if !unfinished.is_empty() => {
+            pill(BROKEN_PILL, false, &format!("{} broke off", rounds()))
+        }
         Some(_) => pill(
             NEUTRAL_PILL,
             false,
@@ -2339,6 +2351,21 @@ pub(crate) fn tournament_page(
     let running = live_runs();
     let registry = registry::load()?;
     let game = ava_game::find(&record.game);
+
+    let unplayed = tournament::unplayed_rounds(&record).len();
+    let backfill_form = if playing || unplayed == 0 {
+        String::new()
+    } else {
+        format!(
+            "<form method=\"post\" action=\"/tournament/{}/backfill\" class=\"self-end\">\
+             <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\" title=\"{}\">backfill {unplayed} {}</button></form>",
+            escape(name),
+            escape(
+                "play the rounds the seats joined after, one run per seat and round, and settle the pairings they add"
+            ),
+            if unplayed == 1 { "round" } else { "rounds" }
+        )
+    };
 
     let play_form = if playing || record.seats.is_empty() {
         String::new()
@@ -2365,7 +2392,7 @@ pub(crate) fn tournament_page(
     // survives the refresh.
     let mut body = format!(
         "<div class=\"flex items-center gap-3\">\
-         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span><span data-refresh=\"state\">{}</span><span class=\"grow\"></span>{play_form}</div>",
+         <span class=\"text-lg font-semibold text-neutral-100 {MONO_CLASSES}\">{}</span><span data-refresh=\"state\">{}</span><span class=\"grow\"></span>{backfill_form}{play_form}</div>",
         escape(name),
         tournament_state(&record),
     );
@@ -2392,6 +2419,8 @@ pub(crate) fn tournament_page(
     // The seats with their standings: one table in seat order, the columns of
     // the cross table being seats, the ratings blank until a round finished.
     let removable = !record.played() && !playing;
+    let joinable =
+        !playing && (!record.played() || game.is_some_and(|game| game.turns().len() == 1));
     let rated = record.finished_rounds().next().is_some();
     let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
     let mut labeled = Vec::new();
@@ -2489,7 +2518,7 @@ pub(crate) fn tournament_page(
             Some(NO_SEATS_NOTE)
         )
     ));
-    if removable {
+    if joinable {
         body.push_str(&format!(
             "<form method=\"post\" action=\"/tournament/{}/seat\" data-submit class=\"{CARD_CLASSES} border-t-0 rounded-t-none p-4 flex flex-wrap items-end gap-4\">\
              {}<button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">seat</button></form>",
@@ -2503,7 +2532,7 @@ pub(crate) fn tournament_page(
     // The rounds, newest first.
     for (index, round) in record.rounds.iter().enumerate().rev() {
         let number = index + 1;
-        let live = playing && index + 1 == record.rounds.len();
+        let live = playing && round.finished_seconds.is_none();
         let turns = game.map_or(1, |game| game.turns().len());
         let became = match (round.finished_seconds, live) {
             (Some(finished), _) => usage::span(finished.saturating_sub(round.started_seconds)),
@@ -2716,8 +2745,9 @@ fn round_graph(
     // Every seat and turn without a run yet is a planned node, with the edges
     // the game will ask for once the turn starts.
     let mut planned_edges: Vec<Planned> = Vec::new();
+    let played_seats = tournament::seats_of(round);
     for turn in 0..turns {
-        for seat in 0..seats {
+        for &seat in &played_seats {
             if nodes
                 .iter()
                 .any(|node| node.seat == seat && node.turn == turn)
@@ -2736,7 +2766,11 @@ fn round_graph(
                 y: 0.0,
             });
             if let Some(game) = game {
-                let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
+                let opponents: Vec<usize> = played_seats
+                    .iter()
+                    .copied()
+                    .filter(|other| *other != seat)
+                    .collect();
                 for input in game.inputs(turn, &opponents) {
                     planned_edges.push(Planned {
                         from: (input.seat, input.turn),

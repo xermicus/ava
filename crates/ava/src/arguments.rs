@@ -172,6 +172,7 @@ impl TournamentCli {
     const COMBATS_SHORT: char = 'c';
     const ANALYST_LONG: &str = "analyst";
     const ANALYST_SECONDS_LONG: &str = "analyst-seconds";
+    const BACKFILL_LONG: &str = "backfill";
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
@@ -215,6 +216,10 @@ impl TournamentCli {
                 "the seconds that analyst is given, {} by default, fixed when the tournament is created",
                 ava_run::docker::Analyst::DEFAULT_LIMIT_SECONDS
             ),
+        );
+        arg_help_str(
+            &format!("--{}", Self::BACKFILL_LONG),
+            "play the rounds the seats joined after instead of playing a round",
         );
         arg_help_str(
             &format!("--{}", AgentCli::FORCE_BUILD_LONG),
@@ -792,6 +797,15 @@ impl Parser {
                     );
                 };
                 command.combats = Some(combats);
+            }
+            TournamentCli::BACKFILL_LONG => {
+                let Some(SubCommand::Tournament(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", TournamentCli::NAME),
+                    );
+                };
+                command.backfill = true;
             }
             TournamentCli::ANALYST_SECONDS_LONG => {
                 let seconds = Self::long_value(args, next, "missing analyst seconds");

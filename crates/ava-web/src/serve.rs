@@ -404,6 +404,11 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
             String::new(),
             play_round(name, form),
         ),
+        ["tournament", name, "backfill"] => (
+            format!("/tournament/{name}"),
+            String::new(),
+            backfill(name, form),
+        ),
         _ => return plain_response(404, "no such action\n"),
     };
 
@@ -787,18 +792,7 @@ fn unseat(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
 /// most the submitted number of runs at once.
 fn play_round(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
     let record = tournament::load(name).map_err(|error| Refusal::Rejected(error.to_string()))?;
-    let parallel = match value(form, "parallel") {
-        "" => None,
-        count => Some(
-            count
-                .parse::<usize>()
-                .ok()
-                .filter(|count| *count > 0)
-                .ok_or_else(|| {
-                    Refusal::Rejected("the parallel count is a number above zero".to_string())
-                })?,
-        ),
-    };
+    let parallel = parallel_choice(form)?;
     if tournament::playing(name) {
         return Err(Refusal::Rejected(format!(
             "{name} is playing a round already"
@@ -821,6 +815,43 @@ fn play_round(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
             Err(error) => log::error!("round {round} of {name} failed: {error}"),
         },
     );
+
+    Ok(Done::note(note))
+}
+
+/// The most runs the form starts at once, none when its field is empty.
+fn parallel_choice(form: &[(String, String)]) -> Result<Option<usize>, Refusal> {
+    match value(form, "parallel") {
+        "" => Ok(None),
+        count => count
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 0)
+            .map(Some)
+            .ok_or_else(|| {
+                Refusal::Rejected("the parallel count is a number above zero".to_string())
+            }),
+    }
+}
+
+/// Play the rounds the seats of the named tournament joined after, in a
+/// thread of its own, with at most the submitted number of runs at once.
+fn backfill(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
+    let parallel = parallel_choice(form)?;
+    if tournament::playing(name) {
+        return Err(Refusal::Rejected(format!(
+            "{name} is playing a round already"
+        )));
+    }
+
+    let name = name.to_string();
+    let note = format!("backfilling the rounds of {name}");
+    log::info!("{note}");
+
+    work(move || match tournament::backfill(&name, false, parallel) {
+        Ok(code) => log::info!("the backfill of {name} finished with code {code}"),
+        Err(error) => log::error!("the backfill of {name} failed: {error}"),
+    });
 
     Ok(Done::note(note))
 }
