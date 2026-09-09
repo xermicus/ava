@@ -173,6 +173,12 @@ impl TournamentCli {
     const ANALYST_LONG: &str = "analyst";
     const ANALYST_SECONDS_LONG: &str = "analyst-seconds";
     const BACKFILL_LONG: &str = "backfill";
+    /// The ways a round that broke off is resumed, each taking the round.
+    const RESUME_LONG: [&str; 3] = [
+        ava_run::tournament::Resume::CONTINUE,
+        ava_run::tournament::Resume::RESTART,
+        ava_run::tournament::Resume::SETTLE,
+    ];
 
     fn help() {
         command_help(Self::NAME, Self::DESCRIPTION);
@@ -220,6 +226,18 @@ impl TournamentCli {
         arg_help_str(
             &format!("--{}", Self::BACKFILL_LONG),
             "play the rounds the seats joined after instead of playing a round",
+        );
+        arg_help_str(
+            &format!("--{} <round>", ava_run::tournament::Resume::CONTINUE),
+            "play the runs a round that broke off is missing, then settle it",
+        );
+        arg_help_str(
+            &format!("--{} <round>", ava_run::tournament::Resume::RESTART),
+            "drop what a round that broke off holds and play every seat again",
+        );
+        arg_help_str(
+            &format!("--{} <round>", ava_run::tournament::Resume::SETTLE),
+            "settle a round that broke off on what its runs left, playing nothing",
         );
         arg_help_str(
             &format!("--{}", AgentCli::FORCE_BUILD_LONG),
@@ -797,6 +815,26 @@ impl Parser {
                     );
                 };
                 command.combats = Some(combats);
+            }
+            resume if TournamentCli::RESUME_LONG.contains(&resume) => {
+                let round = Self::long_value(args, next, "missing round");
+                let round: usize = round
+                    .parse()
+                    .ok()
+                    .filter(|round| *round > 0)
+                    .unwrap_or_else(|| bail(next, "the round is a number counted from one"));
+                let resume = ava_run::tournament::Resume::named(resume)
+                    .unwrap_or_else(|| bail(next, "no such way to resume a round"));
+                let Some(SubCommand::Tournament(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", TournamentCli::NAME),
+                    );
+                };
+                if command.resume.is_some() {
+                    bail(next, "a round is resumed one way");
+                }
+                command.resume = Some((round - 1, resume));
             }
             TournamentCli::BACKFILL_LONG => {
                 let Some(SubCommand::Tournament(ref mut command)) = self.command else {

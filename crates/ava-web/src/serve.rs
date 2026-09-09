@@ -409,6 +409,11 @@ fn action(segments: &[&str], form: &[(String, String)]) -> Answer {
             String::new(),
             backfill(name, form),
         ),
+        ["tournament", name, "resume"] => (
+            format!("/tournament/{name}"),
+            String::new(),
+            resume_round(name, form),
+        ),
         _ => return plain_response(404, "no such action\n"),
     };
 
@@ -832,6 +837,38 @@ fn parallel_choice(form: &[(String, String)]) -> Result<Option<usize>, Refusal> 
                 Refusal::Rejected("the parallel count is a number above zero".to_string())
             }),
     }
+}
+
+/// Resume the round the form names, the way its mode says, in a thread of its
+/// own. The rounds a resume plays are capped at the default, since the button
+/// stands beside a round and not beside a field.
+fn resume_round(name: &str, form: &[(String, String)]) -> Result<Done, Refusal> {
+    let number: usize = value(form, "round")
+        .parse()
+        .ok()
+        .filter(|round| *round > 0)
+        .ok_or_else(|| Refusal::Rejected("the round is counted from one".to_string()))?;
+    let resume = tournament::Resume::named(value(form, "mode"))
+        .ok_or_else(|| Refusal::Rejected("no such way to resume a round".to_string()))?;
+    if tournament::playing(name) {
+        return Err(Refusal::Rejected(format!(
+            "{name} is playing a round already"
+        )));
+    }
+
+    let index = number - 1;
+    let name = name.to_string();
+    let note = format!("{} round {number} of {name}", resume.doing());
+    log::info!("{note}");
+
+    work(
+        move || match tournament::resume_round(&name, index, resume, false, None) {
+            Ok(code) => log::info!("round {number} of {name} finished with code {code}"),
+            Err(error) => log::error!("round {number} of {name} failed: {error}"),
+        },
+    );
+
+    Ok(Done::note(note))
 }
 
 /// Play the rounds the seats of the named tournament joined after, in a

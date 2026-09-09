@@ -295,6 +295,10 @@ const BUTTON_CLASSES: &str =
     "rounded-md bg-indigo-500 hover:bg-indigo-400 px-4 font-medium text-white transition-colors";
 const STOP_CLASSES: &str = "rounded-md border border-red-500/40 text-red-400 hover:bg-red-500/10 \
      px-2.5 py-1 text-xs font-medium transition-colors";
+/// The buttons on the heading of a round, of the size of the stop button so
+/// the two read as the same kind of thing.
+const ROUND_BUTTON_CLASSES: &str = "rounded-md border border-neutral-700 text-neutral-300 \
+     hover:bg-neutral-800 px-2.5 py-1 text-xs font-medium transition-colors";
 const FIELD_CLASSES: &str = "w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 \
      text-neutral-100 focus:outline-none focus:border-indigo-500 focus:ring-2 \
      focus:ring-indigo-500/30 transition";
@@ -2315,35 +2319,95 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
     Ok(page(&[TOURNAMENTS_SECTION], &body))
 }
 
-/// The state of a tournament as a pill: playing, open, or how far it got.
-fn tournament_state(record: &ava_wire::Tournament) -> String {
-    // A backfill leaves the rounds it plays unfinished for as long as it runs,
-    // so the rounds in flight are the unfinished ones and not just the last.
-    let unfinished: Vec<String> = record
+/// The buttons the heading of a round that broke off offers: play the runs it
+/// is missing, settle it on what its runs left, or drop what it holds and
+/// play it again.
+fn resume_forms(name: &str, number: usize) -> String {
+    let button = |resume: tournament::Resume, tooltip: &str, classes: &str| {
+        format!(
+            "<button class=\"{classes}\" name=\"mode\" value=\"{}\" title=\"{}\">{}</button>",
+            resume.word(),
+            escape(tooltip),
+            resume.word()
+        )
+    };
+
+    format!(
+        "<form method=\"post\" action=\"/tournament/{}/resume\" class=\"flex items-baseline gap-2\">\
+         <input type=\"hidden\" name=\"round\" value=\"{number}\">{}{}{}</form>",
+        escape(name),
+        button(
+            tournament::Resume::Continue,
+            "play the runs the round is missing, then settle its pairings and finish it",
+            ROUND_BUTTON_CLASSES
+        ),
+        button(
+            tournament::Resume::Settle,
+            "settle the pairings on what the runs of the round left and finish it, playing nothing",
+            ROUND_BUTTON_CLASSES
+        ),
+        button(
+            tournament::Resume::Restart,
+            "drop the runs and pairings the round holds and play every seat again",
+            STOP_CLASSES
+        ),
+    )
+}
+
+/// The rounds of a tournament without a second they finished in: the ones a
+/// play has in flight and the ones that broke off.
+fn unfinished_rounds(record: &ava_wire::Tournament) -> Vec<usize> {
+    record
         .rounds
         .iter()
         .enumerate()
         .filter(|(_, round)| round.finished_seconds.is_none())
-        .map(|(index, _)| (index + 1).to_string())
-        .collect();
-    let rounds = || match unfinished.len() {
-        1 => format!("round {}", unfinished[0]),
-        _ => format!("rounds {}", unfinished.join(", ")),
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The rounds the play going on is working on, none when nothing plays. A
+/// backfill holds several of them unfinished at once, so what the marker
+/// names is what is in flight, and every other unfinished round broke off. A
+/// marker from before the rounds were named leaves them all in flight.
+fn rounds_in_flight(record: &ava_wire::Tournament) -> Vec<usize> {
+    if !tournament::playing(&record.name) {
+        return Vec::new();
+    }
+
+    match tournament::playing_rounds(&record.name) {
+        named if named.is_empty() => unfinished_rounds(record),
+        named => named,
+    }
+}
+
+/// The state of a tournament as a pill: playing, open, or how far it got.
+fn tournament_state(record: &ava_wire::Tournament) -> String {
+    let unfinished = unfinished_rounds(record);
+    let in_flight = rounds_in_flight(record);
+    let numbered = |rounds: &[usize]| {
+        let numbers: Vec<String> = rounds.iter().map(|index| (index + 1).to_string()).collect();
+        match numbers.len() {
+            1 => format!("round {}", numbers[0]),
+            _ => format!("rounds {}", numbers.join(", ")),
+        }
     };
 
     if tournament::playing(&record.name) {
-        let playing = match unfinished.is_empty() {
+        let playing = match in_flight.is_empty() {
             true => "playing".to_string(),
-            false => format!("playing {}", rounds()),
+            false => format!("playing {}", numbered(&in_flight)),
         };
         return pill(LIVE_PILL, true, &playing);
     }
 
     match record.rounds.last() {
         None => pill(NEUTRAL_PILL, false, "open"),
-        Some(_) if !unfinished.is_empty() => {
-            pill(BROKEN_PILL, false, &format!("{} broke off", rounds()))
-        }
+        Some(_) if !unfinished.is_empty() => pill(
+            BROKEN_PILL,
+            false,
+            &format!("{} broke off", numbered(&unfinished)),
+        ),
         Some(_) => pill(
             NEUTRAL_PILL,
             false,
@@ -2551,18 +2615,27 @@ pub(crate) fn tournament_page(
     body.push_str("<div data-refresh=\"rounds\">");
 
     // The rounds, newest first.
+    let in_flight = rounds_in_flight(&record);
     for (index, round) in record.rounds.iter().enumerate().rev() {
         let number = index + 1;
-        let live = playing && round.finished_seconds.is_none();
+        let live = in_flight.contains(&index);
         let turns = game.map_or(1, |game| game.turns().len());
         let became = match (round.finished_seconds, live) {
             (Some(finished), _) => usage::span(finished.saturating_sub(round.started_seconds)),
             (None, true) => String::new(),
             (None, false) => "broke off".to_string(),
         };
+        // A round that broke off is resumed from its own heading, and only
+        // while nothing else plays.
+        let resume = match (round.finished_seconds, playing) {
+            (None, false) => resume_forms(name, number),
+            _ => String::new(),
+        };
         body.push_str(&format!(
-            "<p class=\"{TITLE_CLASSES} flex items-baseline justify-between\">\
-             <span>round {number}</span><span class=\"{NOTE_CLASSES} font-normal {TRAIL_OPTICAL_NUDGE}\">{}</span></p>",
+            "<div class=\"{TITLE_CLASSES} flex items-baseline justify-between gap-3\">\
+             <span>round {number}</span>\
+             <span class=\"flex items-baseline gap-2\">{resume}\
+             <span class=\"{NOTE_CLASSES} font-normal {TRAIL_OPTICAL_NUDGE}\">{}</span></span></div>",
             escape(&became)
         ));
 

@@ -20,8 +20,13 @@ const ROUND_LOG_PREFIX: &str = "round-";
 const ROUND_LOG_SUFFIX: &str = ".log";
 
 /// The marker the process playing a round leaves in the folder, holding its
-/// pid, so another process knows the round is going on.
+/// pid and the rounds it plays, so another process knows the round is going
+/// on and which one it is. A marker from before the rounds were named holds
+/// the pid alone.
 pub const PLAYING_FILE: &str = "playing";
+
+/// What separates the rounds of the playing marker.
+const ROUND_SEPARATOR: char = ',';
 
 /// A seat on the command line.
 const SEAT_SHAPE: &str = "agent[/thinking], the agent a name of the registry or harness/model";
@@ -72,6 +77,9 @@ pub struct Tournament {
     /// Whether the rounds the seats joined after are backfilled instead of a
     /// round being played.
     pub backfill: bool,
+    /// The round to resume and the way to resume it, instead of a round being
+    /// played, the round counted from zero.
+    pub resume: Option<(usize, Resume)>,
 }
 
 /// Where a run sits in a tournament.
@@ -128,6 +136,21 @@ impl Playing {
 
         Ok(Self(name.to_string()))
     }
+
+    /// Name the rounds this play took in the marker, which is what tells a
+    /// round in flight from one that broke off before it.
+    fn plays_rounds(&self, rounds: &[usize]) -> std::io::Result<()> {
+        let rounds: Vec<String> = rounds.iter().map(usize::to_string).collect();
+
+        std::fs::write(
+            directory(&self.0).join(PLAYING_FILE),
+            format!(
+                "{} {}",
+                std::process::id(),
+                rounds.join(&ROUND_SEPARATOR.to_string())
+            ),
+        )
+    }
 }
 
 impl Drop for Playing {
@@ -153,14 +176,42 @@ pub fn playing(name: &str) -> bool {
         return true;
     }
 
-    let Some(pid) = std::fs::read_to_string(directory(name).join(PLAYING_FILE))
-        .ok()
-        .and_then(|marker| marker.trim().parse::<i32>().ok())
-    else {
+    let Some(pid) = marker(name).and_then(|marker| {
+        marker
+            .split_whitespace()
+            .next()
+            .and_then(|pid| pid.parse::<i32>().ok())
+    }) else {
         return false;
     };
 
     pid != std::process::id() as i32 && crate::process::alive(pid)
+}
+
+/// What the marker of the named tournament holds, if it is there.
+fn marker(name: &str) -> Option<String> {
+    std::fs::read_to_string(directory(name).join(PLAYING_FILE)).ok()
+}
+
+/// The rounds the play going on in the named tournament took, counted from
+/// zero, empty when nothing plays or the marker names none.
+pub fn playing_rounds(name: &str) -> Vec<usize> {
+    marker(name)
+        .map(|marker| marked_rounds(&marker))
+        .unwrap_or_default()
+}
+
+/// The rounds a playing marker names after its pid, none for a marker from
+/// before they were named.
+fn marked_rounds(marker: &str) -> Vec<usize> {
+    let Some(rounds) = marker.split_whitespace().nth(1) else {
+        return Vec::new();
+    };
+
+    rounds
+        .split(ROUND_SEPARATOR)
+        .filter_map(|round| round.parse::<usize>().ok())
+        .collect()
 }
 
 /// Run the tournament command.
@@ -225,6 +276,16 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
 
     if command.backfill {
         return backfill(name, command.force_build_images, command.parallel);
+    }
+
+    if let Some((index, resume)) = command.resume {
+        return resume_round(
+            name,
+            index,
+            resume,
+            command.force_build_images,
+            command.parallel,
+        );
     }
 
     play_round(name, command.force_build_images, command.parallel)
@@ -634,6 +695,52 @@ fn modify(
     write(&record)
 }
 
+/// What resuming a round that broke off does with its runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resume {
+    /// Play the seats the round is missing a finished run of.
+    Continue,
+    /// Drop what the round holds and play every seat again.
+    Restart,
+    /// Play nothing and settle the round on what its runs left.
+    Settle,
+}
+
+impl Resume {
+    /// The words the command line and the interface name the modes by.
+    pub const CONTINUE: &str = "continue";
+    pub const RESTART: &str = "restart";
+    pub const SETTLE: &str = "settle";
+
+    /// The mode `word` names, if it names one.
+    pub fn named(word: &str) -> Option<Self> {
+        match word {
+            Self::CONTINUE => Some(Self::Continue),
+            Self::RESTART => Some(Self::Restart),
+            Self::SETTLE => Some(Self::Settle),
+            _ => None,
+        }
+    }
+
+    /// The word this mode is named by.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Continue => Self::CONTINUE,
+            Self::Restart => Self::RESTART,
+            Self::Settle => Self::SETTLE,
+        }
+    }
+
+    /// The mode as what it is doing, for the notes and the log.
+    pub fn doing(&self) -> &'static str {
+        match self {
+            Self::Continue => "continuing",
+            Self::Restart => "restarting",
+            Self::Settle => "settling",
+        }
+    }
+}
+
 /// Play one round of the named tournament: turn by turn a run per seat, all
 /// at once, each seeded with the entries of the other seats the game asks
 /// for, then the pairings settled.
@@ -647,7 +754,7 @@ pub fn play_round(
     force_build_images: bool,
     parallel: Option<usize>,
 ) -> std::io::Result<i32> {
-    let _playing = Playing::begin(name)?;
+    let playing = Playing::begin(name)?;
     let record = load(name)?;
     if record.seats.is_empty() {
         return Err(std::io::Error::other(format!("{name} has no seats")));
@@ -655,7 +762,6 @@ pub fn play_round(
     let game = find(&record.game)?;
     let seats = record.seats.len();
     let index = record.rounds.len();
-    let round = index + 1;
     let parallel = parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
 
     modify(name, |record| {
@@ -667,11 +773,90 @@ pub fn play_round(
         });
         Ok(())
     })?;
+    playing.plays_rounds(&[index])?;
     log::info!(
-        "{name}: round {round} starts, {seats} seats play {} over {} turns, {parallel} runs at once",
+        "{name}: round {} starts, {seats} seats play {} over {} turns, {parallel} runs at once",
+        index + 1,
         record.game,
         game.turns().len()
     );
+
+    // A round just pushed is missing the run of every seat, so continuing it
+    // plays them all.
+    play_through(name, index, Resume::Continue, force_build_images, parallel)
+}
+
+/// Resume the round at `index` of the named tournament, the way `resume` says,
+/// and settle and finish it.
+///
+/// Only a round that broke off is resumed. A round the standings already
+/// count is over, and playing it again is playing another round.
+pub fn resume_round(
+    name: &str,
+    index: usize,
+    resume: Resume,
+    force_build_images: bool,
+    parallel: Option<usize>,
+) -> std::io::Result<i32> {
+    let playing = Playing::begin(name)?;
+    let record = load(name)?;
+    if record.seats.is_empty() {
+        return Err(std::io::Error::other(format!("{name} has no seats")));
+    }
+    let round = record
+        .rounds
+        .get(index)
+        .ok_or_else(|| missing_round(name, index))?;
+    if round.finished_seconds.is_some() {
+        return Err(std::io::Error::other(format!(
+            "{name}: round {} is over",
+            index + 1
+        )));
+    }
+    let parallel = parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
+
+    playing.plays_rounds(&[index])?;
+    log::info!(
+        "{name}: {} round {}, {parallel} runs at once",
+        resume.doing(),
+        index + 1
+    );
+
+    play_through(name, index, resume, force_build_images, parallel)
+}
+
+/// Play the round at `index` through: the runs `resume` asks for, turn by
+/// turn, then the pairings and the second the round finished.
+///
+/// What the round already holds is banked before the turns, so a round that
+/// broke off after its runs hands their entries to the turns that follow and
+/// to the pairings.
+fn play_through(
+    name: &str,
+    index: usize,
+    resume: Resume,
+    force_build_images: bool,
+    parallel: usize,
+) -> std::io::Result<i32> {
+    let record = load(name)?;
+    let game = find(&record.game)?;
+    let seats = record.seats.len();
+    let number = index + 1;
+    let mut code = 0;
+
+    if resume == Resume::Restart {
+        modify(name, |record| {
+            let round = record
+                .rounds
+                .get_mut(index)
+                .ok_or_else(|| missing_round(name, index))?;
+            round.entries.clear();
+            round.pairings.clear();
+            Ok(())
+        })?;
+        log::info!("{name}: round {number} drops what it held and plays again");
+    }
+    bank_entries(name, game, index)?;
 
     let analyses = Analyses::new(
         name,
@@ -679,52 +864,71 @@ pub fn play_round(
         record.analyst_seconds,
         parallel,
     );
-    let mut code = 0;
 
     for (turn, task) in game.turns().iter().enumerate() {
-        if crate::interrupt::interrupted() {
+        if resume == Resume::Settle || crate::interrupt::interrupted() {
             break;
         }
 
         // Every run is resolved before the turn is written, so the record only
         // ever names runs that are about to start.
         let played = load(name)?;
-        let played = played.rounds.last().expect("the round was written");
+        let played = played
+            .rounds
+            .get(index)
+            .ok_or_else(|| missing_round(name, index))?;
+        let seats_playing = seats_to_play(seats, played, turn);
+        if seats_playing.is_empty() {
+            log::info!(
+                "{name}: round {number}, turn {} of {}: every seat played it",
+                turn + 1,
+                game.turns().len()
+            );
+            continue;
+        }
         let mut launches = Vec::new();
-        for (seat, setup) in record.seats.iter().enumerate() {
+        for &seat in &seats_playing {
             let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
             let inputs = resolve_inputs(name, game, played, &game.inputs(turn, &opponents));
             launches.push(launch(
                 &record,
-                setup,
+                &record.seats[seat],
                 turn,
                 inputs,
                 force_build_images,
                 parallel,
             )?);
         }
-        let runs: Vec<String> = record
-            .seats
+        let runs: Vec<String> = seats_playing
             .iter()
-            .map(|seat| docker::run_name(&seat.agent.harness))
+            .map(|seat| docker::run_name(&record.seats[*seat].agent.harness))
             .collect();
 
+        // A seat playing a turn again drops the entry of the run that never
+        // finished, so the round names one run per seat and turn.
         modify(name, |record| {
-            let played = record.rounds.last_mut().expect("the round was written");
-            played
-                .entries
-                .extend(runs.iter().enumerate().map(|(seat, run)| ava_wire::Entry {
-                    seat,
+            let round = record
+                .rounds
+                .get_mut(index)
+                .ok_or_else(|| missing_round(name, index))?;
+            for (seat, run) in seats_playing.iter().zip(&runs) {
+                round
+                    .entries
+                    .retain(|entry| entry.seat != *seat || entry.turn != turn);
+                round.entries.push(ava_wire::Entry {
+                    seat: *seat,
                     turn,
                     run: run.clone(),
                     attempt: None,
-                }));
+                });
+            }
             Ok(())
         })?;
         log::info!(
-            "{name}: round {round}, turn {} of {}: {seats} seats play {}",
+            "{name}: round {number}, turn {} of {}: {} seats play {}",
             turn + 1,
             game.turns().len(),
+            seats_playing.len(),
             task.task
         );
 
@@ -744,17 +948,7 @@ pub fn play_round(
             }
         }
 
-        let kept: Vec<Option<u64>> = runs
-            .iter()
-            .map(|run| banked(name, game, run, turn).map(|kept| kept.seconds))
-            .collect();
-        modify(name, |record| {
-            let played = record.rounds.last_mut().expect("the round was written");
-            for entry in played.entries.iter_mut().filter(|entry| entry.turn == turn) {
-                entry.attempt = kept[entry.seat];
-            }
-            Ok(())
-        })?;
+        bank_entries(name, game, index)?;
     }
 
     if !crate::interrupt::interrupted() {
@@ -764,7 +958,7 @@ pub fn play_round(
     // An interrupted round stays unfinished, so its forfeits never reach the
     // standings.
     if crate::interrupt::interrupted() {
-        log::warn!("{name}: round {round} was interrupted and stays unfinished");
+        log::warn!("{name}: round {number} was interrupted and stays unfinished");
         analyses.finish();
         return Ok(code.max(1));
     }
@@ -772,15 +966,81 @@ pub fn play_round(
     modify(name, |record| {
         record
             .rounds
-            .last_mut()
-            .expect("the round was written")
+            .get_mut(index)
+            .ok_or_else(|| missing_round(name, index))?
             .finished_seconds = Some(crate::usage::epoch_now());
         Ok(())
     })?;
-    log::info!("{name}: round {round} is over");
+    log::info!("{name}: round {number} is over");
     analyses.finish();
 
     Ok(code)
+}
+
+/// The seats needing a run for `turn` of `round`: the ones with no entry and
+/// the ones whose run never finished, which is what a round that broke off in
+/// the middle of a turn left behind.
+fn seats_to_play(seats: usize, round: &ava_wire::Round, turn: usize) -> Vec<usize> {
+    (0..seats)
+        .filter(|seat| {
+            match round
+                .entries
+                .iter()
+                .find(|entry| entry.seat == *seat && entry.turn == turn)
+            {
+                Some(entry) => !finished_run(&entry.run),
+                None => true,
+            }
+        })
+        .collect()
+}
+
+/// Whether the run has a record saying it is over. A run whose record cannot
+/// be read never finished as far as the round is concerned.
+fn finished_run(run: &str) -> bool {
+    crate::runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(run))
+        .map(|record| record.finished_seconds.is_some())
+        .unwrap_or(false)
+}
+
+/// Bank the entries of the round at `index` that have none: the entry of
+/// record its run left on disk, which is what the turns that follow are
+/// seeded with and what the pairings are settled on. An entry already banked
+/// keeps the attempt it was recorded with, since that is what the standings
+/// have counted.
+fn bank_entries(name: &str, game: &dyn ava_game::Game, index: usize) -> std::io::Result<()> {
+    let record = load(name)?;
+    let round = record
+        .rounds
+        .get(index)
+        .ok_or_else(|| missing_round(name, index))?;
+    let unbanked: Vec<(String, usize)> = round
+        .entries
+        .iter()
+        .filter(|entry| entry.attempt.is_none())
+        .map(|entry| (entry.run.clone(), entry.turn))
+        .collect();
+    let kept: Vec<Option<u64>> = unbanked
+        .iter()
+        .map(|(run, turn)| banked(name, game, run, *turn).map(|kept| kept.seconds))
+        .collect();
+
+    modify(name, |record| {
+        let round = record
+            .rounds
+            .get_mut(index)
+            .ok_or_else(|| missing_round(name, index))?;
+        for ((run, _), attempt) in unbanked.iter().zip(&kept) {
+            if let Some(entry) = round
+                .entries
+                .iter_mut()
+                .find(|entry| entry.run == *run && entry.attempt.is_none())
+            {
+                entry.attempt = *attempt;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Play the runs the seats that joined after a round are missing from it and
@@ -794,7 +1054,7 @@ pub fn backfill(
     force_build_images: bool,
     parallel: Option<usize>,
 ) -> std::io::Result<i32> {
-    let _playing = Playing::begin(name)?;
+    let playing = Playing::begin(name)?;
     let record = load(name)?;
     let game = find(&record.game)?;
     if game.turns().len() > 1 {
@@ -818,6 +1078,7 @@ pub fn backfill(
             }
         }
     }
+    playing.plays_rounds(&rounds)?;
     log::info!(
         "{name}: {} runs backfill {} rounds, {parallel} runs at once",
         missing.len(),
@@ -1354,5 +1615,22 @@ mod tests {
     fn a_round_no_seat_played_pairs_nothing() {
         assert!(super::seats_of(&round(&[])).is_empty());
         assert!(super::round_pairs(&round(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_marker_names_the_rounds_of_its_play() {
+        assert_eq!(super::marked_rounds("4711 1,3"), vec![1, 3]);
+        assert_eq!(super::marked_rounds("4711 2"), vec![2]);
+        assert!(super::marked_rounds("4711").is_empty());
+        assert!(super::marked_rounds("").is_empty());
+    }
+
+    #[test]
+    fn a_seat_plays_a_turn_it_has_no_finished_run_of() {
+        // The runs the helper names are not on disk, so none of them finished.
+        let played = round(&[(0, 0), (1, 0)]);
+
+        assert_eq!(super::seats_to_play(3, &played, 0), vec![0, 1, 2]);
+        assert_eq!(super::seats_to_play(2, &round(&[]), 0), vec![0, 1]);
     }
 }

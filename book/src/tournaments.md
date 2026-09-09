@@ -14,6 +14,18 @@ A round is every seat playing a run of every turn of the game, one turn after th
 
 The round is written to the record the moment the runs of a turn are named, so the tournament page links the runs while they play. Once every run of a turn is over, the entry of record of each is picked: the entry ranking highest, the newest on ties, which for a pass or fail game is the last passing push. Before the next turn every seat gets what the game asks for in `inputs()`, the entries of record of the other seats from the earlier turns, seeded into its workspace and mounted into its scoring container under the names the game gives them; a seat that kept none leaves that input out. After the last turn the pairings of the round robin are settled, every pair of seats once. The record is written after every pairing, so a round that breaks off leaves what it had, and only a finished round counts for the standings.
 
+## A round that broke off
+
+A round is over once its pairings are settled and the second it finished is written. A round that lost the process playing it, an interrupt or a restart of the interface included, stays unfinished and out of the standings until it is resumed. Its heading on the tournament page offers three buttons, and the command line the same three ways, each naming the round:
+
+- `continue`, `ava tournament -n <name> --continue <round>`: every seat the round is missing a finished run of plays one, turn by turn the way a round does, then the pairings are settled and the round is finished. A seat whose run finished keeps it, whether it banked an entry or not.
+- `settle`, `--settle <round>`: nothing plays. What the runs left on disk is banked, the pairings are settled and the round is finished, so a seat that never ran forfeits its pairings.
+- `restart`, `--restart <round>`: the runs and the pairings the round holds are dropped and every seat plays it again.
+
+Each of the three banks the entries of the round that have no attempt before anything else happens, read from what their runs left, since a round that broke off after its runs never got to read them. An entry already banked keeps the attempt it was recorded with, which is what the standings have counted.
+
+Only an unfinished round is resumed, and only while nothing else plays. A finished round is over, and playing it again is playing another round.
+
 ## Joining late
 
 `ava tournament -n <name> --backfill`, or the backfill button of the tournament page, plays the rounds the seats joined after: one run per seat and round, all of them at once under the same cap as a round, since the rounds do not depend on each other. Every run is an ordinary run under the seconds the tournament fixed. The rounds are written the moment their runs are named, so the graph of each links its run while it plays, and they stay unfinished until the backfill is over, so a round is out of the standings while it changes and a backfill that broke off leaves its rounds unfinished. The pairings the seat adds are settled afterwards, fought where the game needs a fight and derived from the records where it does not.
@@ -32,5 +44,5 @@ The record holds the tallies of the fights, and the runs and entries everything 
 
 - `tournaments/<name>/tournament.json` is the record described in the [data model](data_model.md).
 - `tournaments/<name>/round-<number>.log` is what the fights of the round printed.
-- `tournaments/<name>/playing` holds the pid of the process playing a round while it does, which is how the web interface knows a round the command line plays is going on.
+- `tournaments/<name>/playing` holds the pid of the process playing rounds while it does and the rounds it took, which is how the web interface knows a round the command line plays is going on and which one that is. A backfill holds several rounds unfinished at once, so the rounds the marker names are the ones in flight and every other unfinished round broke off.
 - The runs of the rounds are under `runs/`, like every run.
