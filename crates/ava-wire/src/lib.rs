@@ -216,6 +216,10 @@ pub struct Metrics {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// The largest context one request carried.
+    /// The harness resumes one session over the turns, so this is how far the
+    /// conversation grew, against the `context_window` of the route.
+    pub peak_context_tokens: u64,
     /// Content delta events counted as the streams passed, the approximate
     /// volume of the requests whose usage report never arrived.
     pub streamed_deltas: u64,

@@ -159,11 +159,13 @@ const FILTER_CHOSEN_CLASSES: &str =
     "rounded-md px-2.5 py-1 text-xs bg-neutral-800 text-neutral-100";
 
 /// The columns of the standings after the cross table of the seats.
-const STANDINGS_HEADERS: [&str; 4] = [
+const STANDINGS_HEADERS: [&str; 5] = [
     "*#fights|the fights against another agent as won-drawn-lost, a fight with more rounds won \
      than lost is won",
     "#score|the share of the rounds of those fights won, half for a draw, what the ratings are fed",
     "#cost|the dollars of every run the seat played in this tournament",
+    "#context|the largest context a run of the seat reached in this tournament, in tokens, the \
+     share of the window behind the hover",
     "",
 ];
 
@@ -341,6 +343,7 @@ const METER_TRACK_CLASSES: &str =
 /// one column start and end on the same lines.
 const POINTS_LABEL_WIDTH: &str = "w-12";
 const ELAPSED_LABEL_WIDTH: &str = "w-24";
+const CONTEXT_LABEL_WIDTH: &str = "w-20";
 const USAGE_LABEL_WIDTH: &str = "w-16";
 const USAGE_FILL: &str = "bg-amber-500";
 const WAIT_FILL: &str = "bg-sky-500";
@@ -355,6 +358,9 @@ const TEXT_VALUE_CLASSES: &str = "text-neutral-200";
 /// The time meter, tinted by whether the budget held.
 const TIME_SPENT_FILL: &str = "bg-red-500";
 const TIME_LEFT_FILL: &str = "bg-emerald-500";
+
+/// The context meter, how far the conversation grew into the window.
+const CONTEXT_FILL: &str = "bg-sky-500";
 
 /// The tiles summarizing a run, one figure each.
 const TILE_CLASSES: &str = "rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3";
@@ -1516,6 +1522,12 @@ pub(crate) fn run_page(name: &str, notice: &Notice) -> std::io::Result<String> {
             TILE_VALUE_CLASSES,
         ),
         tile(
+            "context",
+            &context_tile(&entry),
+            &joined(&[&context_share(&entry), so_far]),
+            TILE_VALUE_CLASSES,
+        ),
+        tile(
             "compactions",
             &match entry.run.compactions {
                 Some(compactions) => compactions.to_string(),
@@ -2435,6 +2447,7 @@ pub(crate) fn tournament_page(
     let standings = standings(&labeled);
     let cells = pairing_cells(&record)?;
     let costs = seat_costs(&runs, name, record.seats.len(), &registry);
+    let contexts = seat_contexts(&runs, name, record.seats.len());
     let mut seat_rows: Vec<(f64, Vec<String>)> = record
         .seats
         .iter()
@@ -2470,6 +2483,14 @@ pub(crate) fn tournament_page(
                             usage::money(cost / runs as f64)
                         ),
                     ),
+                    None => String::new(),
+                },
+                match contexts[seat] {
+                    Some((peak, window)) if window > 0 => explained(
+                        &peak.to_string(),
+                        &format!("{}% of the {window} token window", peak * 100 / window),
+                    ),
+                    Some((peak, _)) => peak.to_string(),
                     None => String::new(),
                 },
                 if removable {
@@ -3082,6 +3103,33 @@ fn seat_costs(
     }
 
     costs
+}
+
+/// The largest context a run of a seat reached in `tournament`, with the
+/// window it compacted within, over the runs on disk. The seats hold one
+/// setup for the whole tournament, so every run of a seat has one window.
+fn seat_contexts(runs: &[RunEntry], tournament: &str, seats: usize) -> Vec<Option<(u64, u64)>> {
+    let mut contexts = vec![None; seats];
+
+    for entry in runs {
+        let Some(placement) = &entry.placement else {
+            continue;
+        };
+        let Some(reached) = contexts.get_mut(placement.seat) else {
+            continue;
+        };
+        if placement.tournament != tournament {
+            continue;
+        }
+        let Some(metrics) = &entry.metrics else {
+            continue;
+        };
+        let (peak, window) = reached.get_or_insert((0, 0));
+        *peak = (*peak).max(metrics.peak_context_tokens);
+        *window = (*window).max(u64::from(entry.run.context_window.unwrap_or_default()));
+    }
+
+    contexts
 }
 
 /// The place of one agent on a leaderboard.
@@ -4692,6 +4740,45 @@ fn time_fill(spent: u64, limit: u64) -> &'static str {
     } else {
         TIME_LEFT_FILL
     }
+}
+
+/// What share of its window the largest context of a run filled, empty
+/// without a window or a request that reported one.
+fn context_share(entry: &RunEntry) -> String {
+    let peak = entry
+        .metrics
+        .as_ref()
+        .map_or(0, |metrics| metrics.peak_context_tokens);
+    let window = u64::from(entry.run.context_window.unwrap_or_default());
+    if peak == 0 || window == 0 {
+        return String::new();
+    }
+
+    format!("{}% of the window", peak * 100 / window)
+}
+
+/// The largest context a run reached against the window it compacted within,
+/// as a meter, or the tokens alone for a run without a recorded window.
+fn context_tile(entry: &RunEntry) -> String {
+    let Some(metrics) = &entry.metrics else {
+        return placeholder(if entry.live {
+            AFTER_THE_RUN
+        } else {
+            NOT_RECORDED
+        });
+    };
+    let peak = metrics.peak_context_tokens;
+    let Some(window) = entry.run.context_window.filter(|window| *window > 0) else {
+        return peak.to_string();
+    };
+
+    meter(
+        peak,
+        u64::from(window),
+        CONTEXT_FILL,
+        &peak.to_string(),
+        CONTEXT_LABEL_WIDTH,
+    )
 }
 
 /// A points value behind its meter on the shared 0 to 10000 scale.

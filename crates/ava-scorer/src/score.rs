@@ -293,6 +293,9 @@ pub fn aggregate(records: &str) -> std::io::Result<ava_wire::Metrics> {
         metrics.output_tokens += record.output_tokens;
         metrics.cache_read_tokens += record.cache_read_tokens;
         metrics.cache_write_tokens += record.cache_write_tokens;
+        metrics.peak_context_tokens = metrics
+            .peak_context_tokens
+            .max(record.input_tokens + record.cache_read_tokens + record.cache_write_tokens);
         metrics.streamed_deltas += record.streamed_deltas;
         if !record.ratelimits.is_empty() {
             metrics.ratelimits = record.ratelimits;
@@ -424,6 +427,17 @@ mod tests {
 
         assert_eq!(metrics.probe_requests, 0);
         assert_eq!(metrics.failed_requests, 1);
+    }
+
+    #[test]
+    fn the_peak_context_is_the_largest_prompt_of_one_request() {
+        let grown = ANSWERED
+            .replace(r#""input_tokens":100"#, r#""input_tokens":300"#)
+            .replace(r#""cache_read_tokens":0"#, r#""cache_read_tokens":900"#);
+        let metrics = super::aggregate(&format!("{ANSWERED}\n{grown}\n{PROBE}\n")).unwrap();
+
+        assert_eq!(metrics.input_tokens, 400);
+        assert_eq!(metrics.peak_context_tokens, 1200);
     }
 
     #[test]
