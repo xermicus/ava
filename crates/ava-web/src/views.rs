@@ -452,21 +452,14 @@ const COVER_CLASSES: &str = "flex h-20 w-20 shrink-0 rounded-md border border-ne
      bg-neutral-950 overflow-hidden";
 const COVER_EMPTY_CLASSES: &str =
     "h-20 w-20 shrink-0 rounded-md border border-dashed border-neutral-800";
-const COVER_ART_CLASSES: &str = "block h-full w-full text-neutral-200";
 const COVER_IMAGE_CLASSES: &str = "block h-full w-full object-cover";
-/// The image a game folder may hold for its cover, the first one found.
-const COVER_FILES: [(&str, &str); 4] = [
-    ("cover.png", "image/png"),
-    ("cover.svg", "image/svg+xml"),
-    ("cover.webp", "image/webp"),
-    ("cover.jpg", "image/jpeg"),
-];
-const COVER_TEXT_CLASSES: &str = "block w-full p-1.5 font-mono text-[10px] leading-tight \
-     text-neutral-300 whitespace-pre overflow-hidden";
-const COVER_SIDE: usize = 16;
-const COVER_BYTES: usize = COVER_SIDE * COVER_SIDE;
-/// A text entry no longer than this reads as text on the cover.
-const TEXT_ENTRY_LIMIT: u64 = 4096;
+/// The logo a game folder holds for the cover of its card.
+const LOGO_FILE: &str = "logo.png";
+const LOGO_CONTENT_TYPE: &str = "image/png";
+/// The logo in a table, the size of an avatar there. The cells of a table are
+/// as narrow as their content, so the image keeps its own width instead of
+/// the hundred percent of the cell the reset caps it at.
+const LOGO_CELL_CLASSES: &str = "h-6 w-6 max-w-none rounded";
 /// The facts keep a reading width when the card spans the grid.
 const FACTS_CLASSES: &str = "flex-1 min-w-0 max-w-xl flex flex-col gap-1.5";
 const FACT_ROW_CLASSES: &str = "flex items-center gap-3 h-5";
@@ -475,21 +468,14 @@ const FACT_ROW_CLASSES: &str = "flex items-center gap-3 h-5";
 const HOLDER_CLASSES: &str = "block h-4 mt-1 pl-[4.25rem] text-xs text-neutral-400 truncate";
 const FACT_LABEL_CLASSES: &str = "w-14 shrink-0 text-xs text-neutral-400";
 
-/// The tournament card beside the game card: the lobby as the numbered seats
-/// on a ring with a line for every pairing.
+/// The tournament card beside the game card.
 const ABOUT_GRID_CLASSES: &str = "mt-4 grid grid-cols-2 gap-4 items-stretch";
-const RING_SIDE: f64 = 80.0;
-const RING_RADIUS: f64 = 30.0;
-const RING_SEAT_RADIUS: f64 = 8.0;
-const RING_DOT_RADIUS: f64 = 3.5;
-const RING_STROKE_WIDTH: f64 = 1.0;
-const RING_NUMBER_SIZE: f64 = 9.0;
-/// A lobby of more seats than this shows them as dots, too close for numbers.
-const RING_NUMBERED_SEATS: usize = 8;
-const RING_EDGE_CLASSES: &str = "stroke-neutral-600";
-const RING_SEAT_CLASSES: &str = "fill-neutral-800 stroke-neutral-500";
-const RING_NUMBER_CLASSES: &str = "fill-neutral-200 font-mono";
-const RING_DOT_CLASSES: &str = "fill-neutral-300";
+/// The cover of that card, the sprite sheet the layout walks in place, and
+/// the attribute the interface keeps the chosen sheet under across a refresh.
+const SPRITE_CLASSES: &str = "block h-full w-full sprite";
+const SPRITE_FIELD: &str = "data-sprite";
+/// The sprite stands still unless the tournament has an agent up.
+const SPRITE_WALKING_CLASSES: &str = "walking";
 const FACT_TEXT_CLASSES: &str = "flex items-center gap-2 whitespace-nowrap";
 const NO_ANALYST: &str = "none";
 /// The header of every page is the trail leading to it.
@@ -2077,7 +2063,7 @@ fn game_face(
         escape(game),
         turn_badges(game),
         chevron(CHEVRON_CLASSES),
-        cover(game, best),
+        cover(game),
         fact(
             "runs",
             &format!("<span class=\"{FACT_VALUE_CLASSES}\">{runs}</span>")
@@ -2087,104 +2073,48 @@ fn game_face(
     )
 }
 
-/// The cover of a card: the image the game folder provides, else the entry
-/// of record, else an empty frame.
-fn cover(game: &str, best: Option<(&RunEntry, &runs::Entry)>) -> String {
-    if cover_path(game).is_some() {
-        return format!(
-            "<span class=\"{COVER_CLASSES}\"><img class=\"{COVER_IMAGE_CLASSES}\" src=\"/games/{}/cover\" alt=\"\"></span>",
-            escape(game)
-        );
+/// The cover of a card: the logo of the game, else an empty frame.
+fn cover(game: &str) -> String {
+    if logo_path(game).is_none() {
+        return format!("<span class=\"{COVER_EMPTY_CLASSES}\"></span>");
     }
 
-    let Some((run, entry)) = best else {
-        return format!("<span class=\"{COVER_EMPTY_CLASSES}\"></span>");
-    };
-
-    let head = read_head(&entry.path, COVER_BYTES).unwrap_or_default();
-    let art = if entry.bytes <= TEXT_ENTRY_LIMIT && is_text(&head) {
-        text_cover(&head)
-    } else {
-        byte_cover(&head)
-    };
-
     format!(
-        "<span class=\"{COVER_CLASSES}\" title=\"{}\">{art}</span>",
-        escape(&format!(
-            "the entry of record, {} bytes, kept by {}",
-            entry.bytes, run.name
-        ))
+        "<span class=\"{COVER_CLASSES}\"><img class=\"{COVER_IMAGE_CLASSES}\" src=\"/games/{}/logo\" alt=\"\"></span>",
+        escape(game)
     )
 }
 
-/// The cover image of the game `name` in its folder, with its content type,
-/// for a name the games directory knows.
-fn cover_path(name: &str) -> Option<(std::path::PathBuf, &'static str)> {
+/// The logo of the game `name` in its folder, for a name the games directory
+/// knows.
+fn logo_path(name: &str) -> Option<std::path::PathBuf> {
     if !games().ok()?.iter().any(|known| known == name) {
         return None;
     }
 
-    COVER_FILES.iter().find_map(|(file, content_type)| {
-        let path = std::path::Path::new(GAMES_DIRECTORY).join(name).join(file);
-        path.is_file().then_some((path, *content_type))
-    })
+    let path = std::path::Path::new(GAMES_DIRECTORY)
+        .join(name)
+        .join(LOGO_FILE);
+
+    path.is_file().then_some(path)
 }
 
-/// The cover image of the game `name` with its content type, if it has one.
-pub(crate) fn game_cover(name: &str) -> Option<(Vec<u8>, &'static str)> {
-    let (path, content_type) = cover_path(name)?;
-    Some((std::fs::read(path).ok()?, content_type))
-}
-
-/// The first `limit` bytes of the file at `path`.
-fn read_head(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
-    let mut head = Vec::with_capacity(limit);
-    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit as u64), &mut head)?;
-
-    Ok(head)
-}
-
-/// Whether `bytes` are printable ASCII and whitespace throughout.
-fn is_text(bytes: &[u8]) -> bool {
-    !bytes.is_empty()
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
-}
-
-/// A text entry as its text, one line centered and more read from the top.
-fn text_cover(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let align = if text.trim().lines().count() <= 1 {
-        "self-center text-center"
-    } else {
-        "self-start"
-    };
-
-    format!(
-        "<span class=\"{COVER_TEXT_CLASSES} {align}\">{}</span>",
-        escape(text.trim_end())
-    )
-}
-
-/// A binary entry as a grid of its first bytes, one cell each, shaded by
-/// value: a zero byte leaves the surface bare and the cells past the end of
-/// a short file stay empty, so the size of the file is part of the picture.
-fn byte_cover(bytes: &[u8]) -> String {
-    let mut cells = String::new();
-    for (index, byte) in bytes.iter().enumerate().filter(|(_, byte)| **byte != 0) {
-        cells.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"1\" height=\"1\" fill-opacity=\"{:.2}\"/>",
-            index % COVER_SIDE,
-            index / COVER_SIDE,
-            f64::from(*byte) / f64::from(u8::MAX)
-        ));
+/// The logo of a game as a table cell, empty for a game without one.
+fn logo_cell(game: &str) -> String {
+    if logo_path(game).is_none() {
+        return String::new();
     }
 
     format!(
-        "<svg class=\"{COVER_ART_CLASSES}\" viewBox=\"0 0 {COVER_SIDE} {COVER_SIDE}\" fill=\"currentColor\" shape-rendering=\"crispEdges\">{cells}</svg>"
+        "<img class=\"{LOGO_CELL_CLASSES}\" src=\"/games/{}/logo\" alt=\"\">",
+        escape(game)
     )
+}
+
+/// The logo of the game `name` with its content type, if it has one.
+pub(crate) fn game_logo(name: &str) -> Option<(Vec<u8>, &'static str)> {
+    let logo = std::fs::read(logo_path(name)?).ok()?;
+    Some((logo, LOGO_CONTENT_TYPE))
 }
 
 /// A chevron pointing down, turned by `classes` where it marks an open fold.
@@ -2287,6 +2217,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         .iter()
         .map(|record| {
             vec![
+                logo_cell(&record.game),
                 format!(
                     "<a class=\"{LINK_CLASSES}\" href=\"/tournament/{name}\">{name}</a><div class=\"text-xs {MUTED_CLASSES} mt-0.5\">opened {} ago</div>",
                     usage::age(record.created_seconds),
@@ -2308,7 +2239,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
         "<p class=\"{TITLE_CLASSES}\">tournaments</p>{}",
         table(
             &[
-                "name", "state", "game", "#seats", "#rounds", "*seconds", "#combats"
+                "", "name", "state", "game", "#seats", "#rounds", "*seconds", "#combats"
             ],
             rows,
             Some(NO_TOURNAMENTS_NOTE),
@@ -2352,6 +2283,20 @@ fn resume_forms(name: &str, number: usize) -> String {
             STOP_CLASSES
         ),
     )
+}
+
+/// The address of one of the vendored sprite sheets, another one whenever the
+/// page is rendered, so a reload brings another character. The interface
+/// keeps the sheet it was first served across its refreshes, since the choice
+/// is not something the records hold.
+fn sprite_sheet() -> String {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.subsec_nanos() as usize)
+        .unwrap_or_default();
+    let (sheet, _) = crate::serve::SPRITES[since % crate::serve::SPRITES.len()];
+
+    format!("{}{sheet}", crate::serve::SPRITE_PATH)
 }
 
 /// The rounds of a tournament without a second they finished in: the ones a
@@ -2486,10 +2431,20 @@ pub(crate) fn tournament_page(
                     })
             })
             .collect();
+    // The sprite walks while the tournament is at work: a round in flight
+    // with an agent of it up. A round settling its pairings has none.
+    let at_work = playing
+        && runs.iter().any(|run| {
+            run.live
+                && run
+                    .placement
+                    .as_ref()
+                    .is_some_and(|placement| placement.tournament == name)
+        });
     body.push_str(&format!(
         "<div data-refresh=\"about\" class=\"{ABOUT_GRID_CLASSES}\">{}{}</div>",
         game_card(&record.game, &played),
-        tournament_card(&record)
+        tournament_card(&record, at_work)
     ));
 
     // The seats with their standings: one table in seat order, the columns of
@@ -2669,16 +2624,13 @@ pub(crate) fn tournament_page(
 /// The tournament in the shape of a game card: the numbered seats on a ring
 /// with a line for every pairing as its cover, and the pairing scheme, the
 /// seconds of a run and the analyst as its facts.
-fn tournament_card(record: &ava_wire::Tournament) -> String {
-    let seats = record.seats.len();
-    let ring = if seats == 0 {
-        format!("<span class=\"{COVER_EMPTY_CLASSES}\"></span>")
-    } else {
-        format!(
-            "<span class=\"{COVER_CLASSES}\">{}</span>",
-            pairing_ring(seats)
-        )
-    };
+fn tournament_card(record: &ava_wire::Tournament, walking: bool) -> String {
+    let sheet = sprite_sheet();
+    let walk = if walking { SPRITE_WALKING_CLASSES } else { "" };
+    let sprite = format!(
+        "<span class=\"{COVER_CLASSES}\"><span class=\"{SPRITE_CLASSES} {walk}\" {SPRITE_FIELD}=\"{sheet}\" \
+         style=\"background-image:url('{sheet}')\"></span></span>"
+    );
 
     let run = format!(
         "<span class=\"{FACT_VALUE_CLASSES}\">{}s</span>",
@@ -2696,54 +2648,13 @@ fn tournament_card(record: &ava_wire::Tournament) -> String {
     format!(
         "<div class=\"{CARD_CLASSES} p-4 h-full\">\
          <span class=\"flex items-center gap-3\"><span class=\"{GAME_NAME_CLASSES}\">{}</span></span>\
-         <span class=\"flex items-start gap-6 mt-4\">{ring}<span class=\"{FACTS_CLASSES}\">{}{}{}</span></span>\
+         <span class=\"flex items-start gap-6 mt-4\">{sprite}<span class=\"{FACTS_CLASSES}\">{}{}{}</span></span>\
          </div>",
         SETTINGS_TITLE,
         fact("type", &words(&escape(&record.pairing))),
         fact("run", &run),
         fact("analyst", &analyst),
     )
-}
-
-/// The `seats` on a ring with a line for every pairing of the round robin,
-/// numbered the way the standings and the round graph count them.
-fn pairing_ring(seats: usize) -> String {
-    let center = RING_SIDE / 2.0;
-    let point = |seat: usize| {
-        let angle =
-            std::f64::consts::TAU * seat as f64 / seats as f64 - std::f64::consts::FRAC_PI_2;
-        (
-            center + RING_RADIUS * angle.cos(),
-            center + RING_RADIUS * angle.sin(),
-        )
-    };
-
-    let mut svg = format!(
-        "<svg class=\"{COVER_ART_CLASSES}\" viewBox=\"0 0 {RING_SIDE} {RING_SIDE}\" stroke-width=\"{RING_STROKE_WIDTH}\">"
-    );
-    for (first, second) in ava_game::scoring::round_robin(seats) {
-        let (from_x, from_y) = point(first);
-        let (to_x, to_y) = point(second);
-        svg.push_str(&format!(
-            "<line x1=\"{from_x:.1}\" y1=\"{from_y:.1}\" x2=\"{to_x:.1}\" y2=\"{to_y:.1}\" class=\"{RING_EDGE_CLASSES}\"/>"
-        ));
-    }
-    for seat in 0..seats {
-        let (x, y) = point(seat);
-        if seats > RING_NUMBERED_SEATS {
-            svg.push_str(&format!(
-                "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{RING_DOT_RADIUS}\" class=\"{RING_DOT_CLASSES}\"/>"
-            ));
-            continue;
-        }
-        svg.push_str(&format!(
-            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{RING_SEAT_RADIUS}\" class=\"{RING_SEAT_CLASSES}\"/>\
-             <text x=\"{x:.1}\" y=\"{y:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" font-size=\"{RING_NUMBER_SIZE}\" class=\"{RING_NUMBER_CLASSES}\">{}</text>",
-            seat + 1
-        ));
-    }
-    svg.push_str("</svg>");
-    svg
 }
 
 /// The runs of a round as the graph the tournament walks: a column per turn,
@@ -5122,13 +5033,6 @@ fn strip_ansi(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_cover_tells_text_from_bytes() {
-        assert!(super::is_text(b"; a warrior\nmov eax, 1\n"));
-        assert!(!super::is_text(b"\x7fELF\x02\x01"));
-        assert!(!super::is_text(b""));
-    }
-
-    #[test]
     fn an_avatar_is_mirrored_and_the_same_for_the_same_agent() {
         let agent = ava_wire::Agent {
             harness: "pi".to_string(),
@@ -5149,8 +5053,8 @@ mod tests {
     }
 
     #[test]
-    fn no_cover_comes_from_outside_the_games_directory() {
-        assert!(super::cover_path("../Cargo.toml").is_none());
-        assert!(super::game_cover("no-such-game").is_none());
+    fn no_logo_comes_from_outside_the_games_directory() {
+        assert!(super::logo_path("../Cargo.toml").is_none());
+        assert!(super::game_logo("no-such-game").is_none());
     }
 }

@@ -59,11 +59,28 @@ const FONTS: [(&str, &[u8]); 4] = [
     ),
 ];
 
+/// The vendored sprite sheets, served by file name. Every sheet is four
+/// frames by four, so one stylesheet walks them all, and the tournament page
+/// picks one of them.
+pub(crate) const SPRITES: [(&str, &[u8]); 4] = [
+    (
+        "astronaut.png",
+        include_bytes!("../assets/sprites/astronaut.png"),
+    ),
+    ("pirate.png", include_bytes!("../assets/sprites/pirate.png")),
+    ("robot.png", include_bytes!("../assets/sprites/robot.png")),
+    ("witch.png", include_bytes!("../assets/sprites/witch.png")),
+];
+
+/// Where the sheets are served, the prefix of the address of each.
+pub(crate) const SPRITE_PATH: &str = "/assets/sprites/";
+
 const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 const TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 const BINARY_CONTENT_TYPE: &str = "application/octet-stream";
 const JAVASCRIPT_CONTENT_TYPE: &str = "text/javascript";
 const FONT_CONTENT_TYPE: &str = "font/woff2";
+const SPRITE_CONTENT_TYPE: &str = "image/png";
 
 /// A form submission larger than this is not one of ours.
 const MAX_FORM_BYTES: u64 = 16 * 1024;
@@ -269,12 +286,12 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
         ["agents"] => views::agents_page(&notice, &selection),
         ["agent", name] => views::agent_page(&urldecode(name), &notice, &selection),
         ["games"] => views::games_page(),
-        ["games", name, "cover"] => {
-            return match views::game_cover(name) {
+        ["games", name, "logo"] => {
+            return match views::game_logo(name) {
                 Some((contents, kind)) => {
                     tiny_http::Response::from_data(contents).with_header(content_type(kind))
                 }
-                None => plain_response(404, "no such cover\n"),
+                None => plain_response(404, "no such logo\n"),
             };
         }
         ["tournaments"] => views::tournaments_page(&notice, &selection),
@@ -296,6 +313,13 @@ fn view(segments: &[&str], query: Option<&str>) -> Answer {
                 Some((_, contents)) => tiny_http::Response::from_data(contents.to_vec())
                     .with_header(content_type(FONT_CONTENT_TYPE)),
                 None => plain_response(404, "no such font\n"),
+            };
+        }
+        ["assets", "sprites", file] => {
+            return match SPRITES.iter().find(|(name, _)| name == file) {
+                Some((_, contents)) => tiny_http::Response::from_data(contents.to_vec())
+                    .with_header(content_type(SPRITE_CONTENT_TYPE)),
+                None => plain_response(404, "no such sprite\n"),
             };
         }
         ["run", name] => views::run_page(name, &notice),

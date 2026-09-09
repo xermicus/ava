@@ -27,7 +27,7 @@ The tasks asking for a binary ask for an x86-64 Linux ELF whatever the host runs
 6. If every verification needs the same data, compute it in `prepare()`.
 7. If a verification takes longer than 90 seconds, say how long in `scoring_seconds()`.
 
-A `cover.png`, `cover.svg`, `cover.webp` or `cover.jpg` in the game folder is the cover of its card on the games page. Without one the card shows the entry of record.
+A `logo.png` in the game folder is the cover of its card on the games page, of the same card on the page of a tournament of the game, and the leftmost cell of every row of that game in the tournaments table. A game without one shows an empty frame.
 
 ## crackme
 

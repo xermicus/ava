@@ -33,6 +33,42 @@
     font-display: swap;
     src: url("/assets/fonts/geist-latin-600-normal.woff2") format("woff2");
 }
+/* The sprite of the tournament settings. The page names the sheet, every
+   one of them four frames by four, drawn four covers wide, so one frame
+   fills the cover and a position is a share of the sheet, 0% its first
+   column and row and 100% its last, which holds at whatever size the cover
+   is.
+
+   The row is the vertical share: 0% the character seen from the front,
+   33.3333% walking left, 66.6667% walking right, 100% seen from the back.
+
+   Every row holds the two contact poses of a walk in its first and third
+   column and the passing pose, drawn four pixels higher, in its second, so
+   the cycle is first, passing, third, passing. Held between the columns
+   rather than swept over them, the character walks instead of sliding.
+
+   Standing still is the passing column, both feet under the character. Only
+   a tournament with an agent up walks. */
+.sprite {
+    background-repeat: no-repeat;
+    background-size: 400% 400%;
+    background-position-x: 33.3333%;
+    background-position-y: 0%;
+    image-rendering: pixelated;
+}
+.sprite.walking {
+    animation: sprite-walk 0.64s step-end infinite;
+}
+@keyframes sprite-walk {
+    0%, 100% { background-position-x: 0%; }
+    25%, 75% { background-position-x: 33.3333%; }
+    50% { background-position-x: 66.6667%; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .sprite.walking {
+        animation: none;
+    }
+}
 </style>
 <script>
 tailwind = {
@@ -140,10 +176,37 @@ async function refresh() {
 
     restoreSorts();
     drawChat();
+    drawSprite();
     history.replaceState(null, "", address);
 }
 
 setInterval(() => refresh().catch(() => {}), REFRESH_MILLISECONDS);
+
+/* The sprite of a settings card is a sheet the page picked at random, so it
+ * is kept here and put back after a refresh, which would otherwise draw
+ * another character every few seconds. The walk is put in step with the
+ * clock, since a refresh replaces the sprite and would start its cycle over
+ * every time. */
+let sheet = "";
+
+function drawSprite() {
+    const sprite = document.querySelector("[data-sprite]");
+    if (!sprite) {
+        return;
+    }
+    if (sheet === "") {
+        sheet = sprite.dataset.sprite;
+    }
+    sprite.dataset.sprite = sheet;
+    sprite.style.backgroundImage = `url("${sheet}")`;
+
+    const cycle = parseFloat(getComputedStyle(sprite).animationDuration) * 1000;
+    if (cycle > 0) {
+        sprite.style.animationDelay = `-${Date.now() % cycle}ms`;
+    }
+}
+
+drawSprite();
 
 /* The chat box of a live run holds what its proxy publishes. The text is kept
  * here rather than in the box, since a refresh replaces the box, and it
