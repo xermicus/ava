@@ -796,6 +796,9 @@ impl Resume {
 /// at once, each seeded with the entries of the other seats the game asks
 /// for, then the pairings settled.
 ///
+/// A round a seat is missing from is backfilled first, so a new round never
+/// stands beside a finished one the lobby did not all play.
+///
 /// The round is written the moment the runs of a turn are named, so the
 /// record links the runs while they play, and again after every entry of
 /// record and every fight, so a round that breaks off leaves what it had.
@@ -809,6 +812,14 @@ pub fn play_round(
     let record = load(name)?;
     if record.seats.is_empty() {
         return Err(std::io::Error::other(format!("{name} has no seats")));
+    }
+    let owed = unplayed_rounds(&record);
+    if !owed.is_empty() {
+        let rounds: Vec<String> = owed.iter().map(|index| (index + 1).to_string()).collect();
+        return Err(std::io::Error::other(format!(
+            "{name}: backfill round {} before playing another round",
+            rounds.join(", ")
+        )));
     }
     let game = find(&record.game)?;
     let seats = record.seats.len();

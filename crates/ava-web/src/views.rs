@@ -2388,7 +2388,7 @@ pub(crate) fn tournament_page(
         )
     };
 
-    let play_form = if playing || record.seats.is_empty() {
+    let play_form = if playing || record.seats.is_empty() || unplayed > 0 {
         String::new()
     } else {
         format!(
