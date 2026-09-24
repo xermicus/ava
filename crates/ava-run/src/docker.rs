@@ -1161,6 +1161,36 @@ fn collect_entries(run: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+fn collect_session(run: &str, harness: &str) {
+    let Some(path) = crate::registry::session_file(harness) else {
+        return;
+    };
+    let path = std::path::Path::new(path);
+    let (Ok(home_relative_path), Some(file_name)) =
+        (path.strip_prefix(AGENT_HOME), path.file_name())
+    else {
+        log::warn!("{run}: {} is outside {AGENT_HOME}", path.display());
+        return;
+    };
+
+    let source = format!(
+        "{}:{}",
+        holder_container(run),
+        std::path::Path::new(HOME_STAGE)
+            .join(home_relative_path)
+            .display()
+    );
+    let destination = std::path::Path::new(RUN_DIRECTORY)
+        .join(run)
+        .join(file_name);
+    if let Err(error) = process::run_and_assume_success(
+        "docker",
+        &["cp", &source, &destination.display().to_string()],
+    ) {
+        log::warn!("{run}: session file copy error for {harness}: {error}");
+    }
+}
+
 /// Remove the sidecars and the socket volume once the run is over.
 ///
 /// Failures are ignored so that teardown cannot mask the status the agent
@@ -1557,6 +1587,7 @@ pub fn play(launch: &Launch, run: &str) -> std::io::Result<i32> {
         Err(error) if is_refusal_fallback(error) => Ok(()),
         _ => collect_entries(run),
     };
+    collect_session(run, &launch.setup.agent.harness);
     remove_sidecars(run);
 
     let completed = match (&status, &collected, &attempts) {
@@ -2024,6 +2055,7 @@ fn start_sandbox(
     ]);
 
     docker.args(home_mounts(&sandbox.name));
+    docker.args(&invocation.sandbox_options);
 
     docker.args(["--hostname", harness]);
     docker.args(["--add-host", &format!("{harness}:{SANDBOX_LOOPBACK}")]);
@@ -2354,9 +2386,7 @@ fn await_sandbox(
             continue;
         }
 
-        let _ = std::process::Command::new("docker")
-            .args(["kill", &container])
-            .output();
+        stop_container(&container, &sandbox.setup.agent.harness);
         let code = client.wait()?.code().unwrap_or(1);
 
         return Ok(if fell_back {
@@ -2367,6 +2397,20 @@ fn await_sandbox(
             Ending::Done(code)
         });
     }
+}
+
+fn stop_container(container: &str, harness: &str) {
+    let stop_seconds = crate::registry::stop_seconds(harness)
+        .filter(|_| !crate::interrupt::interrupted())
+        .map(|seconds| seconds.to_string());
+    let arguments = match &stop_seconds {
+        Some(seconds) => vec!["stop", "-t", seconds, container],
+        None => vec!["kill", container],
+    };
+
+    let _ = std::process::Command::new("docker")
+        .args(arguments)
+        .output();
 }
 
 /// Write generated configuration to a staging file and mount it read only.

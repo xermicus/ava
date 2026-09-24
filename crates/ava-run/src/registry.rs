@@ -31,6 +31,30 @@ pub(crate) const CLAUDE_HARNESS: &str = "claude";
 pub(crate) const PI_HARNESS: &str = "pi";
 const OPENCODE_HARNESS: &str = "opencode";
 const CODEX_HARNESS: &str = "codex";
+const LT_HARNESS: &str = "lt";
+
+const LT_TOKEN: &str = "LT_API_KEY";
+const LT_SESSION_FILE: &str = "/home/agent/.lt/session.lt";
+const LT_DO: [&str; 5] = [
+    "do",
+    "--oneshot",
+    "--apply-when-done",
+    "--session",
+    LT_SESSION_FILE,
+];
+const LT_API: [&str; 2] = ["--api", "messages"];
+const LT_URL: &str = "--url";
+const LT_CONTEXT_WINDOW: &str = "--context-window";
+const LT_MAX_TOKENS: &str = "--max-tokens";
+const LT_THINKING: &str = "--thinking-effort";
+const LT_SANDBOX_OPTIONS: [&str; 6] = [
+    "--device",
+    "/dev/fuse",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--security-opt",
+    "apparmor=unconfined",
+];
 
 /// Where codex reads its configuration, holding the staged provider setup.
 const CODEX_CONFIG_FILE: &str = "/home/agent/.codex/config.toml";
@@ -175,12 +199,31 @@ const CLAUDE_CONTEXT_SETTINGS: [&str; 2] = [
 const CLAUDE_GATEWAY_CONTEXT: (&str, &str) = ("CLAUDE_CODE_DISABLE_1M_CONTEXT", "1");
 
 /// What each harness prints once per compaction of its session.
-const COMPACTION_MARKERS: [(&str, &str); 4] = [
+const COMPACTION_MARKERS: [(&str, &str); 5] = [
     (CLAUDE_HARNESS, "\"subtype\":\"compact_boundary\""),
     (PI_HARNESS, "\"type\":\"compaction_end\""),
     (OPENCODE_HARNESS, "\"compaction_continue\":true"),
     (CODEX_HARNESS, "Long threads and multiple compactions"),
+    (LT_HARNESS, "--- Context compacted ---"),
 ];
+
+const SESSION_FILES: [(&str, &str); 1] = [(LT_HARNESS, LT_SESSION_FILE)];
+
+const STOP_SECONDS: [(&str, u64); 1] = [(LT_HARNESS, 10)];
+
+pub fn stop_seconds(harness: &str) -> Option<u64> {
+    STOP_SECONDS
+        .iter()
+        .find(|(name, _)| *name == harness)
+        .map(|(_, seconds)| *seconds)
+}
+
+pub fn session_file(harness: &str) -> Option<&'static str> {
+    SESSION_FILES
+        .iter()
+        .find(|(name, _)| *name == harness)
+        .map(|(_, path)| *path)
+}
 
 /// The text `harness` prints once per compaction of its session.
 pub fn compaction_marker(harness: &str) -> Option<&'static str> {
@@ -279,6 +322,16 @@ pub struct Endpoint {
 impl Backend {
     /// Where the proxy connects for this backend.
     pub fn endpoint(&self) -> std::io::Result<Endpoint> {
+        if self.host.contains([':', '/']) {
+            return Err(std::io::Error::new(
+                INVALID,
+                format!(
+                    "`{}` is not a host name; put the address with the port in `upstream`",
+                    self.host
+                ),
+            ));
+        }
+
         let Some(upstream) = &self.upstream else {
             return Ok(Endpoint {
                 host: self.host.clone(),
@@ -475,6 +528,7 @@ impl Registry {
             PI_HARNESS => pi_invocation(route, backend, prompt, thinking, output, start),
             OPENCODE_HARNESS => opencode_invocation(route, backend, prompt, output, start),
             CODEX_HARNESS => codex_invocation(route, backend, prompt, thinking, start),
+            LT_HARNESS => lt_invocation(route, backend, prompt, thinking, output),
             name => Err(std::io::Error::other(format!(
                 "no adapter is defined for the {name} harness"
             ))),
@@ -908,6 +962,7 @@ pub struct Invocation {
     /// The backend the model is served by and the id it is asked for there.
     pub backend: String,
     pub route: String,
+    pub sandbox_options: Vec<String>,
 }
 
 /// `value` as a JSON string, quotes and escapes included.
@@ -1148,6 +1203,49 @@ fn codex_invocation(
         files: vec![(CODEX_CONFIG_FILE.to_string(), configuration)],
         ..Default::default()
     })
+}
+
+fn lt_invocation(
+    route: &Route,
+    backend: &Backend,
+    prompt: &str,
+    thinking: Option<&str>,
+    output: u32,
+) -> std::io::Result<Invocation> {
+    Ok(Invocation {
+        variables: vec![(LT_TOKEN.to_string(), backend.credential()?)],
+        arguments: lt_arguments(route, backend, prompt, thinking, output)?,
+        sandbox_options: LT_SANDBOX_OPTIONS.map(String::from).to_vec(),
+        ..Default::default()
+    })
+}
+
+fn lt_arguments(
+    route: &Route,
+    backend: &Backend,
+    prompt: &str,
+    thinking: Option<&str>,
+    output: u32,
+) -> std::io::Result<Vec<String>> {
+    let mut arguments: Vec<String> = LT_DO
+        .iter()
+        .chain(&LT_API)
+        .map(|argument| argument.to_string())
+        .collect();
+    arguments.extend([
+        LT_URL.to_string(),
+        gateway_url(LT_HARNESS, backend)?,
+        MODEL_OPTION.to_string(),
+        route.id.clone(),
+        LT_CONTEXT_WINDOW.to_string(),
+        route.context_window.to_string(),
+        LT_MAX_TOKENS.to_string(),
+        output.to_string(),
+    ]);
+    think(&mut arguments, LT_THINKING, thinking);
+    arguments.push(prompt.to_string());
+
+    Ok(arguments)
 }
 
 /// The endpoint of `backend` as the gateway a third party harness is pointed
@@ -1421,7 +1519,8 @@ mod tests {
         "harnesses": [
             {"name": "claude", "services": ["anthropic", "openapi"]},
             {"name": "pi", "services": ["openapi"]},
-            {"name": "opencode", "services": ["openapi", "zen"]}
+            {"name": "opencode", "services": ["openapi", "zen"]},
+            {"name": "lt", "services": ["openapi"]}
         ]
     }"#;
     const AGENTS: &str = r#"[
@@ -1586,6 +1685,49 @@ mod tests {
         assert_eq!(provider["options"]["apiKey"], "{env:OPENCODE_API_KEY}");
         assert_eq!(provider["models"]["z-free"]["limit"]["context"], 1024);
         assert_eq!(provider["models"]["z-free"]["limit"]["output"], 256);
+    }
+
+    #[test]
+    fn backend_host_with_port() {
+        let with_port = REGISTRY.replace(r#""host": "o.example""#, r#""host": "10.0.0.1:9002""#);
+        let Err(error) = super::parse(&with_port, AGENTS) else {
+            panic!(
+                "registry parse success for a host with a port; the sandbox would then use http://10.0.0.1:9002:8080"
+            );
+        };
+        assert!(super::is_invalid(&error));
+        assert!(error.to_string().contains("upstream"), "{error}");
+    }
+
+    #[test]
+    fn lt_arguments() {
+        let registry = super::parse(REGISTRY, AGENTS).unwrap();
+        let (route, backend) = registry.route("lt", "m", Some("other")).unwrap();
+        let arguments = super::lt_arguments(route, backend, "prompt", Some("high"), 256).unwrap();
+        let value = |option: &str| {
+            let position = arguments.iter().position(|argument| argument == option);
+            position.map(|position| arguments[position + 1].as_str())
+        };
+
+        assert_eq!(
+            value("--session"),
+            Some(super::LT_SESSION_FILE),
+            "a later turn continues the session only through the same session file"
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "--apply-when-done"),
+            "without --apply-when-done, the changes of the agent exist only in the session file, and the last chance commit reads the workspace volume"
+        );
+        assert_eq!(value("--url"), Some("http://o.example:8080"));
+        assert_eq!(value("--model"), Some("m-other"));
+        assert_eq!(value("--thinking-effort"), Some("high"));
+        assert_eq!(value("--max-tokens"), Some("256"));
+        assert_eq!(arguments.last().map(String::as_str), Some("prompt"));
+
+        let (route, backend) = registry.route("opencode", "z", None).unwrap();
+        assert!(super::lt_arguments(route, backend, "prompt", None, 256).is_err());
     }
 
     #[test]
