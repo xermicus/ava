@@ -35,10 +35,11 @@ const LT_HARNESS: &str = "lt";
 
 const LT_TOKEN: &str = "LT_API_KEY";
 const LT_SESSION_FILE: &str = "/home/agent/.lt/session.lt";
-const LT_DO: [&str; 5] = [
+const LT_DO: [&str; 7] = [
     "do",
     "--oneshot",
     "--apply-when-done",
+    "--tool-groups", "gdb,decompiler",
     "--session",
     LT_SESSION_FILE,
 ];
