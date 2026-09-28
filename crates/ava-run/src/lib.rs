@@ -8,6 +8,7 @@ mod monitor;
 pub mod process;
 pub mod registry;
 pub mod runs;
+mod swiss;
 pub mod tournament;
 pub mod upstreams;
 pub mod usage;

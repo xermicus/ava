@@ -494,12 +494,13 @@ fn cpu_limit() -> [&'static str; 2] {
     ["--cpus", CONTAINER_CPUS]
 }
 
-/// The prompt one turn of the loop is started on.
+/// The prompt a turn after the first is started on.
 ///
 /// Every harness gets this same text, because the loop is `ava` starting the
-/// harness again rather than anything a harness does to itself.
-fn loop_prompt(turn: u32, task: &str) -> String {
-    format!("Loop iteration {turn}.\n\n{task}")
+/// harness again rather than anything a harness does to itself. The resumed
+/// session holds the task already.
+fn loop_prompt(turn: u32) -> String {
+    format!("Loop iteration {turn}.")
 }
 
 /// The prompt the agent is restarted on once its time is up.
@@ -1937,7 +1938,6 @@ fn is_refusal_fallback(error: &std::io::Error) -> bool {
 /// A sandbox: a run's or an analyst's.
 struct Sandbox {
     setup: ava_wire::Setup,
-    task: &'static str,
     /// What the sidecars and volumes are named after.
     name: String,
     /// The run directory the console goes to.
@@ -1956,7 +1956,6 @@ impl Sandbox {
     fn run(setup: &ava_wire::Setup, image: &str, run: &str, staging: &std::path::Path) -> Self {
         Self {
             setup: setup.clone(),
-            task: TASK_PROMPT,
             name: run.to_string(),
             directory: run.to_string(),
             console: AGENT_LOG,
@@ -2014,7 +2013,7 @@ fn turn_loop(
         phase.limit = left;
         turn = registry.invocation(
             &sandbox.setup,
-            &loop_prompt(phase.turn, sandbox.task),
+            &loop_prompt(phase.turn),
             crate::registry::Start::Resume,
         )?;
     }
@@ -2598,7 +2597,6 @@ pub fn analyze(command: &Analyze) -> std::io::Result<i32> {
 
     let sandbox = Sandbox {
         setup: setup.clone(),
-        task: ANALYSIS_PROMPT,
         name: name.clone(),
         directory: run.to_string(),
         console: ANALYSIS_LOG,

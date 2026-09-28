@@ -24,6 +24,12 @@ fn default_analyst_seconds() -> u64 {
 /// The scheme pairing the seats of a tournament: every pair of seats fights once a round.
 pub const ROUND_ROBIN: &str = "round-robin";
 
+/// The scheme pairing every seat once a round with an unmet seat of like standing.
+pub const SWISS: &str = "swiss";
+
+/// Every pairing scheme.
+pub const PAIRINGS: [&str; 2] = [ROUND_ROBIN, SWISS];
+
 fn unversioned() -> u32 {
     UNVERSIONED
 }
@@ -498,7 +504,7 @@ pub struct Tournament {
     pub game: String,
     /// The commit the game folder was last changed in when the tournament was created.
     pub game_version: String,
-    /// The scheme pairing the seats, [`ROUND_ROBIN`].
+    /// How the next round pairs, one of [`PAIRINGS`]. Rounds record their own pairs.
     pub pairing: String,
     /// The seconds every run of the tournament is given.
     pub limit_seconds: u64,
@@ -519,6 +525,11 @@ pub struct Tournament {
 }
 
 impl Tournament {
+    /// Whether the next round is paired by standing.
+    pub fn swiss(&self) -> bool {
+        self.pairing == SWISS
+    }
+
     /// Whether any round was played, which is what fixes the seats.
     pub fn played(&self) -> bool {
         !self.rounds.is_empty()
@@ -539,7 +550,14 @@ pub struct Round {
     pub started_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_seconds: Option<u64>,
-    /// One per seat per turn, turn by turn in seat order.
+    /// The pairs of a swiss round, empty for a round robin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairs: Vec<Pair>,
+    /// The seat an odd swiss round left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bye: Option<usize>,
+    /// One per seat per turn, turn by turn in seat order, or per pair and
+    /// direction where a swiss round plays a turn against the other seat.
     pub entries: Vec<Entry>,
     /// The pairings that took a fight, in the order they were fought. The
     /// pairings a game settles from the records are derived when shown.
@@ -559,6 +577,23 @@ pub struct Entry {
     /// while the run goes or when no attempt passed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<u64>,
+    /// The seat the run faced alone, nothing for a run facing all or none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opponent: Option<usize>,
+}
+
+impl Round {
+    /// Whether the round was paired by standing rather than round robin.
+    pub fn paired(&self) -> bool {
+        !self.pairs.is_empty() || self.bye.is_some()
+    }
+}
+
+/// Two seats a swiss round put against each other, the lower first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Pair {
+    pub first: usize,
+    pub second: usize,
 }
 
 /// The result of one pairing of two seats.

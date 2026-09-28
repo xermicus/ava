@@ -2220,6 +2220,26 @@ fn turn_badges(game: &str) -> String {
         .collect()
 }
 
+/// The pairing option leaving the choice to the game.
+const PAIRING_BY_GAME: &str = "by game";
+
+/// The pairing dropdown, `selected` empty for the game's default.
+fn pairing_field(selected: &str) -> String {
+    let mut options = option(PAIRING_BY_GAME, " value=\"\"", selected.is_empty());
+    for pairing in ava_wire::PAIRINGS {
+        options.push_str(&option(pairing, "", pairing == selected));
+    }
+
+    select_of(
+        "pairing",
+        &explained(
+            "pairing",
+            "round-robin pairs every seat with every other; swiss pairs each seat with an unmet one of like standing, takes late seats in any game, and is the default for games with a turn facing other seats",
+        ),
+        &options,
+    )
+}
+
 /// The tournaments: the form opening one, and every tournament on disk.
 pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::io::Result<String> {
     let registry = registry::load()?;
@@ -2244,6 +2264,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"limit\" value=\"{limit}\" min=\"{last_call}\"></label>\
          <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
          <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"combats\" value=\"{combats}\" min=\"1\"></label>\
+         {}\
          <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">open</button>\
          <div class=\"w-full flex flex-wrap items-end gap-4\">\
          {}{}\
@@ -2266,6 +2287,7 @@ pub(crate) fn tournaments_page(notice: &Notice, selection: &Selection) -> std::i
             "combats",
             "the combats every fight between two entries plays, each best of three rounds",
         ),
+        pairing_field(selection.get("pairing", "")),
         agent_fields(
             &registry,
             crate::serve::ANALYST_PREFIX,
@@ -2505,9 +2527,11 @@ fn tournament_body(
             "<form method=\"post\" action=\"/tournament/{}/backfill\" class=\"self-end\">\
              <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\" title=\"{}\">backfill {unplayed} {}</button></form>",
             escape(name),
-            escape(
+            escape(if record.swiss() {
+                "pair the late seats in the rounds they missed and play the runs those pairs need"
+            } else {
                 "play the rounds the seats joined after, one run per seat and round, and settle the pairings they add"
-            ),
+            }),
             if unplayed == 1 { "round" } else { "rounds" }
         )
     };
@@ -2575,8 +2599,7 @@ fn tournament_body(
 
     // The seats with their standings: one table in seat order, the columns of
     // the cross table being seats, the ratings blank until a round finished.
-    let joinable =
-        !playing && (!record.played() || game.is_some_and(|game| game.turns().len() == 1));
+    let joinable = !playing && tournament::joins_late(&record).unwrap_or(false);
     let rated = record.finished_rounds().next().is_some();
     let labels: Vec<String> = record.seats.iter().map(|seat| seat.agent.label()).collect();
     let rounds_labeled = rounds_labeled(&record, &labels)?;
@@ -2736,6 +2759,11 @@ fn tournament_body(
             (None, true) => String::new(),
             (None, false) => "broke off".to_string(),
         };
+        let became = match round.bye {
+            Some(bye) if became.is_empty() => format!("seat {} sits out", bye + 1),
+            Some(bye) => format!("seat {} sat out, {became}", bye + 1),
+            None => became,
+        };
         // A round that broke off is resumed from its own heading, and only
         // while nothing else plays.
         let resume = match (round.finished_seconds, playing) {
@@ -2828,16 +2856,19 @@ fn round_graph(
     running: &[String],
     live: bool,
 ) -> String {
-    /// An edge the game will ask for once a turn starts, by seat and turn.
+    /// An edge the game will ask for, from a seat and turn to a run's seat,
+    /// turn and opponent.
     struct Planned {
         from: (usize, usize),
-        to: (usize, usize),
+        to: (usize, usize, Option<usize>),
         name: String,
     }
 
     struct Node {
         seat: usize,
         turn: usize,
+        /// The seat the run faces alone.
+        opponent: Option<usize>,
         /// The run, empty for a node not played yet.
         run: String,
         record: Option<ava_wire::Run>,
@@ -2852,50 +2883,58 @@ fn round_graph(
 
     let seats = record.seats.len();
     let mut nodes: Vec<Node> = Vec::new();
-    let mut place = |seat: usize, turn: usize, run: &str, attempt: Option<u64>| {
-        if nodes.iter().any(|node| node.run == run) {
-            return;
-        }
-        let directory = std::path::Path::new(docker::RUN_DIRECTORY).join(run);
-        let record = runs::read(&directory).ok();
-        let spent = record.as_ref().and_then(|recorded| {
-            recorded.wall_seconds().or_else(|| {
-                running.contains(&docker::scorer_container(run)).then(|| {
-                    elapsed_seconds(
-                        read_json(&directory.join(docker::MONITOR_FILE)).as_ref(),
-                        recorded,
-                    )
-                })
-            })
-        });
-        let points = match (game, attempt) {
-            (Some(game), Some(attempt)) => {
-                runs::entries(game, &directory, runs::turn_entry(game, turn))
-                    .ok()
-                    .and_then(|kept| kept.into_iter().find(|kept| kept.seconds == attempt))
-                    .and_then(|kept| kept.points)
+    let mut place =
+        |seat: usize, turn: usize, opponent: Option<usize>, run: &str, attempt: Option<u64>| {
+            if nodes.iter().any(|node| node.run == run) {
+                return;
             }
-            _ => None,
+            let directory = std::path::Path::new(docker::RUN_DIRECTORY).join(run);
+            let record = runs::read(&directory).ok();
+            let spent = record.as_ref().and_then(|recorded| {
+                recorded.wall_seconds().or_else(|| {
+                    running.contains(&docker::scorer_container(run)).then(|| {
+                        elapsed_seconds(
+                            read_json(&directory.join(docker::MONITOR_FILE)).as_ref(),
+                            recorded,
+                        )
+                    })
+                })
+            });
+            let points = match (game, attempt) {
+                (Some(game), Some(attempt)) => {
+                    runs::entries(game, &directory, runs::turn_entry(game, turn))
+                        .ok()
+                        .and_then(|kept| kept.into_iter().find(|kept| kept.seconds == attempt))
+                        .and_then(|kept| kept.points)
+                }
+                _ => None,
+            };
+            nodes.push(Node {
+                seat,
+                turn,
+                opponent,
+                run: run.to_string(),
+                record,
+                points,
+                attempt,
+                spent,
+                x: 0.0,
+                y: 0.0,
+            });
         };
-        nodes.push(Node {
-            seat,
-            turn,
-            run: run.to_string(),
-            record,
-            points,
-            attempt,
-            spent,
-            x: 0.0,
-            y: 0.0,
-        });
-    };
     for entry in &round.entries {
-        place(entry.seat, entry.turn, &entry.run, entry.attempt);
+        place(
+            entry.seat,
+            entry.turn,
+            entry.opponent,
+            &entry.run,
+            entry.attempt,
+        );
     }
     // The attacks of a record from before the turns played the second turn.
     for pairing in &round.pairings {
         if let Some(run) = &pairing.run {
-            place(pairing.first, LEGACY_ATTACK_TURN, run, None);
+            place(pairing.first, LEGACY_ATTACK_TURN, None, run, None);
         }
     }
 
@@ -2903,21 +2942,38 @@ fn round_graph(
         .map_or(1, |game| game.turns().len())
         .max(nodes.iter().map(|node| node.turn + 1).max().unwrap_or(1));
 
-    // Every seat and turn without a run yet is a planned node, with the edges
-    // the game will ask for once the turn starts.
+    // Every run a turn asks for and lacks is a planned node, with its edges.
     let mut planned_edges: Vec<Planned> = Vec::new();
     let played_seats = tournament::seats_of(round);
     for turn in 0..turns {
-        for &seat in &played_seats {
-            if nodes
+        let wanted: Vec<tournament::Slot> = match game {
+            Some(game) if round.paired() => tournament::slots(game, round, seats, turn),
+            _ => played_seats
                 .iter()
-                .any(|node| node.seat == seat && node.turn == turn)
-            {
+                .map(|&seat| tournament::Slot {
+                    seat,
+                    opponent: None,
+                })
+                .collect(),
+        };
+        for tournament::Slot { seat, opponent } in wanted {
+            // A round robin run covers the seats that played the turn that way.
+            let at_once = |seat: usize| {
+                nodes
+                    .iter()
+                    .any(|node| node.seat == seat && node.turn == turn && node.opponent.is_none())
+            };
+            let covered = nodes
+                .iter()
+                .any(|node| node.seat == seat && node.turn == turn && node.opponent == opponent)
+                || opponent.is_some_and(|faced| at_once(seat) && at_once(faced));
+            if covered {
                 continue;
             }
             nodes.push(Node {
                 seat,
                 turn,
+                opponent,
                 run: String::new(),
                 record: None,
                 points: None,
@@ -2927,15 +2983,18 @@ fn round_graph(
                 y: 0.0,
             });
             if let Some(game) = game {
-                let opponents: Vec<usize> = played_seats
-                    .iter()
-                    .copied()
-                    .filter(|other| *other != seat)
-                    .collect();
+                let opponents: Vec<usize> = match opponent {
+                    Some(opponent) => vec![opponent],
+                    None => played_seats
+                        .iter()
+                        .copied()
+                        .filter(|other| *other != seat)
+                        .collect(),
+                };
                 for input in game.inputs(turn, &opponents) {
                     planned_edges.push(Planned {
                         from: (input.seat, input.turn),
-                        to: (seat, turn),
+                        to: (seat, turn, opponent),
                         name: input.name,
                     });
                 }
@@ -2980,6 +3039,12 @@ fn round_graph(
         nodes
             .iter()
             .find(|node| node.seat == seat && node.turn == turn)
+            .map(|node| (node.x, node.y))
+    };
+    let at_run = |seat: usize, turn: usize, opponent: Option<usize>| {
+        nodes
+            .iter()
+            .find(|node| node.seat == seat && node.turn == turn && node.opponent == opponent)
             .map(|node| (node.x, node.y))
     };
     let edge = |from: (f64, f64), to: (f64, f64), name: &str, planned: bool| {
@@ -3037,7 +3102,7 @@ fn round_graph(
     for planned in &planned_edges {
         if let (Some(from), Some(to)) = (
             at(planned.from.0, planned.from.1),
-            at(planned.to.0, planned.to.1),
+            at_run(planned.to.0, planned.to.1, planned.to.2),
         ) {
             svg.push_str(&edge(from, to, &planned.name, true));
         }
@@ -3062,6 +3127,11 @@ fn round_graph(
         let (identity, detail) = match named {
             Some(name) => (name, pairing),
             None => (pairing, String::new()),
+        };
+        // A run facing one seat names it instead of the harness and model.
+        let detail = match node.opponent {
+            Some(opponent) => format!("against seat {}", opponent + 1),
+            None => detail,
         };
         let face = seat
             .map(|seat| graph_avatar(&seat.agent, node.x, node.y))
@@ -3639,10 +3709,8 @@ fn label_pairings(
     labels: &[String],
     pairings: &[ava_wire::Pairing],
     weights: ava_game::scoring::Weights,
-    spent: &[Option<ava_game::scoring::Spend>],
+    spent: &tournament::Spends,
 ) -> Vec<Labeled> {
-    let spend = |seat: usize| spent.get(seat).copied().flatten();
-
     pairings
         .iter()
         .filter_map(|pairing| {
@@ -3652,7 +3720,10 @@ fn label_pairings(
                 seconds: pairing.seconds,
                 tally: pairing.tally,
                 score: pairing.tally.score().map(|score| {
-                    match spend(pairing.first).zip(spend(pairing.second)) {
+                    match spent
+                        .of(pairing.first, pairing.second)
+                        .zip(spent.of(pairing.second, pairing.first))
+                    {
                         Some((first, second)) => weights.weighed_score(score, first, second),
                         None => score,
                     }
@@ -3680,7 +3751,7 @@ pub(crate) fn rounds_labeled(
                 labels,
                 &tournament::pairings(record, round)?,
                 ava_game::scoring::Weights::default(),
-                &[],
+                &tournament::Spends::default(),
             ),
         ));
     }

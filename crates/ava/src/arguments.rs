@@ -174,6 +174,7 @@ impl TournamentCli {
     const ANALYST_LONG: &str = "analyst";
     const ANALYST_SECONDS_LONG: &str = "analyst-seconds";
     const BACKFILL_LONG: &str = "backfill";
+    const PAIRING_LONG: &str = "pairing";
     /// The ways a round that broke off is resumed, each taking the round.
     const RESUME_LONG: [&str; 3] = [
         ava_run::tournament::Resume::CONTINUE,
@@ -222,6 +223,13 @@ impl TournamentCli {
             &format!(
                 "the seconds that analyst is given, {} by default, fixed when the tournament is created",
                 ava_run::docker::Analyst::DEFAULT_LIMIT_SECONDS
+            ),
+        );
+        arg_help_str(
+            &format!("--{} <pairing>", Self::PAIRING_LONG),
+            &format!(
+                "pair the seats {}, swiss by default for a game with a turn facing other seats, fixed when the tournament is created",
+                ava_run::tournament::PAIRINGS.join(" or ")
             ),
         );
         arg_help_str(
@@ -925,6 +933,18 @@ impl Parser {
                     bail(next, "a round is resumed one way");
                 }
                 command.resume = Some((round - 1, resume));
+            }
+            TournamentCli::PAIRING_LONG => {
+                let pairing = Self::long_value(args, next, "missing pairing");
+                let pairing = ava_run::tournament::checked_pairing(&pairing)
+                    .unwrap_or_else(|error| bail(next, &error.to_string()));
+                let Some(SubCommand::Tournament(ref mut command)) = self.command else {
+                    bail(
+                        next,
+                        &format!("only valid in the {} subcommand", TournamentCli::NAME),
+                    );
+                };
+                command.pairing = Some(pairing.to_string());
             }
             TournamentCli::BACKFILL_LONG => {
                 let Some(SubCommand::Tournament(ref mut command)) = self.command else {

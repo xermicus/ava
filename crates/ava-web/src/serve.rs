@@ -119,11 +119,12 @@ const START_FIELDS: [&str; 9] = [
 ];
 
 /// The tournament creation fields carried back to its form.
-const CREATE_FIELDS: [&str; 8] = [
+const CREATE_FIELDS: [&str; 9] = [
     "name",
     "game",
     "limit",
     "combats",
+    "pairing",
     "analyze",
     "analyst_agent",
     "analyst_thinking",
@@ -805,11 +806,14 @@ fn create_tournament(form: &[(String, String)]) -> Result<Done, Refusal> {
         None
     };
 
+    let pairing = Some(value(form, "pairing")).filter(|pairing| !pairing.is_empty());
+
     tournament::create(
         name,
         game,
         limit,
         combats,
+        pairing,
         analyst,
         analyst_seconds(form, ANALYST_PREFIX)?,
     )

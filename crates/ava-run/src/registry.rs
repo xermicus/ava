@@ -144,7 +144,7 @@ const CATALOG_OUTPUTS: [(&str, u32); 8] = [
     ("claude-fable-5", 64_000),
     ("claude-mythos-5", 64_000),
 ];
-const FALLBACK_TURN_OUTPUT: u32 = 32_000;
+const FALLBACK_TURN_OUTPUT: u32 = 128_000;
 
 /// The `max_output` of a route capped to what claude code sends for the model,
 /// matched by its registry name or the last segment of its route id.
@@ -1746,13 +1746,13 @@ mod tests {
             ),
             128_000
         );
-        assert_eq!(super::turn_output(&model("glm-5.3"), &unknown), 32_000);
+        assert_eq!(super::turn_output(&model("glm-5.3"), &unknown), 128_000);
         assert_eq!(
             super::turn_output(
                 &model("claude-haiku-4-5"),
                 &route("claude-haiku-4-5", 64_000)
             ),
-            32_000
+            64_000
         );
         assert_eq!(
             super::turn_output(&model("claude-sonnet-5"), &route("claude-sonnet-5", 16_000)),

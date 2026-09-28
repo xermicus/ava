@@ -3,9 +3,10 @@
 //! A round is every seat playing a run of every turn of the game, each turn
 //! seeded with the entries of the other seats the game asks for, then every
 //! pairing settled: fought in the scorer image where the game needs a fight,
-//! read from the records otherwise. The record under the tournament folder
-//! holds the facts, and the standings are derived from it wherever they are
-//! shown.
+//! read from the records otherwise. A swiss round pairs each seat once and
+//! plays a turn facing other seats once per pair and direction. The record
+//! under the tournament folder holds the facts, and the standings are
+//! derived from it wherever they are shown.
 
 use crate::docker;
 
@@ -68,6 +69,8 @@ pub struct Tournament {
     pub limit: Option<u64>,
     /// The combats every fight plays, taken when the tournament is created.
     pub combats: Option<u64>,
+    /// One of [`ava_wire::PAIRINGS`], taken at creation, else [`default_pairing`].
+    pub pairing: Option<String>,
     /// The agent analyzing every run, `agent[/thinking]`, taken when the
     /// tournament is created.
     pub analyst: Option<String>,
@@ -108,7 +111,10 @@ const LEGACY_ATTACK_TURN: usize = 1;
 /// tournament that has played rounds backfills.
 const ONLY_TURN: usize = 0;
 
-const LATE_JOIN_REFUSAL: &str = "not yet supported in multi turn games";
+const LATE_JOIN_REFUSAL: &str = "a multi turn round robin takes no seats after its first round";
+
+/// Any seat, to ask a turn whether it takes inputs from opponents.
+const PROBED_OPPONENT: usize = 1;
 
 /// The tournaments a round is being played in.
 static PLAYING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -244,6 +250,11 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
                 "{name} exists, its combats are fixed"
             )));
         }
+        if command.pairing.is_some() {
+            return Err(std::io::Error::other(format!(
+                "{name} exists, its pairing is fixed"
+            )));
+        }
         if command.analyst.is_some() || command.analyst_seconds.is_some() {
             return Err(std::io::Error::other(format!(
                 "{name} exists, its analyst is fixed"
@@ -266,6 +277,7 @@ pub fn run(command: &Tournament) -> std::io::Result<i32> {
                 .limit
                 .unwrap_or(docker::Agent::DEFAULT_LIMIT_SECONDS),
             command.combats.unwrap_or(DEFAULT_COMBATS),
+            command.pairing.as_deref(),
             analyst,
             command
                 .analyst_seconds
@@ -342,21 +354,49 @@ fn checked_name(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Create the named tournament of `game`, every run given `limit` seconds
-/// and every fight playing `combats` combats.
+/// Whether `turn` of `game` faces the entries of other seats.
+pub fn plays_against(game: &dyn ava_game::Game, turn: usize) -> bool {
+    !game.inputs(turn, &[PROBED_OPPONENT]).is_empty()
+}
+
+/// Swiss for a game with a turn facing other seats, round robin otherwise.
+pub fn default_pairing(game: &dyn ava_game::Game) -> &'static str {
+    if (0..game.turns().len()).any(|turn| plays_against(game, turn)) {
+        ava_wire::SWISS
+    } else {
+        ava_wire::ROUND_ROBIN
+    }
+}
+
+/// Every pairing scheme, for the command line.
+pub const PAIRINGS: [&str; 2] = ava_wire::PAIRINGS;
+
+/// `pairing` as a known scheme.
+pub fn checked_pairing(pairing: &str) -> std::io::Result<&'static str> {
+    ava_wire::PAIRINGS
+        .into_iter()
+        .find(|known| *known == pairing)
+        .ok_or_else(|| crate::registry::unknown(pairing, "pairing", ava_wire::PAIRINGS.into_iter()))
+}
+
+/// Create the named tournament of `game`, every run given `limit` seconds,
+/// every fight playing `combats` combats, paired by `pairing` or by default.
 pub fn create(
     name: &str,
     game: &str,
     limit: u64,
     combats: u64,
+    pairing: Option<&str>,
     analyst: Option<ava_wire::Setup>,
     analyst_seconds: u64,
 ) -> std::io::Result<ava_wire::Tournament> {
     checked_name(name)?;
 
-    ava_game::find(game).ok_or_else(|| {
-        crate::registry::unknown(game, "game", ava_game::GAMES.iter().map(|game| game.name()))
-    })?;
+    let found = find(game)?;
+    let pairing = match pairing {
+        Some(pairing) => checked_pairing(pairing)?,
+        None => default_pairing(found),
+    };
     docker::Agent::checked_limit(limit)?;
     checked_combats(combats)?;
     docker::Analyst::checked_limit(analyst_seconds)?;
@@ -373,7 +413,7 @@ pub fn create(
         name: name.to_string(),
         game: game.to_string(),
         game_version: docker::game_version(game),
-        pairing: ava_wire::ROUND_ROBIN.to_string(),
+        pairing: pairing.to_string(),
         limit_seconds: limit,
         combats,
         analyst,
@@ -388,6 +428,12 @@ pub fn create(
     Ok(record)
 }
 
+/// Whether a seat can join `record` now. A round robin of several turns takes
+/// none after its first round, since later turns face every seat at once.
+pub fn joins_late(record: &ava_wire::Tournament) -> std::io::Result<bool> {
+    Ok(!record.played() || record.swiss() || find(&record.game)?.turns().len() == 1)
+}
+
 /// Seat `setup` in the named tournament, checking that it can play. A seat
 /// joining after a round was played backfills the rounds it missed.
 pub fn add_seat(name: &str, setup: &ava_wire::Setup) -> std::io::Result<()> {
@@ -397,7 +443,7 @@ pub fn add_seat(name: &str, setup: &ava_wire::Setup) -> std::io::Result<()> {
         if playing(name) {
             return Err(std::io::Error::other(format!("{name} is playing a round")));
         }
-        if record.played() && find(&record.game)?.turns().len() > 1 {
+        if !joins_late(record)? {
             return Err(std::io::Error::other(format!(
                 "{name}: {LATE_JOIN_REFUSAL}"
             )));
@@ -413,7 +459,7 @@ pub fn add_seat(name: &str, setup: &ava_wire::Setup) -> std::io::Result<()> {
 /// recorded cannot leave without rewriting what the round says.
 pub fn seat_is_held(record: &ava_wire::Tournament, seat: usize) -> bool {
     record.rounds.iter().any(|round| {
-        round.entries.iter().any(|entry| entry.seat == seat)
+        seats_of(round).contains(&seat)
             || round
                 .pairings
                 .iter()
@@ -453,19 +499,28 @@ fn unseat(record: &mut ava_wire::Tournament, seat: usize) -> std::io::Result<()>
     record.seats.remove(seat);
     // A round names its seats by number, so every seat behind the one that
     // left moves up one wherever a round holds it.
+    let moved = |held: &mut usize| {
+        if *held > seat {
+            *held -= 1;
+        }
+    };
     for round in &mut record.rounds {
         for entry in &mut round.entries {
-            if entry.seat > seat {
-                entry.seat -= 1;
+            moved(&mut entry.seat);
+            if let Some(opponent) = &mut entry.opponent {
+                moved(opponent);
             }
         }
+        for pair in &mut round.pairs {
+            moved(&mut pair.first);
+            moved(&mut pair.second);
+        }
+        if let Some(bye) = &mut round.bye {
+            moved(bye);
+        }
         for pairing in &mut round.pairings {
-            if pairing.first > seat {
-                pairing.first -= 1;
-            }
-            if pairing.second > seat {
-                pairing.second -= 1;
-            }
+            moved(&mut pairing.first);
+            moved(&mut pairing.second);
         }
     }
 
@@ -543,10 +598,13 @@ pub fn placements() -> std::io::Result<std::collections::HashMap<String, Placeme
     Ok(placements)
 }
 
-/// The seats that played `round`, which is the lobby as it stood then: a
-/// seat that joined later has no entry in it until it is backfilled.
+/// The seats that played `round`, the lobby as it stood then, the bye included.
 pub fn seats_of(round: &ava_wire::Round) -> Vec<usize> {
     let mut seats: Vec<usize> = round.entries.iter().map(|entry| entry.seat).collect();
+    for pair in &round.pairs {
+        seats.extend([pair.first, pair.second]);
+    }
+    seats.extend(round.bye);
     seats.sort_unstable();
     seats.dedup();
 
@@ -567,8 +625,17 @@ pub fn unplayed_rounds(record: &ava_wire::Tournament) -> Vec<usize> {
         .collect()
 }
 
-/// Every pair of the seats that played `round`, the lower seat first.
-fn round_pairs(round: &ava_wire::Round) -> Vec<(usize, usize)> {
+/// The pairs `round` settles, the lower seat first: its swiss pairs, or every
+/// pair of the seats that played it.
+pub fn round_pairs(round: &ava_wire::Round) -> Vec<(usize, usize)> {
+    if round.paired() {
+        return round
+            .pairs
+            .iter()
+            .map(|pair| crate::swiss::ordered(pair.first, pair.second))
+            .collect();
+    }
+
     let seats = seats_of(round);
     let mut pairs = Vec::new();
     for (index, &first) in seats.iter().enumerate() {
@@ -580,6 +647,127 @@ fn round_pairs(round: &ava_wire::Round) -> Vec<(usize, usize)> {
     pairs
 }
 
+/// A run a turn asks for: the seat, and the seat it faces alone if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slot {
+    pub seat: usize,
+    pub opponent: Option<usize>,
+}
+
+/// The runs `turn` of `round` asks for: one per seat of the lobby in a round
+/// robin, what the pairs ask for in a swiss round.
+pub fn slots(
+    game: &dyn ava_game::Game,
+    round: &ava_wire::Round,
+    seats: usize,
+    turn: usize,
+) -> Vec<Slot> {
+    if !round.paired() {
+        return (0..seats)
+            .map(|seat| Slot {
+                seat,
+                opponent: None,
+            })
+            .collect();
+    }
+
+    pair_slots(game, &round.pairs, turn)
+}
+
+/// The runs `turn` asks for from `pairs`: one per pair and direction for a
+/// turn facing other seats, one per seat otherwise.
+pub fn pair_slots(game: &dyn ava_game::Game, pairs: &[ava_wire::Pair], turn: usize) -> Vec<Slot> {
+    if plays_against(game, turn) {
+        return pairs
+            .iter()
+            .flat_map(|pair| {
+                [
+                    Slot {
+                        seat: pair.first,
+                        opponent: Some(pair.second),
+                    },
+                    Slot {
+                        seat: pair.second,
+                        opponent: Some(pair.first),
+                    },
+                ]
+            })
+            .collect();
+    }
+
+    let mut seats: Vec<usize> = pairs
+        .iter()
+        .flat_map(|pair| [pair.first, pair.second])
+        .collect();
+    seats.sort_unstable();
+    seats.dedup();
+
+    seats
+        .into_iter()
+        .map(|seat| Slot {
+            seat,
+            opponent: None,
+        })
+        .collect()
+}
+
+/// The entry `round` holds for `slot` of `turn`.
+pub fn entry_of(round: &ava_wire::Round, slot: Slot, turn: usize) -> Option<&ava_wire::Entry> {
+    round.entries.iter().find(|entry| {
+        entry.seat == slot.seat && entry.turn == turn && entry.opponent == slot.opponent
+    })
+}
+
+/// The entry playing `slot` of `turn`: the one it names, or the round robin
+/// run of its seat, which covers an opponent that played the turn that way
+/// too and none that joined later.
+pub fn entry_for(round: &ava_wire::Round, slot: Slot, turn: usize) -> Option<&ava_wire::Entry> {
+    let Some(opponent) = slot.opponent else {
+        return entry_of(round, slot, turn);
+    };
+    let at_once = |seat: usize| {
+        entry_of(
+            round,
+            Slot {
+                seat,
+                opponent: None,
+            },
+            turn,
+        )
+    };
+
+    entry_of(round, slot, turn).or_else(|| at_once(opponent).and_then(|_| at_once(slot.seat)))
+}
+
+/// The entry `seat` played `turn` of `round` with against `opponent`.
+fn entry_against<'a>(
+    game: &dyn ava_game::Game,
+    round: &'a ava_wire::Round,
+    seat: usize,
+    turn: usize,
+    opponent: usize,
+) -> Option<&'a ava_wire::Entry> {
+    if round.paired() && plays_against(game, turn) {
+        return entry_for(
+            round,
+            Slot {
+                seat,
+                opponent: Some(opponent),
+            },
+            turn,
+        );
+    }
+
+    entry_of(
+        round,
+        Slot {
+            seat,
+            opponent: None,
+        },
+        turn,
+    )
+}
+
 /// The pairings of `round` as the standings see them: the ones recorded,
 /// the fights and the attacks of records from before the turns, and for every
 /// other pair of seats what the game reads out of the records, derived when
@@ -589,7 +777,7 @@ pub fn pairings(
     round: &ava_wire::Round,
 ) -> std::io::Result<Vec<ava_wire::Pairing>> {
     let game = find(&record.game)?;
-    let played = played_round(game, round, record.seats.len())?;
+    let mut played = PlayedRound::new(game, round);
     let seconds = round.finished_seconds.unwrap_or(round.started_seconds);
 
     let mut pairings = Vec::new();
@@ -608,7 +796,9 @@ pub fn pairings(
             continue;
         }
 
-        if let Some(outcome) = game.outcome((first, &played[first]), (second, &played[second])) {
+        let first_played = played.against(first, second)?;
+        let second_played = played.against(second, first)?;
+        if let Some(outcome) = game.outcome((first, &first_played), (second, &second_played)) {
             pairings.push(ava_wire::Pairing {
                 first,
                 second,
@@ -623,68 +813,104 @@ pub fn pairings(
     Ok(pairings)
 }
 
-/// What the run of every seat spent on the last turn of `round`, by seat,
-/// which is what the weights of a rating weigh. A seat that banked no entry
-/// spent nothing that counts and is not weighed at all, since it forfeits
-/// the pairing and its opponent is not the dearer side of a fight that never
-/// happened.
+/// What the runs of the last turn of a round spent, by seat and opponent,
+/// which is what the weights of a rating weigh.
+#[derive(Default)]
+pub struct Spends(Vec<(usize, Option<usize>, ava_game::scoring::Spend)>);
+
+impl Spends {
+    /// What `seat` spent on its pairing with `opponent`, nothing when it banked
+    /// no entry: it forfeits, so the pairing is not weighed.
+    pub fn of(&self, seat: usize, opponent: usize) -> Option<ava_game::scoring::Spend> {
+        let spent = |faced: Option<usize>| {
+            self.0
+                .iter()
+                .find(|(spender, against, _)| *spender == seat && *against == faced)
+                .map(|(_, _, spend)| *spend)
+        };
+
+        spent(Some(opponent)).or_else(|| spent(None))
+    }
+}
+
+/// What the runs of the last turn of `round` spent.
 pub fn spends(
     record: &ava_wire::Tournament,
     round: &ava_wire::Round,
     registry: &crate::registry::Registry,
-) -> std::io::Result<Vec<Option<ava_game::scoring::Spend>>> {
+) -> std::io::Result<Spends> {
     let last = find(&record.game)?.turns().len() - 1;
-    let mut spends = Vec::new();
+    let mut spent = Vec::new();
 
-    for seat in 0..record.seats.len() {
-        let entry = round
-            .entries
-            .iter()
-            .find(|entry| entry.seat == seat && entry.turn == last);
-        let Some((entry, banked)) = entry.and_then(|entry| Some((entry, entry.attempt?))) else {
-            spends.push(None);
+    for entry in round.entries.iter().filter(|entry| entry.turn == last) {
+        let Some(banked) = entry.attempt else {
             continue;
         };
         let run = crate::runs::read(&std::path::Path::new(docker::RUN_DIRECTORY).join(&entry.run))?;
-        spends.push(Some(ava_game::scoring::Spend {
-            cost: run
-                .metrics
-                .as_ref()
-                .and_then(|metrics| registry.cost(&run.setup(), metrics))
-                .unwrap_or_default(),
-            seconds: banked,
-            limit: run.limit_seconds,
-        }));
+        spent.push((
+            entry.seat,
+            entry.opponent,
+            ava_game::scoring::Spend {
+                cost: run
+                    .metrics
+                    .as_ref()
+                    .and_then(|metrics| registry.cost(&run.setup(), metrics))
+                    .unwrap_or_default(),
+                seconds: banked,
+                limit: run.limit_seconds,
+            },
+        ));
     }
 
-    Ok(spends)
+    Ok(Spends(spent))
 }
 
-/// The turns of `round` as every seat played them, by seat.
-fn played_round(
-    game: &dyn ava_game::Game,
-    round: &ava_wire::Round,
-    seats: usize,
-) -> std::io::Result<Vec<Vec<ava_game::Played>>> {
-    (0..seats)
-        .map(|seat| played_turns(game, round, seat))
-        .collect()
+/// The turns of a round as its seats played them, each set of runs read once.
+struct PlayedRound<'a> {
+    game: &'a dyn ava_game::Game,
+    round: &'a ava_wire::Round,
+    read: std::collections::HashMap<Vec<Option<&'a str>>, Vec<ava_game::Played>>,
 }
 
-/// The turns of `round` as `seat` played them: per turn the entry of record it
-/// kept and the verdicts of its pushes, or nothing for a turn it did not play.
+impl<'a> PlayedRound<'a> {
+    fn new(game: &'a dyn ava_game::Game, round: &'a ava_wire::Round) -> Self {
+        Self {
+            game,
+            round,
+            read: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The turns `seat` played in its pairing with `opponent`.
+    fn against(&mut self, seat: usize, opponent: usize) -> std::io::Result<Vec<ava_game::Played>> {
+        let (game, round) = (self.game, self.round);
+        let picked: Vec<Option<&'a str>> = (0..game.turns().len())
+            .map(|turn| {
+                entry_against(game, round, seat, turn, opponent).map(|entry| entry.run.as_str())
+            })
+            .collect();
+        if let Some(played) = self.read.get(&picked) {
+            return Ok(played.clone());
+        }
+
+        let played = played_turns(game, round, seat, opponent)?;
+        self.read.insert(picked, played.clone());
+
+        Ok(played)
+    }
+}
+
+/// The turns of `round` as `seat` played them against `opponent`: per turn
+/// its entry of record and verdicts, or nothing.
 fn played_turns(
     game: &dyn ava_game::Game,
     round: &ava_wire::Round,
     seat: usize,
+    opponent: usize,
 ) -> std::io::Result<Vec<ava_game::Played>> {
     let mut played = Vec::new();
     for (turn, task) in game.turns().iter().enumerate() {
-        let Some(entry) = round
-            .entries
-            .iter()
-            .find(|entry| entry.seat == seat && entry.turn == turn)
-        else {
+        let Some(entry) = entry_against(game, round, seat, turn, opponent) else {
             played.push(ava_game::Played::default());
             continue;
         };
@@ -826,10 +1052,24 @@ pub fn play_round(
     let index = record.rounds.len();
     let parallel = parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
 
+    let paired = if record.swiss() {
+        let lobby: Vec<usize> = (0..seats).collect();
+        crate::swiss::pair(
+            &standings_before(&record, index, &lobby)?,
+            &met_pairs(&record),
+        )
+    } else {
+        crate::swiss::Paired {
+            pairs: Vec::new(),
+            bye: None,
+        }
+    };
     modify(name, |record| {
         record.rounds.push(ava_wire::Round {
             started_seconds: crate::usage::epoch_now(),
             finished_seconds: None,
+            pairs: paired.pairs.clone(),
+            bye: paired.bye,
             entries: Vec::new(),
             pairings: Vec::new(),
         });
@@ -837,15 +1077,84 @@ pub fn play_round(
     })?;
     playing.plays_rounds(&[index])?;
     log::info!(
-        "{name}: round {} starts, {seats} seats play {} over {} turns, {parallel} runs at once",
+        "{name}: round {} starts, {seats} seats play {} over {} turns, {parallel} runs at once{}",
         index + 1,
         record.game,
-        game.turns().len()
+        game.turns().len(),
+        if record.swiss() {
+            format!(", paired {}", described(&paired))
+        } else {
+            String::new()
+        }
     );
 
     // A round just pushed is missing the run of every seat, so continuing it
     // plays them all.
     play_through(name, index, Resume::Continue, force_build_images, parallel)
+}
+
+/// The pairs and the bye for the log, seats counted from one.
+fn described(paired: &crate::swiss::Paired) -> String {
+    let mut parts: Vec<String> = paired
+        .pairs
+        .iter()
+        .map(|pair| format!("{} against {}", pair.first + 1, pair.second + 1))
+        .collect();
+    if let Some(bye) = paired.bye {
+        parts.push(format!("{} sits out", bye + 1));
+    }
+
+    parts.join(", ")
+}
+
+/// The standings `seats` pair by in the round at `index`, from the finished
+/// rounds before it.
+fn standings_before(
+    record: &ava_wire::Tournament,
+    index: usize,
+    seats: &[usize],
+) -> std::io::Result<Vec<crate::swiss::Standing>> {
+    let before = &record.rounds[..index.min(record.rounds.len())];
+    let mut won = vec![0.0; record.seats.len()];
+    let mut counted = vec![0usize; record.seats.len()];
+    for round in before
+        .iter()
+        .filter(|round| round.finished_seconds.is_some())
+    {
+        for pairing in pairings(record, round)? {
+            let Some(score) = pairing.tally.score() else {
+                continue;
+            };
+            for (seat, share) in [(pairing.first, score), (pairing.second, 1.0 - score)] {
+                if let (Some(sum), Some(count)) = (won.get_mut(seat), counted.get_mut(seat)) {
+                    *sum += share;
+                    *count += 1;
+                }
+            }
+        }
+    }
+
+    let random = std::collections::hash_map::RandomState::new();
+    Ok(seats
+        .iter()
+        .map(|&seat| crate::swiss::Standing {
+            seat,
+            score: counted
+                .get(seat)
+                .filter(|count| **count > 0)
+                .map(|count| won[seat] / *count as f64),
+            byes: before
+                .iter()
+                .filter(|round| round.bye == Some(seat))
+                .count(),
+            tiebreak: std::hash::BuildHasher::hash_one(&random, seat),
+        })
+        .collect())
+}
+
+/// Every pair that met in a round of `record`.
+fn met_pairs(record: &ava_wire::Tournament) -> std::collections::HashSet<(usize, usize)> {
+    record.rounds.iter().flat_map(round_pairs).collect()
 }
 
 /// Resume the round at `index` of the named tournament, the way `resume` says,
@@ -927,90 +1236,33 @@ fn play_through(
         parallel,
     );
 
-    for (turn, task) in game.turns().iter().enumerate() {
+    for turn in 0..game.turns().len() {
         if resume == Resume::Settle || crate::interrupt::interrupted() {
             break;
         }
 
-        // Every run is resolved before the turn is written, so the record only
-        // ever names runs that are about to start.
-        let played = load(name)?;
-        let played = played
+        let current = load(name)?;
+        let round = current
             .rounds
             .get(index)
             .ok_or_else(|| missing_round(name, index))?;
-        let seats_playing = seats_to_play(seats, played, turn);
-        if seats_playing.is_empty() {
-            log::info!(
-                "{name}: round {number}, turn {} of {}: every seat played it",
-                turn + 1,
-                game.turns().len()
-            );
-            continue;
-        }
-        let mut launches = Vec::new();
-        for &seat in &seats_playing {
-            let opponents: Vec<usize> = (0..seats).filter(|other| *other != seat).collect();
-            let inputs = resolve_inputs(name, game, played, &game.inputs(turn, &opponents));
-            launches.push(launch(
-                &record,
-                &record.seats[seat],
-                turn,
-                inputs,
-                force_build_images,
-                parallel,
-            )?);
-        }
-        let runs: Vec<String> = seats_playing
-            .iter()
-            .map(|seat| docker::run_name(&record.seats[*seat].agent.harness))
+        let work: Vec<(usize, Slot)> = slots_to_play(game, round, seats, turn)
+            .into_iter()
+            .map(|slot| (index, slot))
             .collect();
-
-        // A seat playing a turn again drops the entry of the run that never
-        // finished, so the round names one run per seat and turn.
-        modify(name, |record| {
-            let round = record
-                .rounds
-                .get_mut(index)
-                .ok_or_else(|| missing_round(name, index))?;
-            for (seat, run) in seats_playing.iter().zip(&runs) {
-                round
-                    .entries
-                    .retain(|entry| entry.seat != *seat || entry.turn != turn);
-                round.entries.push(ava_wire::Entry {
-                    seat: *seat,
-                    turn,
-                    run: run.clone(),
-                    attempt: None,
-                });
-            }
-            Ok(())
-        })?;
-        log::info!(
-            "{name}: round {number}, turn {} of {}: {} seats play {}",
-            turn + 1,
-            game.turns().len(),
-            seats_playing.len(),
-            task.task
-        );
-
-        let outcomes = bounded(runs.len(), parallel, |index| {
-            let outcome = docker::play(&launches[index], &runs[index]);
-            analyses.start(&runs[index]);
-            outcome
-        });
-        for (run, outcome) in runs.iter().zip(outcomes) {
-            match outcome {
-                Ok(finished) if code == 0 => code = finished,
-                Ok(_) => {}
-                Err(error) => {
-                    log::error!("{name}: the run {run} failed: {error}");
-                    code = 1;
-                }
-            }
+        let played = play_turn(
+            name,
+            &record,
+            game,
+            turn,
+            &work,
+            &analyses,
+            force_build_images,
+            parallel,
+        )?;
+        if code == 0 {
+            code = played;
         }
-
-        bank_entries(name, game, index)?;
     }
 
     if !crate::interrupt::interrupted() {
@@ -1039,20 +1291,136 @@ fn play_through(
     Ok(code)
 }
 
-/// The seats needing a run for `turn` of `round`: the ones with no entry and
-/// the ones whose run never finished, which is what a round that broke off in
-/// the middle of a turn left behind.
-fn seats_to_play(seats: usize, round: &ava_wire::Round, turn: usize) -> Vec<usize> {
-    (0..seats)
-        .filter(|seat| {
-            match round
-                .entries
-                .iter()
-                .find(|entry| entry.seat == *seat && entry.turn == turn)
-            {
-                Some(entry) => !finished_run(&entry.run),
-                None => true,
+/// Play `work`, rounds and slots of `turn`, at once under the cap. A run
+/// whose opponents kept no entry is not started: it wins by forfeit anyway.
+#[allow(clippy::too_many_arguments)]
+fn play_turn(
+    name: &str,
+    record: &ava_wire::Tournament,
+    game: &dyn ava_game::Game,
+    turn: usize,
+    work: &[(usize, Slot)],
+    analyses: &Analyses,
+    force_build_images: bool,
+    parallel: usize,
+) -> std::io::Result<i32> {
+    let current = load(name)?;
+    let seats = record.seats.len();
+    let mut launches = Vec::new();
+    let mut named: Vec<(usize, Slot, String)> = Vec::new();
+    for &(index, slot) in work {
+        let round = current
+            .rounds
+            .get(index)
+            .ok_or_else(|| missing_round(name, index))?;
+        let opponents: Vec<usize> = match slot.opponent {
+            Some(opponent) => vec![opponent],
+            None => (0..seats).filter(|other| *other != slot.seat).collect(),
+        };
+        let asked = game.inputs(turn, &opponents);
+        let inputs = resolve_inputs(name, game, round, slot.seat, &asked);
+        if !asked.is_empty() && inputs.is_empty() {
+            log::info!(
+                "{name}: round {}, turn {}: seat {} is not started, the seats it faces kept no entry",
+                index + 1,
+                turn + 1,
+                slot.seat + 1
+            );
+            continue;
+        }
+        launches.push(launch(
+            record,
+            &record.seats[slot.seat],
+            turn,
+            inputs,
+            force_build_images,
+            parallel,
+        )?);
+        named.push((
+            index,
+            slot,
+            docker::run_name(&record.seats[slot.seat].agent.harness),
+        ));
+    }
+    if named.is_empty() {
+        log::info!(
+            "{name}: turn {} of {}: no run to play",
+            turn + 1,
+            game.turns().len()
+        );
+        return Ok(0);
+    }
+
+    // A slot played again drops the entry of its unfinished run.
+    modify(name, |record| {
+        for (index, slot, run) in &named {
+            let round = record
+                .rounds
+                .get_mut(*index)
+                .ok_or_else(|| missing_round(name, *index))?;
+            round.entries.retain(|entry| {
+                entry.seat != slot.seat || entry.turn != turn || entry.opponent != slot.opponent
+            });
+            round.entries.push(ava_wire::Entry {
+                seat: slot.seat,
+                turn,
+                run: run.clone(),
+                attempt: None,
+                opponent: slot.opponent,
+            });
+        }
+        Ok(())
+    })?;
+    let mut rounds: Vec<usize> = named.iter().map(|(index, _, _)| *index).collect();
+    rounds.sort_unstable();
+    rounds.dedup();
+    let numbers: Vec<String> = rounds.iter().map(|index| (index + 1).to_string()).collect();
+    log::info!(
+        "{name}: turn {} of {}: {} runs play {} in round {}",
+        turn + 1,
+        game.turns().len(),
+        named.len(),
+        game.turns()[turn].task,
+        numbers.join(", ")
+    );
+
+    let mut code = 0;
+    let outcomes = bounded(named.len(), parallel, |at| {
+        let run = &named[at].2;
+        let outcome = docker::play(&launches[at], run);
+        analyses.start(run);
+        outcome
+    });
+    for ((_, _, run), outcome) in named.iter().zip(outcomes) {
+        match outcome {
+            Ok(finished) if code == 0 => code = finished,
+            Ok(_) => {}
+            Err(error) => {
+                log::error!("{name}: the run {run} failed: {error}");
+                code = 1;
             }
+        }
+    }
+
+    for index in rounds {
+        bank_entries(name, game, index)?;
+    }
+
+    Ok(code)
+}
+
+/// The runs `turn` of `round` still needs: slots with no finished run.
+fn slots_to_play(
+    game: &dyn ava_game::Game,
+    round: &ava_wire::Round,
+    seats: usize,
+    turn: usize,
+) -> Vec<Slot> {
+    slots(game, round, seats, turn)
+        .into_iter()
+        .filter(|slot| match entry_for(round, *slot, turn) {
+            Some(entry) => !finished_run(&entry.run),
+            None => true,
         })
         .collect()
 }
@@ -1119,12 +1487,15 @@ pub fn backfill(
     let playing = Playing::begin(name)?;
     let record = load(name)?;
     let game = find(&record.game)?;
+    let parallel = parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
+    if record.swiss() {
+        return backfill_by_standing(name, &playing, force_build_images, parallel);
+    }
     if game.turns().len() > 1 {
         return Err(std::io::Error::other(format!(
             "{name}: {LATE_JOIN_REFUSAL}"
         )));
     }
-    let parallel = parallel.unwrap_or(DEFAULT_PARALLEL).max(1);
 
     let rounds = unplayed_rounds(&record);
     if rounds.is_empty() {
@@ -1195,6 +1566,7 @@ pub fn backfill(
                 turn: ONLY_TURN,
                 run: run.clone(),
                 attempt: None,
+                opponent: None,
             });
             round.finished_seconds = None;
         }
@@ -1261,6 +1633,191 @@ pub fn backfill(
     Ok(code)
 }
 
+/// Backfill a swiss tournament: pair every round a seat missed up front, then
+/// play the runs the new pairs need, turn by turn across all the rounds.
+///
+/// Nothing played before plays again, and the rounds keep their finish time,
+/// so the ratings walk the matches in the same order.
+fn backfill_by_standing(
+    name: &str,
+    playing: &Playing,
+    force_build_images: bool,
+    parallel: usize,
+) -> std::io::Result<i32> {
+    let record = load(name)?;
+    let game = find(&record.game)?;
+    let rounds = unplayed_rounds(&record);
+    if rounds.is_empty() {
+        log::info!("{name}: every seat played every finished round");
+        return Ok(0);
+    }
+    playing.plays_rounds(&rounds)?;
+
+    let plans = plan_late(&record, &rounds)?;
+    for (index, paired) in &plans {
+        log::info!(
+            "{name}: round {} pairs the seats that joined late, {}",
+            index + 1,
+            described(paired)
+        );
+    }
+    let finished: Vec<(usize, Option<u64>)> = rounds
+        .iter()
+        .map(|index| (*index, record.rounds[*index].finished_seconds))
+        .collect();
+    modify(name, |record| {
+        for (index, paired) in &plans {
+            let round = record
+                .rounds
+                .get_mut(*index)
+                .ok_or_else(|| missing_round(name, *index))?;
+            if !round.paired() {
+                round.pairs = round_pairs(round)
+                    .into_iter()
+                    .map(|(first, second)| ava_wire::Pair { first, second })
+                    .collect();
+            }
+            round.pairs.extend(paired.pairs.iter().copied());
+            round.bye = paired.bye;
+            round.finished_seconds = None;
+        }
+        Ok(())
+    })?;
+    log::info!(
+        "{name}: backfilling {} rounds, {parallel} runs at once",
+        rounds.len()
+    );
+
+    let analyses = Analyses::new(
+        name,
+        record.analyst.clone(),
+        record.analyst_seconds,
+        parallel,
+    );
+    let mut code = 0;
+    for turn in 0..game.turns().len() {
+        if crate::interrupt::interrupted() {
+            break;
+        }
+        let current = load(name)?;
+        let mut work = Vec::new();
+        for (index, paired) in &plans {
+            let round = current
+                .rounds
+                .get(*index)
+                .ok_or_else(|| missing_round(name, *index))?;
+            work.extend(
+                pair_slots(game, &paired.pairs, turn)
+                    .into_iter()
+                    .filter(|slot| entry_of(round, *slot, turn).is_none())
+                    .map(|slot| (*index, slot)),
+            );
+        }
+        let played = play_turn(
+            name,
+            &record,
+            game,
+            turn,
+            &work,
+            &analyses,
+            force_build_images,
+            parallel,
+        )?;
+        if code == 0 {
+            code = played;
+        }
+    }
+
+    if !crate::interrupt::interrupted() {
+        for (index, _) in &plans {
+            settle(name, &record, *index, game, &mut code)?;
+        }
+    }
+    // Unfinished rounds keep the seats it did not play from forfeiting.
+    if crate::interrupt::interrupted() {
+        log::warn!("{name}: the backfill was interrupted and its rounds stay unfinished");
+        analyses.finish();
+        return Ok(code.max(1));
+    }
+
+    modify(name, |record| {
+        for (index, seconds) in &finished {
+            record
+                .rounds
+                .get_mut(*index)
+                .ok_or_else(|| missing_round(name, *index))?
+                .finished_seconds = *seconds;
+        }
+        Ok(())
+    })?;
+    log::info!("{name}: the backfill is over");
+    analyses.finish();
+
+    Ok(code)
+}
+
+/// The pairs a backfill adds to `rounds`, each counting as met in the next.
+fn plan_late(
+    record: &ava_wire::Tournament,
+    rounds: &[usize],
+) -> std::io::Result<Vec<(usize, crate::swiss::Paired)>> {
+    let mut planned = std::collections::HashSet::new();
+    let mut plans = Vec::new();
+    for &index in rounds {
+        let paired = late_pairs(record, index, &planned)?;
+        planned.extend(
+            paired
+                .pairs
+                .iter()
+                .map(|pair| crate::swiss::ordered(pair.first, pair.second)),
+        );
+        plans.push((index, paired));
+    }
+
+    Ok(plans)
+}
+
+/// The pairs a backfill adds to the round at `index`, and its bye after: the
+/// missing seats and the bye pair up, one left over meets the closest score
+/// that played. `planned` counts as met.
+fn late_pairs(
+    record: &ava_wire::Tournament,
+    index: usize,
+    planned: &std::collections::HashSet<(usize, usize)>,
+) -> std::io::Result<crate::swiss::Paired> {
+    let round = record
+        .rounds
+        .get(index)
+        .ok_or_else(|| missing_round(&record.name, index))?;
+    let present = seats_of(round);
+    let mut pool: Vec<usize> = (0..record.seats.len())
+        .filter(|seat| !present.contains(seat))
+        .collect();
+    pool.extend(round.bye);
+    let lobby: Vec<usize> = (0..record.seats.len()).collect();
+    let standings = standings_before(record, index, &lobby)?;
+    let (pooled, played): (Vec<crate::swiss::Standing>, Vec<crate::swiss::Standing>) = standings
+        .into_iter()
+        .filter(|standing| present.contains(&standing.seat) || pool.contains(&standing.seat))
+        .partition(|standing| pool.contains(&standing.seat));
+
+    let mut met = met_pairs(record);
+    met.extend(planned.iter().copied());
+    let mut paired = crate::swiss::pair(&pooled, &met);
+    if let Some(left) = paired.bye {
+        let standing = pooled
+            .iter()
+            .find(|standing| standing.seat == left)
+            .expect("the seat left over is one of the pool");
+        if let Some(opponent) = crate::swiss::closest(standing, &played, &met) {
+            paired.pairs.push(crate::swiss::pair_of(left, opponent));
+            paired.bye = None;
+        }
+    }
+
+    Ok(paired)
+}
+
 /// The entry of record `run` kept of `turn`, logging a run whose entries
 /// cannot be read.
 fn banked(
@@ -1310,22 +1867,20 @@ fn launch(
     Ok(launch)
 }
 
-/// The files behind the `inputs` a turn asks for: the entries of record the
-/// earlier turns of `round` kept. An input whose seat kept nothing is left
-/// out, and the verifier of the turn says what that means.
+/// The files behind the `inputs` of the turn `seat` plays: the entries
+/// of record the earlier turns of `round` kept. An input whose seat kept
+/// nothing is left out, and the verifier of the turn says what that means.
 fn resolve_inputs(
     name: &str,
     game: &dyn ava_game::Game,
     round: &ava_wire::Round,
+    seat: usize,
     inputs: &[ava_game::Input],
 ) -> Vec<docker::InputFile> {
     inputs
         .iter()
         .filter_map(|input| {
-            let entry = round
-                .entries
-                .iter()
-                .find(|entry| entry.seat == input.seat && entry.turn == input.turn)?;
+            let entry = entry_against(game, round, input.seat, input.turn, seat)?;
             let attempt = entry.attempt?;
             let path = std::path::Path::new(docker::RUN_DIRECTORY)
                 .join(&entry.run)
@@ -1370,7 +1925,7 @@ fn settle(
         .rounds
         .get(index)
         .ok_or_else(|| missing_round(name, index))?;
-    let played = played_round(game, round, record.seats.len())?;
+    let mut played = PlayedRound::new(game, round);
     let number = index + 1;
     let console = directory(name).join(format!("{ROUND_LOG_PREFIX}{number}{ROUND_LOG_SUFFIX}"));
 
@@ -1381,8 +1936,10 @@ fn settle(
         }) {
             continue;
         }
+        let first_played = played.against(first, second)?;
+        let second_played = played.against(second, first)?;
         if game
-            .outcome((first, &played[first]), (second, &played[second]))
+            .outcome((first, &first_played), (second, &second_played))
             .is_some()
         {
             continue;
@@ -1393,8 +1950,8 @@ fn settle(
             return Ok(());
         }
 
-        let entry = |seat: usize| played[seat].last().and_then(|turn| turn.entry.as_ref());
-        let (tally, reason) = match (entry(first), entry(second)) {
+        let entry = |played: &[ava_game::Played]| played.last().and_then(|turn| turn.entry.clone());
+        let (tally, reason) = match (entry(&first_played), entry(&second_played)) {
             (Some(kept_first), Some(kept_second)) => {
                 log::info!("{name}: seat {} fights seat {}", first + 1, second + 1);
                 match docker::fight(
@@ -1596,6 +2153,8 @@ mod tests {
         ava_wire::Round {
             started_seconds: 0,
             finished_seconds: Some(1),
+            pairs: Vec::new(),
+            bye: None,
             entries: entries
                 .iter()
                 .map(|(seat, turn)| ava_wire::Entry {
@@ -1603,6 +2162,7 @@ mod tests {
                     turn: *turn,
                     run: format!("run-{seat}-{turn}"),
                     attempt: None,
+                    opponent: None,
                 })
                 .collect(),
             pairings: Vec::new(),
@@ -1728,12 +2288,217 @@ mod tests {
         assert_eq!(played.seats.len(), 3);
     }
 
+    /// Each slot as seat and opponent.
+    fn slotted(slots: &[super::Slot]) -> Vec<(usize, Option<usize>)> {
+        slots
+            .iter()
+            .map(|slot| (slot.seat, slot.opponent))
+            .collect()
+    }
+
+    fn game(name: &str) -> &'static dyn ava_game::Game {
+        ava_game::find(name).unwrap()
+    }
+
     #[test]
     fn a_seat_plays_a_turn_it_has_no_finished_run_of() {
         // The runs the helper names are not on disk, so none of them finished.
         let played = round(&[(0, 0), (1, 0)]);
+        let sanity = game("sanity-check");
 
-        assert_eq!(super::seats_to_play(3, &played, 0), vec![0, 1, 2]);
-        assert_eq!(super::seats_to_play(2, &round(&[]), 0), vec![0, 1]);
+        assert_eq!(
+            slotted(&super::slots_to_play(sanity, &played, 3, 0)),
+            vec![(0, None), (1, None), (2, None)]
+        );
+        assert_eq!(
+            slotted(&super::slots_to_play(sanity, &round(&[]), 2, 0)),
+            vec![(0, None), (1, None)]
+        );
+    }
+
+    /// A swiss round of `pairs`, nothing played yet.
+    fn paired(pairs: &[(usize, usize)], bye: Option<usize>) -> ava_wire::Round {
+        let mut paired = round(&[]);
+        paired.pairs = pairs
+            .iter()
+            .map(|(first, second)| ava_wire::Pair {
+                first: *first,
+                second: *second,
+            })
+            .collect();
+        paired.bye = bye;
+        paired
+    }
+
+    #[test]
+    fn a_paired_round_plays_an_attack_once_per_pair_and_direction() {
+        let crackme = game("crackme");
+        let round = paired(&[(0, 3), (1, 2)], Some(4));
+
+        assert!(!super::plays_against(crackme, 0));
+        assert!(super::plays_against(crackme, 1));
+        assert_eq!(
+            slotted(&super::slots(crackme, &round, 5, 0)),
+            vec![(0, None), (1, None), (2, None), (3, None)]
+        );
+        assert_eq!(
+            slotted(&super::slots(crackme, &round, 5, 1)),
+            vec![(0, Some(3)), (3, Some(0)), (1, Some(2)), (2, Some(1))]
+        );
+        assert_eq!(super::round_pairs(&round), vec![(0, 3), (1, 2)]);
+        assert_eq!(super::seats_of(&round), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_paired_round_plays_a_turn_facing_nobody_once_per_seat() {
+        let sanity = game("sanity-check");
+        let round = paired(&[(0, 1), (1, 2)], None);
+
+        assert_eq!(
+            slotted(&super::slots(sanity, &round, 3, 0)),
+            vec![(0, None), (1, None), (2, None)]
+        );
+    }
+
+    #[test]
+    fn an_attack_is_read_against_the_seat_it_faced() {
+        let mut round = paired(&[(0, 1), (0, 2)], None);
+        for (seat, turn, opponent) in [(0, 0, None), (0, 1, Some(1)), (0, 1, Some(2)), (1, 0, None)]
+        {
+            round.entries.push(ava_wire::Entry {
+                seat,
+                turn,
+                run: format!("run-{seat}-{turn}-{opponent:?}"),
+                attempt: None,
+                opponent,
+            });
+        }
+
+        let run = |seat, turn, opponent| {
+            super::entry_against(game("crackme"), &round, seat, turn, opponent)
+                .map(|entry| entry.run.clone())
+        };
+        assert_eq!(run(0, 1, 2).as_deref(), Some("run-0-1-Some(2)"));
+        assert_eq!(run(0, 1, 1).as_deref(), Some("run-0-1-Some(1)"));
+        assert_eq!(run(0, 0, 2).as_deref(), Some("run-0-0-None"));
+        assert_eq!(run(1, 1, 0), None);
+    }
+
+    #[test]
+    fn a_run_facing_every_seat_covers_the_seats_it_faced_alone() {
+        // A round robin of seats 0 and 1, backfilled with seat 2.
+        let mut round = paired(&[(0, 1), (0, 2)], None);
+        for (seat, turn, opponent) in [
+            (0, 0, None),
+            (1, 0, None),
+            (0, 1, None),
+            (1, 1, None),
+            (2, 0, None),
+            (2, 1, Some(0)),
+        ] {
+            round.entries.push(ava_wire::Entry {
+                seat,
+                turn,
+                run: format!("run-{seat}-{turn}"),
+                attempt: None,
+                opponent,
+            });
+        }
+
+        let covered = |seat, opponent| {
+            super::entry_for(
+                &round,
+                super::Slot {
+                    seat,
+                    opponent: Some(opponent),
+                },
+                1,
+            )
+            .map(|entry| entry.run.clone())
+        };
+        assert_eq!(covered(0, 1).as_deref(), Some("run-0-1"));
+        assert_eq!(covered(1, 0).as_deref(), Some("run-1-1"));
+        assert_eq!(covered(0, 2), None);
+        assert_eq!(covered(2, 0).as_deref(), Some("run-2-1"));
+    }
+
+    #[test]
+    fn a_late_seat_joins_a_paired_round_in_the_seat_left_out() {
+        let mut joined = tournament(4, &[]);
+        joined.pairing = ava_wire::SWISS.to_string();
+        joined.rounds.push(paired(&[(0, 1)], Some(2)));
+
+        assert_eq!(super::unplayed_rounds(&joined), vec![0]);
+        let late = super::late_pairs(&joined, 0, &Default::default()).unwrap();
+        assert_eq!(
+            late.pairs,
+            vec![ava_wire::Pair {
+                first: 2,
+                second: 3
+            }]
+        );
+        assert_eq!(late.bye, None);
+    }
+
+    #[test]
+    fn a_late_seat_left_over_meets_a_seat_that_played_the_round() {
+        let mut joined = tournament(3, &[]);
+        joined.pairing = ava_wire::SWISS.to_string();
+        joined.rounds.push(paired(&[(0, 1)], None));
+
+        let late = super::late_pairs(&joined, 0, &Default::default()).unwrap();
+        assert_eq!(late.pairs.len(), 1);
+        assert_eq!(late.pairs[0].second, 2);
+        assert_eq!(late.bye, None);
+    }
+
+    #[test]
+    fn a_seat_catching_up_on_several_rounds_meets_a_different_seat_in_each() {
+        let mut joined = tournament(3, &[]);
+        joined.pairing = ava_wire::SWISS.to_string();
+        joined.rounds.push(paired(&[(0, 1)], None));
+        joined.rounds.push(paired(&[(0, 1)], None));
+
+        let plans = super::plan_late(&joined, &[0, 1]).unwrap();
+        let opponent = |plan: usize| plans[plan].1.pairs[0].first;
+        assert_eq!(plans.len(), 2);
+        assert_ne!(opponent(0), opponent(1));
+    }
+
+    #[test]
+    fn a_seat_leaving_renumbers_the_pairs_and_the_bye() {
+        let mut joined = tournament(4, &[]);
+        joined.rounds.push(paired(&[(0, 3)], Some(1)));
+        joined.rounds[0].entries.push(ava_wire::Entry {
+            seat: 0,
+            turn: 1,
+            run: "attack".to_string(),
+            attempt: None,
+            opponent: Some(3),
+        });
+
+        super::unseat(&mut joined, 2).unwrap();
+
+        let round = &joined.rounds[0];
+        assert_eq!(
+            round.pairs,
+            vec![ava_wire::Pair {
+                first: 0,
+                second: 2
+            }]
+        );
+        assert_eq!(round.bye, Some(1));
+        assert_eq!(round.entries[0].opponent, Some(2));
+    }
+
+    #[test]
+    fn a_game_facing_other_seats_is_paired_swiss_unless_chosen_otherwise() {
+        assert_eq!(super::default_pairing(game("crackme")), ava_wire::SWISS);
+        assert_eq!(
+            super::default_pairing(game("r2wars-gb")),
+            ava_wire::ROUND_ROBIN
+        );
+        assert!(super::checked_pairing("swiss").is_ok());
+        assert!(super::checked_pairing("knockout").is_err());
     }
 }
