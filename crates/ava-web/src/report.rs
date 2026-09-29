@@ -122,6 +122,13 @@ const TAB_TITLES: [&str; 5] = [
 const TAB_FIELD: &str = "tab";
 const SUBTAB_FIELD: &str = "subtab";
 const PART_FIELD: &str = "part";
+/// The fields of the chips choosing the harnesses the model efficiency covers
+/// and the models the harness efficiency covers, and the chips covering them
+/// all.
+const HARNESS_FIELD: &str = "model-harness";
+const MODEL_FIELD: &str = "harness-model";
+const EVERY_HARNESS: &str = "every harness";
+const EVERY_MODEL: &str = "every model";
 /// The tabs of the report as a row, the tournaments and the parts as chips
 /// like the ones choosing the tournaments on the page.
 const TAB_STYLE: TabStyle = TabStyle {
@@ -702,13 +709,14 @@ fn harness_hue(harnesses: &[String], harness: &str) -> u64 {
 }
 
 /// `played` grouped by harness, every group in the colour the harness has
-/// on every chart of the report.
-fn grouped_by_harness(played: &[Played]) -> Vec<Group> {
+/// among `harnesses` on every chart of the report.
+fn grouped_by_harness<'a>(
+    played: impl IntoIterator<Item = &'a Played>,
+    harnesses: &[String],
+) -> Vec<Group> {
     let mut groups = grouped(played, harness_key);
-    let mut harnesses: Vec<String> = groups.iter().map(|group| group.key.clone()).collect();
-    harnesses.sort();
     for group in &mut groups {
-        group.hue = harness_hue(&harnesses, &group.key);
+        group.hue = harness_hue(harnesses, &group.key);
     }
 
     groups
@@ -1076,12 +1084,120 @@ fn report(records: &[ava_wire::Tournament], prefix: &str) -> std::io::Result<Str
     let mut tournaments = tournaments_table(records, &played);
     tournaments.push_str(&tournaments_chart(records, &by_model, &played));
     tournaments.push_str(&harness_chart(&by_agent));
-    let mut efficiency = group_table(&by_model, MODELS_TABLE, MODEL_HEADER, model_name, &COLUMNS);
+    let mut harnesses: Vec<String> = played.iter().map(|run| harness_key(&run.setup)).collect();
+    harnesses.sort();
+    harnesses.dedup();
+    let by_harness = grouped_by_harness(&played, &harnesses);
+    let efficiency = chip_panes(
+        &played,
+        by_harness
+            .iter()
+            .map(|group| harness_name(&group.setup))
+            .collect(),
+        harness_name,
+        model_name,
+        &format!("{prefix}{HARNESS_FIELD}"),
+        EVERY_HARNESS,
+        &|runs| model_section(&grouped(runs.iter().copied(), model_key)),
+    );
+    let harnesses = chip_panes(
+        &played,
+        by_model
+            .iter()
+            .map(|group| model_name(&group.setup))
+            .collect(),
+        model_name,
+        harness_name,
+        &format!("{prefix}{MODEL_FIELD}"),
+        EVERY_MODEL,
+        &|runs| harness_section(grouped_by_harness(runs.iter().copied(), &harnesses)),
+    );
+    let mut subpanes = Vec::new();
+    for record in records {
+        subpanes.push((
+            format!(
+                "{}<span class=\"{}\">{}</span>",
+                views::logo_cell(&record.game),
+                views::MONO_CLASSES,
+                views::escape(&record.name)
+            ),
+            views::tournament_report(&record.name)?,
+        ));
+    }
+    let panes: Vec<(String, String)> = TAB_TITLES
+        .into_iter()
+        .map(views::escape)
+        .zip([
+            tournaments,
+            efficiency,
+            harnesses,
+            tabs(&format!("{prefix}{SUBTAB_FIELD}"), &SUBTAB_STYLE, &subpanes),
+            about()?,
+        ])
+        .collect();
+    body.push_str(&tabs(&format!("{prefix}{TAB_FIELD}"), &TAB_STYLE, &panes));
+
+    Ok(body)
+}
+
+/// `section` over every run of `played`, then over the runs of each value of
+/// `name` that more than one value of `other` shares, in the order of `order`,
+/// behind chips on `field`, so one model can compare the harnesses that drove
+/// it and one harness the models it drove.
+fn chip_panes<'a>(
+    played: &'a [Played],
+    order: Vec<&'a str>,
+    name: Name,
+    other: Name,
+    field: &str,
+    every: &str,
+    section: &dyn Fn(&[&'a Played]) -> String,
+) -> String {
+    let mut shared: Vec<&str> = Vec::new();
+    for value in order {
+        if shared.contains(&value) {
+            continue;
+        }
+        let mut others: Vec<&str> = played
+            .iter()
+            .filter(|run| name(&run.setup) == value)
+            .map(|run| other(&run.setup))
+            .collect();
+        others.sort_unstable();
+        others.dedup();
+        if others.len() > 1 {
+            shared.push(value);
+        }
+    }
+
+    let every_run: Vec<&Played> = played.iter().collect();
+    let mut panes = vec![(views::escape(every), section(&every_run))];
+    for value in shared {
+        let runs: Vec<&Played> = played
+            .iter()
+            .filter(|run| name(&run.setup) == value)
+            .collect();
+        panes.push((
+            format!(
+                "<span class=\"{}\">{}</span>",
+                views::MONO_CLASSES,
+                views::escape(value)
+            ),
+            section(&runs),
+        ));
+    }
+
+    tabs(field, &SUBTAB_STYLE, &panes)
+}
+
+/// The table and the charts of the model efficiency over `by_model`.
+fn model_section(by_model: &[Group]) -> String {
+    let mut efficiency = group_table(by_model, MODELS_TABLE, MODEL_HEADER, model_name, &COLUMNS);
     efficiency.push_str(&format!(
         "<div class=\"{}\">{}{}</div>",
         views::CHARTS_GRID_CLASSES,
         efficiency_chart(
-            &by_model,
+            by_model,
             "cost efficiency",
             "the dollars of every model's runs at the prices of the registry over the rounds it won, a draw counting half, the cheapest leftmost",
             "dollars per round won",
@@ -1089,7 +1205,7 @@ fn report(records: &[ava_wire::Tournament], prefix: &str) -> std::io::Result<Str
             |dollars| format!("{} per round won", usage::money(dollars)),
         ),
         efficiency_chart(
-            &by_model,
+            by_model,
             "token efficiency",
             "the tokens through the backend of every model's runs over the rounds it won, a draw counting half, in thousands, the leanest leftmost",
             "thousand tokens per round won",
@@ -1101,14 +1217,14 @@ fn report(records: &[ava_wire::Tournament], prefix: &str) -> std::io::Result<Str
         "<div class=\"{}\">{}{}</div>",
         views::CHARTS_GRID_CLASSES,
         scatter(
-            &by_model,
+            by_model,
             &DOLLARS_SCATTER,
             chart::Axis::values,
             |sum| sum.dollars_per_run(),
             |dollars| format!("{} per run", usage::money(dollars)),
         ),
         scatter(
-            &by_model,
+            by_model,
             &OUTPUT_SCATTER,
             chart::Axis::values,
             Sum::thousand_output_per_run,
@@ -1119,22 +1235,27 @@ fn report(records: &[ava_wire::Tournament], prefix: &str) -> std::io::Result<Str
         "<div class=\"{}\">{}{}</div>",
         views::CHARTS_GRID_CLASSES,
         scatter(
-            &by_model,
+            by_model,
             &TIME_SCATTER,
             |top| chart::Axis::seconds(top as u64),
             |sum| mean(&sum.high_score_seconds),
             |seconds| format!("high score after {}", usage::span(seconds as u64)),
         ),
         scatter(
-            &by_model,
+            by_model,
             &TOKENS_SCATTER,
             chart::Axis::values,
             |sum| mean(&sum.high_score_tokens).map(|tokens| tokens / MILLION),
             |millions| format!("{millions:.1}M tokens to the high score"),
         ),
     ));
-    efficiency.push_str(&pass_curve(&by_model));
-    let by_harness = grouped_by_harness(&played);
+    efficiency.push_str(&pass_curve(by_model));
+
+    efficiency
+}
+
+/// The table and the charts of the harness efficiency over `by_harness`.
+fn harness_section(by_harness: Vec<Group>) -> String {
     let mut harnesses = group_table(
         &by_harness,
         HARNESSES_TABLE,
@@ -1199,32 +1320,8 @@ fn report(records: &[ava_wire::Tournament], prefix: &str) -> std::io::Result<Str
         ),
     ));
     harnesses.push_str(&pass_curve(&by_harness));
-    let mut subpanes = Vec::new();
-    for record in records {
-        subpanes.push((
-            format!(
-                "{}<span class=\"{}\">{}</span>",
-                views::logo_cell(&record.game),
-                views::MONO_CLASSES,
-                views::escape(&record.name)
-            ),
-            views::tournament_report(&record.name)?,
-        ));
-    }
-    let panes: Vec<(String, String)> = TAB_TITLES
-        .into_iter()
-        .map(views::escape)
-        .zip([
-            tournaments,
-            efficiency,
-            harnesses,
-            tabs(&format!("{prefix}{SUBTAB_FIELD}"), &SUBTAB_STYLE, &subpanes),
-            about()?,
-        ])
-        .collect();
-    body.push_str(&tabs(&format!("{prefix}{TAB_FIELD}"), &TAB_STYLE, &panes));
 
-    Ok(body)
+    harnesses
 }
 
 /// The name of the report over `parts` as a file: after the labels of the
