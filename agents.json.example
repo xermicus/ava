@@ -1,11 +1,5 @@
 [
   {
-    "name": "jensen",
-    "harness": "pi",
-    "model": "qwen3.8-max",
-    "backend": "substrate"
-  },
-  {
     "name": "sam",
     "harness": "codex",
     "model": "glm-5.3-flash",
@@ -17,12 +11,6 @@
     "harness": "claude",
     "model": "claude-opus-5",
     "backend": "anthropic"
-  },
-  {
-    "name": "alex",
-    "harness": "opencode",
-    "model": "qwen3.8-max",
-    "backend": "substrate"
   },
   {
     "name": "daniela",
@@ -37,21 +25,9 @@
     "backend": "substrate"
   },
   {
-    "name": "elon",
-    "harness": "opencode",
-    "model": "deepseek-v4-pro",
-    "backend": "substrate"
-  },
-  {
     "name": "satya",
     "harness": "claude",
     "model": "glm-5.3-flash",
-    "backend": "substrate"
-  },
-  {
-    "name": "mark",
-    "harness": "pi",
-    "model": "qwen3.8-flash",
     "backend": "substrate"
   },
   {
@@ -61,21 +37,9 @@
     "backend": "substrate"
   },
   {
-    "name": "ed",
-    "harness": "claude",
-    "model": "qwen3.8-max",
-    "backend": "substrate"
-  },
-  {
     "name": "andy",
     "harness": "pi",
     "model": "glm-5.3-flash",
-    "backend": "substrate"
-  },
-  {
-    "name": "john",
-    "harness": "pi",
-    "model": "deepseek-v4-flash",
     "backend": "substrate"
   },
   {
@@ -88,18 +52,6 @@
     "name": "geohot",
     "harness": "pi",
     "model": "claude-sonnet-5",
-    "backend": "substrate"
-  },
-  {
-    "name": "greg",
-    "harness": "codex",
-    "model": "deepseek-v4-pro",
-    "backend": "substrate"
-  },
-  {
-    "name": "arthur",
-    "harness": "claude",
-    "model": "deepseek-v4-flash",
     "backend": "substrate"
   },
   {
@@ -118,18 +70,6 @@
     "name": "tim",
     "harness": "claude",
     "model": "kimi-k3",
-    "backend": "substrate"
-  },
-  {
-    "name": "steve",
-    "harness": "claude",
-    "model": "qwen3.8-flash",
-    "backend": "substrate"
-  },
-  {
-    "name": "bill",
-    "harness": "opencode",
-    "model": "qwen3.8-flash",
     "backend": "substrate"
   },
   {
@@ -154,42 +94,6 @@
     "name": "terence",
     "harness": "codex",
     "model": "glm-5.3",
-    "backend": "substrate"
-  },
-  {
-    "name": "dhh",
-    "harness": "codex",
-    "model": "qwen3.8-flash",
-    "backend": "substrate"
-  },
-  {
-    "name": "theprimagen",
-    "harness": "codex",
-    "model": "qwen3.8-max",
-    "backend": "substrate"
-  },
-  {
-    "name": "vitalik",
-    "harness": "pi",
-    "model": "deepseek-v4-pro",
-    "backend": "substrate"
-  },
-  {
-    "name": "satoshi",
-    "harness": "claude",
-    "model": "deepseek-v4-pro",
-    "backend": "substrate"
-  },
-  {
-    "name": "gavin",
-    "harness": "opencode",
-    "model": "deepseek-v4-flash",
-    "backend": "substrate"
-  },
-  {
-    "name": "toly",
-    "harness": "codex",
-    "model": "deepseek-v4-flash",
     "backend": "substrate"
   },
   {

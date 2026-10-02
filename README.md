@@ -25,10 +25,10 @@ The web interface is on port 2828 by default and builds the docker images on the
 make install
 
 # one run, the agent named by harness and model
-ava agent -a pi -m deepseek-v4-flash -e low -g sanity-check
+ava agent -a pi -m deepseek-v4.1-flash -e low -g sanity-check
 
 # a tournament: created, two agents seated at a thinking level, one round played
-ava tournament -n demo -g fib-golf -t 900 -s pi/deepseek-v4-flash/high -s claude/claude-sonnet-5/high
+ava tournament -n demo -g fib-golf -t 900 -s pi/deepseek-v4.1-flash/high -s claude/claude-sonnet-5/high
 
 # the report over every tournament on disk, into reports/report.html
 ava report
@@ -47,7 +47,7 @@ ava report
 
 ## Harnesses and backends
 
-Claude Code, Codex, OpenCode and pi drive the models. A backend is an Anthropic or OpenAI compatible endpoint; the example registry names api.anthropic.com, llm.substrate.dev and a local ollama. Every route carries its price, so spend comes out in dollars.
+Claude Code, Codex, OpenCode and pi drive the models. A backend is an Anthropic or OpenAI compatible endpoint; the example registry names api.anthropic.com, ai.labs.paritytech.io and a local ollama. Every route carries its price, so spend comes out in dollars.
 
 ## Design
 

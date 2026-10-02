@@ -384,9 +384,9 @@ fn record_distinct(seen: &mut Vec<String>, value: &str) {
 mod tests {
     const ANSWERED: &str = r#"{"host":"api.anthropic.com","upstream":"api.anthropic.com","status":200,"completed":"","request_bytes":10,"response_bytes":20,"request_seconds":1.5,"header_seconds":"0.2","upstream_seconds":"1.4","first_token_seconds":0.3,"served_models":"claude-sonnet-5","input_tokens":100,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":5,"ratelimits":"","gateway_cost":"0.01"}"#;
     const CUT: &str = r#"{"host":"api.anthropic.com","upstream":"api.anthropic.com","status":200,"completed":"OK","request_bytes":10,"response_bytes":20,"request_seconds":2.0,"header_seconds":"0.2","upstream_seconds":"1.9","first_token_seconds":0.5,"served_models":"claude-sonnet-5\tClaude Sonnet 5","input_tokens":100,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":9,"ratelimits":"","gateway_cost":""}"#;
-    const PROBE: &str = r#"{"host":"llm.substrate.dev","upstream":"llm.substrate.dev","method":"GET","uri":"/api/hello","status":404,"completed":"OK","request_bytes":160,"response_bytes":298,"request_seconds":0.1,"header_seconds":"0.1","upstream_seconds":"0.1","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
+    const PROBE: &str = r#"{"host":"ai.labs.paritytech.io","upstream":"ai.labs.paritytech.io","method":"GET","uri":"/api/hello","status":404,"completed":"OK","request_bytes":160,"response_bytes":298,"request_seconds":0.1,"header_seconds":"0.1","upstream_seconds":"0.1","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
     const PUSHED: &str = r#"{"host":"git","upstream":"","method":"GET","uri":"/task.git/info/refs","status":200,"completed":"OK","request_bytes":200,"response_bytes":400,"request_seconds":0.3,"header_seconds":"0.3","upstream_seconds":"0.3","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
-    const REFUSED: &str = r#"{"host":"llm.substrate.dev","upstream":"llm.substrate.dev","method":"POST","uri":"/v1/messages","status":502,"completed":"OK","request_bytes":5000,"response_bytes":300,"request_seconds":0.4,"header_seconds":"0.4","upstream_seconds":"0.4","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
+    const REFUSED: &str = r#"{"host":"ai.labs.paritytech.io","upstream":"ai.labs.paritytech.io","method":"POST","uri":"/v1/messages","status":502,"completed":"OK","request_bytes":5000,"response_bytes":300,"request_seconds":0.4,"header_seconds":"0.4","upstream_seconds":"0.4","first_token_seconds":0,"served_models":"","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"streamed_deltas":0,"ratelimits":"","gateway_cost":""}"#;
 
     #[test]
     fn records_aggregate_without_a_file() {
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(metrics.failed_requests, 1);
         assert_eq!(
             metrics.hosts,
-            ["api.anthropic.com", "llm.substrate.dev", "git"]
+            ["api.anthropic.com", "ai.labs.paritytech.io", "git"]
         );
         assert_eq!(metrics.request_bytes, 5170);
         assert!((metrics.request_seconds - 2.0).abs() < 1e-9);
