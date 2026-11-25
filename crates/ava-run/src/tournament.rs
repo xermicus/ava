@@ -2092,8 +2092,9 @@ fn analyze(name: &str, analyst: &ava_wire::Setup, seconds: u64, run: &str) {
     }
 }
 
-/// Play `count` runs, at most `parallel` sandboxes at a time. The outcomes
-/// come back in the order the runs were given.
+/// Play `count` runs, at most `parallel` sandboxes at a time, and start none
+/// once interrupted. The outcomes come back in the order the runs were given,
+/// without the runs never started.
 fn bounded(
     count: usize,
     parallel: usize,
@@ -2107,6 +2108,9 @@ fn bounded(
         for _ in 0..workers {
             scope.spawn(|| {
                 loop {
+                    if crate::interrupt::interrupted() {
+                        return;
+                    }
                     let next = queue.lock().expect("the queue is not poisoned").pop_front();
                     let Some(index) = next else {
                         return;
