@@ -2519,12 +2519,26 @@ fn tournament_body(
     let registry = registry::load()?;
     let game = ava_game::find(&record.game);
 
+    let parallel_field = format!(
+        "<label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
+         <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" min=\"1\" placeholder=\"{}\"></label>",
+        explained(
+            "parallel",
+            &format!(
+                "the most runs started at once, {} when empty; a sandbox holds its home in memory, so more than the host carries takes docker down",
+                tournament::DEFAULT_PARALLEL
+            )
+        ),
+        tournament::DEFAULT_PARALLEL,
+    );
+
     let unplayed = tournament::unplayed_rounds(&record).len();
     let backfill_form = if !controls || playing || unplayed == 0 {
         String::new()
     } else {
         format!(
-            "<form method=\"post\" action=\"/tournament/{}/backfill\" class=\"self-end\">\
+            "<form method=\"post\" action=\"/tournament/{}/backfill\" class=\"flex items-end gap-3\">\
+             {parallel_field}\
              <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\" title=\"{}\">backfill {unplayed} {}</button></form>",
             escape(name),
             escape(if record.swiss() {
@@ -2541,18 +2555,9 @@ fn tournament_body(
     } else {
         format!(
             "<form method=\"post\" action=\"/tournament/{}/play\" class=\"flex items-end gap-3\">\
-             <label class=\"w-24\"><span class=\"{LABEL_CLASSES}\">{}</span>\
-             <input class=\"{FIELD_CLASSES} {CONTROL_HEIGHT}\" type=\"number\" name=\"parallel\" min=\"1\" placeholder=\"{}\"></label>\
+             {parallel_field}\
              <button class=\"{BUTTON_CLASSES} {CONTROL_HEIGHT}\">play round {}</button></form>",
             escape(name),
-            explained(
-                "parallel",
-                &format!(
-                    "the most runs the round starts at once, {} when empty; a sandbox holds its home in memory, so more than the host carries takes docker down",
-                    tournament::DEFAULT_PARALLEL
-                )
-            ),
-            tournament::DEFAULT_PARALLEL,
             record.rounds.len() + 1
         )
     };
