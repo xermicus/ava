@@ -24,7 +24,7 @@ const SIGTERM_MESSAGE: &str = "received SIGTERM, shutting down\n";
 
 unsafe extern "C" {
     fn signal(number: i32, handler: usize) -> usize;
-    fn write(descriptor: i32, buffer: *const u8, count: usize) -> isize;
+    fn write(descriptor: i32, buffer: *const std::ffi::c_void, count: usize) -> isize;
     fn _exit(code: i32) -> !;
 }
 
@@ -40,7 +40,7 @@ extern "C" fn on_interrupt(number: i32) {
     } else {
         SIGTERM_MESSAGE
     };
-    unsafe { write(STDERR, message.as_ptr(), message.len()) };
+    unsafe { write(STDERR, message.as_ptr().cast(), message.len()) };
 }
 
 /// Install the signal dispositions.
